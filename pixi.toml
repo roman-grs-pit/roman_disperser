@@ -1,0 +1,58 @@
+[workspace]
+authors = ["Nikhil Padmanabhan <nikhil.padmanabhan@gmail.com>"]
+channels = ["conda-forge"]
+name = "roman_disperser"
+platforms = ["osx-arm64", "linux-64"]
+version = "0.1.0"
+
+[tasks]
+# Easy check to see if your GPU is visible
+check-jax = "python -c 'import jax; print(f\"Backend: {jax.default_backend()}\"); print(jax.devices())'"
+
+# --- GLOBAL DEPENDENCIES (Available everywhere) ---
+[dependencies]
+python = ">=3.12, <3.13"
+numpy = ">=2.0"
+matplotlib = ">=3.10"
+scipy = "*"
+
+# VS Code & Quarto requirements
+ipykernel = "*"  # Required for VS Code to run notebooks
+jupyterlab = "*" # Good for Quarto and debugging
+
+[pypi-dependencies]
+roman_disperser = { path = ".", editable = true }
+
+# --- ENVIRONMENTS ---
+[environments]
+# 1. Default (CPU): For generic linux/servers
+default = ["cpu"]
+# 2. Metal (Mac): Your Laptop
+metal = ["cpu", "metal"]
+# 3. CUDA (Runpod): Your GPU box
+cuda = ["cuda"]
+
+# --- FEATURES ---
+
+# Feature: CPU (Base JAX)
+[feature.cpu.dependencies]
+jax = "*"
+
+[feature.metal]
+platforms = ["osx-arm64"] 
+
+[feature.metal.dependencies]
+jax = "*"
+[feature.metal.pypi-dependencies]
+jax-metal = "*"
+
+# Feature: CUDA (Nvidia GPU Acceleration)
+[feature.cuda]
+platforms = ["linux-64"]
+system-requirements = { cuda = "12" }
+
+[feature.cuda.dependencies]
+jax = "*"
+jaxlib = { version = "*", build = "cuda12*" }
+
+
