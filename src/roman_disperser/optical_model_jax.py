@@ -224,20 +224,16 @@ def get_map_coords(payload, xfpa, yfpa):
     
     Args:
         payload: dict from make_sca_payload
-        xfpa, yfpa: reference position in degrees (FPA coords)
+        xfpa, yfpa: reference position in degrees (FPA coords), as arrays
     
     Returns:
         xmpa, ympa: trace offset position in mm (MPA coords)
     """
-    # Ensure inputs are at least 1D
-    x = jnp.atleast_1d(xfpa)
-    y = jnp.atleast_1d(yfpa)
-    
     # Create Vandermonde matrices: [n, i] and [n, j]
     map_i = payload["poly"]["map_i"]
     map_j = payload["poly"]["map_j"]
-    x_powers = x[:, jnp.newaxis] ** jnp.arange(map_i)
-    y_powers = y[:, jnp.newaxis] ** jnp.arange(map_j)
+    x_powers = xfpa[:, jnp.newaxis] ** jnp.arange(map_i)
+    y_powers = yfpa[:, jnp.newaxis] ** jnp.arange(map_j)
     
     # Get coefficients
     X_ij = payload["poly"]["X_ij"]

@@ -472,26 +472,6 @@ class TestMapCoords:
         np.testing.assert_allclose(xmpa_jax, xmpa_class, rtol=RTOL, atol=ATOL)
         np.testing.assert_allclose(ympa_jax, ympa_class, rtol=RTOL, atol=ATOL)
 
-    def test_scalar_input(self, optical_model):
-        """Test with scalar inputs."""
-        payload = omj.make_sca_payload(optical_model, sca=1, order="1")
-        
-        # Single point
-        xfpa = 0.001
-        yfpa = -0.002
-        
-        xmpa_jax, ympa_jax = omj.get_map_coords(payload, xfpa, yfpa)
-        xmpa_class, ympa_class = optical_model.get_map_coords(
-            xfpa=xfpa, yfpa=yfpa, order="1"
-        )
-        
-        # Should return 1D arrays
-        assert xmpa_jax.shape == (1,)
-        assert ympa_jax.shape == (1,)
-        
-        np.testing.assert_allclose(xmpa_jax, xmpa_class, rtol=RTOL, atol=ATOL)
-        np.testing.assert_allclose(ympa_jax, ympa_class, rtol=RTOL, atol=ATOL)
-
     def test_jit_compilation(self, optical_model):
         """Verify get_map_coords is JIT-compilable."""
         import jax
