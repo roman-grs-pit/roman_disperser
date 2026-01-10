@@ -441,3 +441,76 @@ class TestJAXCompatibility:
         assert ympa.shape == (2,)
         np.testing.assert_allclose(xsca_rt, xsca, rtol=RTOL, atol=ATOL)
         np.testing.assert_allclose(ysca_rt, ysca, rtol=RTOL, atol=ATOL)
+
+
+class TestMapCoords:
+    """Test polynomial coordinate mapping (get_map_coords)."""
+
+    @pytest.mark.parametrize("sca", [1, 2, 5, 10])
+    @pytest.mark.parametrize("order", ["1", "0", "2"])
+    def test_compare_to_class(self, optical_model, sca, order):
+        """Compare functional get_map_coords to class implementation."""
+        payload = omj.make_sca_payload(optical_model, sca=sca, order=order)
+        
+        # Generate test points in SCA coordinates and convert to FPA
+        xsca = np.array([500.0, 1500.0, 2500.0, 3500.0])
+        ysca = np.array([1000.0, 2000.0, 3000.0, 4000.0])
+        
+        # Convert to FPA using class method (returns numpy arrays)
+        xfpa, yfpa = optical_model.coords.convert_sca_to_fpa(
+            xsca=xsca, ysca=ysca, sca=sca
+        )
+        
+        # Test functional implementation
+        xmpa_jax, ympa_jax = omj.get_map_coords(payload, xfpa, yfpa)
+        
+        # Compare to class implementation
+        xmpa_class, ympa_class = optical_model.get_map_coords(
+            xfpa=xfpa, yfpa=yfpa, order=order
+        )
+        
+        np.testing.assert_allclose(xmpa_jax, xmpa_class, rtol=RTOL, atol=ATOL)
+        np.testing.assert_allclose(ympa_jax, ympa_class, rtol=RTOL, atol=ATOL)
+
+    def test_scalar_input(self, optical_model):
+        """Test with scalar inputs."""
+        payload = omj.make_sca_payload(optical_model, sca=1, order="1")
+        
+        # Single point
+        xfpa = 0.001
+        yfpa = -0.002
+        
+        xmpa_jax, ympa_jax = omj.get_map_coords(payload, xfpa, yfpa)
+        xmpa_class, ympa_class = optical_model.get_map_coords(
+            xfpa=xfpa, yfpa=yfpa, order="1"
+        )
+        
+        # Should return 1D arrays
+        assert xmpa_jax.shape == (1,)
+        assert ympa_jax.shape == (1,)
+        
+        np.testing.assert_allclose(xmpa_jax, xmpa_class, rtol=RTOL, atol=ATOL)
+        np.testing.assert_allclose(ympa_jax, ympa_class, rtol=RTOL, atol=ATOL)
+
+    def test_jit_compilation(self, optical_model):
+        """Verify get_map_coords is JIT-compilable."""
+        import jax
+        import jax.numpy as jnp
+        
+        payload = omj.make_sca_payload(optical_model, sca=5, order="2")
+        
+        @jax.jit
+        def jitted_get_map_coords(xfpa, yfpa):
+            return omj.get_map_coords(payload, xfpa, yfpa)
+        
+        xfpa = jnp.array([0.001, 0.002, -0.001])
+        yfpa = jnp.array([-0.002, 0.003, 0.001])
+        
+        # Should compile and run
+        xmpa, ympa = jitted_get_map_coords(xfpa, yfpa)
+        
+        assert xmpa.shape == (3,)
+        assert ympa.shape == (3,)
+        assert isinstance(xmpa, jnp.ndarray)
+        assert isinstance(ympa, jnp.ndarray)
+
