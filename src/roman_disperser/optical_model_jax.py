@@ -120,3 +120,55 @@ def mpa_to_sca(payload, xmpa, ympa):
     ysca = yrot + crpix2
     
     return xsca, ysca
+
+
+def sca_to_fpa(payload, xsca, ysca):
+    """
+    Convert SCA pixel coordinates to FPA (arcsec, as degrees).
+    
+    Args:
+        payload: dict from make_sca_payload
+        xsca, ysca: detector pixel coordinates
+    
+    Returns:
+        xfpa, yfpa: position in degrees
+    """
+    crpix1 = payload["det"]["crpix1"]
+    crpix2 = payload["det"]["crpix2"]
+    plate_scale = payload["det"]["plate_scale"]
+    pixel_scale = payload["det"]["pixel_scale"]
+    xcen, ycen = payload["det"]["xy_center"]
+    
+    dx = (xsca - crpix1) * -1.0
+    dy = ysca - crpix2
+    
+    xfpa = (xcen * plate_scale + dx) * pixel_scale / 3600.0
+    yfpa = (ycen * plate_scale + dy) * pixel_scale / 3600.0
+    
+    return xfpa, yfpa
+
+
+def fpa_to_sca(payload, xfpa, yfpa):
+    """
+    Convert FPA (degrees) coordinates to SCA pixel coordinates.
+    
+    Args:
+        payload: dict from make_sca_payload
+        xfpa, yfpa: position in degrees
+    
+    Returns:
+        xsca, ysca: detector pixel coordinates
+    """
+    crpix1 = payload["det"]["crpix1"]
+    crpix2 = payload["det"]["crpix2"]
+    plate_scale = payload["det"]["plate_scale"]
+    pixel_scale = payload["det"]["pixel_scale"]
+    xcen, ycen = payload["det"]["xy_center"]
+    
+    dx = (xfpa * 3600.0 / pixel_scale) - (xcen * plate_scale)
+    dy = (yfpa * 3600.0 / pixel_scale) - (ycen * plate_scale)
+    
+    xsca = -dx + crpix1
+    ysca = dy + crpix2
+    
+    return xsca, ysca
