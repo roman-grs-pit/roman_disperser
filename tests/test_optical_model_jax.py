@@ -189,3 +189,138 @@ class TestMultipleSCAs:
 
         assert not np.allclose(xmpa1, xmpa2)
         assert not np.allclose(ympa1, ympa2)
+
+
+class TestSCAtoFPA:
+    """Test SCA to FPA coordinate transformation."""
+
+    @pytest.mark.parametrize("sca", [1, 2, 5, 10])
+    def test_center_pixel(self, optical_model, sca):
+        """Test transformation at detector center."""
+        payload = omj.make_sca_payload(optical_model, sca=sca, order="1")
+        xsca = np.array([payload["det"]["crpix1"]])
+        ysca = np.array([payload["det"]["crpix2"]])
+
+        xfpa_jax, yfpa_jax = omj.sca_to_fpa(payload, xsca, ysca)
+        xfpa_class, yfpa_class = optical_model.coords.convert_sca_to_fpa(
+            xsca=xsca, ysca=ysca, sca=sca
+        )
+
+        np.testing.assert_allclose(xfpa_jax, xfpa_class, rtol=RTOL, atol=ATOL)
+        np.testing.assert_allclose(yfpa_jax, yfpa_class, rtol=RTOL, atol=ATOL)
+
+    @pytest.mark.parametrize("sca", [1, 2, 5, 10])
+    def test_corner_pixels(self, optical_model, sca):
+        """Test transformation at detector corners."""
+        payload = omj.make_sca_payload(optical_model, sca=sca, order="1")
+        test_xsca = np.array([0.5, 4088.5, 0.5, 4088.5])
+        test_ysca = np.array([0.5, 0.5, 4088.5, 4088.5])
+
+        xfpa_jax, yfpa_jax = omj.sca_to_fpa(payload, test_xsca, test_ysca)
+        xfpa_class, yfpa_class = optical_model.coords.convert_sca_to_fpa(
+            xsca=test_xsca, ysca=test_ysca, sca=sca
+        )
+
+        np.testing.assert_allclose(xfpa_jax, xfpa_class, rtol=RTOL, atol=ATOL)
+        np.testing.assert_allclose(yfpa_jax, yfpa_class, rtol=RTOL, atol=ATOL)
+
+    @pytest.mark.parametrize("sca", [1, 2, 5, 10])
+    def test_random_points(self, optical_model, sca):
+        """Test transformation at random points."""
+        payload = omj.make_sca_payload(optical_model, sca=sca, order="1")
+        np.random.seed(42)
+        test_xsca = np.random.uniform(0.5, 4088.5, size=10)
+        test_ysca = np.random.uniform(0.5, 4088.5, size=10)
+
+        xfpa_jax, yfpa_jax = omj.sca_to_fpa(payload, test_xsca, test_ysca)
+        xfpa_class, yfpa_class = optical_model.coords.convert_sca_to_fpa(
+            xsca=test_xsca, ysca=test_ysca, sca=sca
+        )
+
+        np.testing.assert_allclose(xfpa_jax, xfpa_class, rtol=RTOL, atol=ATOL)
+        np.testing.assert_allclose(yfpa_jax, yfpa_class, rtol=RTOL, atol=ATOL)
+
+
+class TestFPAtoSCA:
+    """Test FPA to SCA coordinate transformation."""
+
+    @pytest.mark.parametrize("sca", [1, 2, 5, 10])
+    def test_center_pixel(self, optical_model, sca):
+        """Test transformation at FPA center (maps to SCA center pixel)."""
+        payload = omj.make_sca_payload(optical_model, sca=sca, order="1")
+        
+        # Get FPA coords of SCA center
+        xsca_center = payload["det"]["crpix1"]
+        ysca_center = payload["det"]["crpix2"]
+        xfpa, yfpa = omj.sca_to_fpa(payload, xsca_center, ysca_center)
+
+        # Convert back
+        xsca_jax, ysca_jax = omj.fpa_to_sca(payload, xfpa, yfpa)
+        xsca_class, ysca_class = optical_model.coords.convert_fpa_to_sca(
+            xfpa=xfpa, yfpa=yfpa, sca=sca
+        )
+
+        np.testing.assert_allclose(xsca_jax, xsca_class, rtol=RTOL, atol=ATOL)
+        np.testing.assert_allclose(ysca_jax, ysca_class, rtol=RTOL, atol=ATOL)
+
+    @pytest.mark.parametrize("sca", [1, 2, 5, 10])
+    def test_random_points(self, optical_model, sca):
+        """Test transformation at random FPA points."""
+        payload = omj.make_sca_payload(optical_model, sca=sca, order="1")
+        np.random.seed(42)
+        # Random FPA points (within ~ 0.1 degree, roughly detector field)
+        test_xfpa = np.random.uniform(-0.1, 0.1, size=10)
+        test_yfpa = np.random.uniform(-0.1, 0.1, size=10)
+
+        xsca_jax, ysca_jax = omj.fpa_to_sca(payload, test_xfpa, test_yfpa)
+        xsca_class, ysca_class = optical_model.coords.convert_fpa_to_sca(
+            xfpa=test_xfpa, yfpa=test_yfpa, sca=sca
+        )
+
+        np.testing.assert_allclose(xsca_jax, xsca_class, rtol=RTOL, atol=ATOL)
+        np.testing.assert_allclose(ysca_jax, ysca_class, rtol=RTOL, atol=ATOL)
+
+
+class TestRoundTripFPA:
+    """Test round-trip conversions SCA <-> FPA."""
+
+    @pytest.mark.parametrize("sca", [1, 2, 5, 10])
+    def test_sca_fpa_sca_roundtrip(self, optical_model, sca):
+        """SCA -> FPA -> SCA should recover original coordinates."""
+        payload = omj.make_sca_payload(optical_model, sca=sca, order="1")
+        test_xsca_orig = np.array([0.5, 2044.5, 4088.5, 1000.0, 3000.0])
+        test_ysca_orig = np.array([0.5, 2044.5, 4088.5, 1500.0, 2500.0])
+
+        # Forward
+        xfpa, yfpa = omj.sca_to_fpa(payload, test_xsca_orig, test_ysca_orig)
+
+        # Backward
+        xsca_recovered, ysca_recovered = omj.fpa_to_sca(payload, xfpa, yfpa)
+
+        np.testing.assert_allclose(
+            xsca_recovered, test_xsca_orig, rtol=RTOL, atol=ATOL
+        )
+        np.testing.assert_allclose(
+            ysca_recovered, test_ysca_orig, rtol=RTOL, atol=ATOL
+        )
+
+    @pytest.mark.parametrize("sca", [1, 2, 5, 10])
+    def test_fpa_sca_fpa_roundtrip(self, optical_model, sca):
+        """FPA -> SCA -> FPA should recover original coordinates."""
+        payload = omj.make_sca_payload(optical_model, sca=sca, order="1")
+        np.random.seed(42)
+        test_xfpa_orig = np.random.uniform(-0.1, 0.1, size=10)
+        test_yfpa_orig = np.random.uniform(-0.1, 0.1, size=10)
+
+        # Forward
+        xsca, ysca = omj.fpa_to_sca(payload, test_xfpa_orig, test_yfpa_orig)
+
+        # Backward
+        xfpa_recovered, yfpa_recovered = omj.sca_to_fpa(payload, xsca, ysca)
+
+        np.testing.assert_allclose(
+            xfpa_recovered, test_xfpa_orig, rtol=RTOL, atol=ATOL
+        )
+        np.testing.assert_allclose(
+            yfpa_recovered, test_yfpa_orig, rtol=RTOL, atol=ATOL
+        )
