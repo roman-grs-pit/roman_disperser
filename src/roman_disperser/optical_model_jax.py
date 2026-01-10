@@ -224,12 +224,16 @@ def get_map_coords(payload, xfpa, yfpa):
     
     Args:
         payload: dict from make_sca_payload
-        xfpa, yfpa: reference position in degrees (FPA coords), as arrays
+        xfpa, yfpa: reference position in degrees (FPA coords), as 1D arrays
     
     Returns:
         xmpa, ympa: trace offset position in mm (MPA coords)
     """
-    # Create Vandermonde matrices: [n, i] and [n, j]
+    # Create Vandermonde matrices for polynomial evaluation: V[i,j] = x[i]^j
+    # Use manual power computation instead of jnp.vander for flexibility:
+    # - vander only accepts 1D arrays; manual powers broadcast naturally to 3D grids
+    # - Performance is identical (~same HLO after optimization)
+    # - Keeps door open for future vectorization with vmap over higher dimensions
     map_i = payload["poly"]["map_i"]
     map_j = payload["poly"]["map_j"]
     x_powers = xfpa[:, jnp.newaxis] ** jnp.arange(map_i)
