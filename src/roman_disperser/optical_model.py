@@ -9,7 +9,7 @@ from matplotlib.colors import Normalize
 from matplotlib.collections import LineCollection
 from scipy.interpolate import LinearNDInterpolator
 
-from optical_model_utils import RomanDetectorCoordinates, transform_wl
+from .optical_model_utils import RomanDetectorCoordinates, transform_wl
 
 
 class RomanOpticalModel:
