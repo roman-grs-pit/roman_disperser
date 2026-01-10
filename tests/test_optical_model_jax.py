@@ -387,3 +387,57 @@ class TestMPAtoFPA:
 
         np.testing.assert_allclose(xfpa_jax, xfpa_class, rtol=RTOL, atol=ATOL)
         np.testing.assert_allclose(yfpa_jax, yfpa_class, rtol=RTOL, atol=ATOL)
+
+
+class TestJAXCompatibility:
+    """Verify functions work with JAX arrays and are JIT-compilable."""
+
+    def test_jax_array_input(self, optical_model):
+        """Functions should accept JAX arrays as input."""
+        import jax.numpy as jnp
+        
+        payload = omj.make_sca_payload(optical_model, sca=1, order="1")
+        
+        # Use JAX arrays as input
+        xsca = jnp.array([1000.0, 2000.0, 3000.0])
+        ysca = jnp.array([1500.0, 2500.0, 3500.0])
+        
+        # Test multiple transforms
+        xmpa, ympa = omj.sca_to_mpa(payload, xsca, ysca)
+        xfpa, yfpa = omj.sca_to_fpa(payload, xsca, ysca)
+        
+        # Output should be JAX arrays
+        assert isinstance(xmpa, jnp.ndarray)
+        assert isinstance(ympa, jnp.ndarray)
+        assert isinstance(xfpa, jnp.ndarray)
+        assert isinstance(yfpa, jnp.ndarray)
+
+    def test_jit_compilation(self, optical_model):
+        """Functions should be JIT-compilable."""
+        import jax
+        import jax.numpy as jnp
+        
+        payload = omj.make_sca_payload(optical_model, sca=1, order="1")
+        
+        # JIT compile individual transforms
+        @jax.jit
+        def jitted_sca_to_mpa(xsca, ysca):
+            return omj.sca_to_mpa(payload, xsca, ysca)
+        
+        @jax.jit
+        def jitted_roundtrip(xsca, ysca):
+            xmpa, ympa = omj.sca_to_mpa(payload, xsca, ysca)
+            return omj.mpa_to_sca(payload, xmpa, ympa)
+        
+        xsca = jnp.array([1000.0, 2000.0])
+        ysca = jnp.array([1500.0, 2500.0])
+        
+        # Should compile and run without error
+        xmpa, ympa = jitted_sca_to_mpa(xsca, ysca)
+        xsca_rt, ysca_rt = jitted_roundtrip(xsca, ysca)
+        
+        # Verify outputs
+        assert xmpa.shape == (2,)
+        assert ympa.shape == (2,)
+        np.testing.assert_allclose(xsca_rt, xsca, rtol=RTOL, atol=ATOL)
+        np.testing.assert_allclose(ysca_rt, ysca, rtol=RTOL, atol=ATOL)
