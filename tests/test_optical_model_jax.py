@@ -324,3 +324,66 @@ class TestRoundTripFPA:
         np.testing.assert_allclose(
             yfpa_recovered, test_yfpa_orig, rtol=RTOL, atol=ATOL
         )
+
+
+class TestMPAtoFPA:
+    """Test MPA to FPA coordinate transformation (unit conversion)."""
+
+    @pytest.mark.parametrize("sca", [1, 2, 5, 10])
+    def test_roundtrip_mpa_fpa_mpa(self, optical_model, sca):
+        """MPA -> FPA -> MPA should recover original coordinates."""
+        payload = omj.make_sca_payload(optical_model, sca=sca, order="1")
+        np.random.seed(42)
+        test_xmpa_orig = np.random.uniform(-50, 50, size=10)  # mm
+        test_ympa_orig = np.random.uniform(-50, 50, size=10)  # mm
+
+        # Forward
+        xfpa, yfpa = omj.mpa_to_fpa(payload, test_xmpa_orig, test_ympa_orig)
+
+        # Backward
+        xmpa_recovered, ympa_recovered = omj.fpa_to_mpa(payload, xfpa, yfpa)
+
+        np.testing.assert_allclose(
+            xmpa_recovered, test_xmpa_orig, rtol=RTOL, atol=ATOL
+        )
+        np.testing.assert_allclose(
+            ympa_recovered, test_ympa_orig, rtol=RTOL, atol=ATOL
+        )
+
+    @pytest.mark.parametrize("sca", [1, 2, 5, 10])
+    def test_roundtrip_fpa_mpa_fpa(self, optical_model, sca):
+        """FPA -> MPA -> FPA should recover original coordinates."""
+        payload = omj.make_sca_payload(optical_model, sca=sca, order="1")
+        np.random.seed(42)
+        test_xfpa_orig = np.random.uniform(-0.1, 0.1, size=10)  # degrees
+        test_yfpa_orig = np.random.uniform(-0.1, 0.1, size=10)  # degrees
+
+        # Forward
+        xmpa, ympa = omj.fpa_to_mpa(payload, test_xfpa_orig, test_yfpa_orig)
+
+        # Backward
+        xfpa_recovered, yfpa_recovered = omj.mpa_to_fpa(payload, xmpa, ympa)
+
+        np.testing.assert_allclose(
+            xfpa_recovered, test_xfpa_orig, rtol=RTOL, atol=ATOL
+        )
+        np.testing.assert_allclose(
+            yfpa_recovered, test_yfpa_orig, rtol=RTOL, atol=ATOL
+        )
+
+    @pytest.mark.parametrize("sca", [1, 2, 5, 10])
+    def test_compare_to_class(self, optical_model, sca):
+        """Compare against class-based implementation."""
+        payload = omj.make_sca_payload(optical_model, sca=sca, order="1")
+        
+        np.random.seed(42)
+        test_xmpa = np.random.uniform(-50, 50, size=5)
+        test_ympa = np.random.uniform(-50, 50, size=5)
+
+        xfpa_jax, yfpa_jax = omj.mpa_to_fpa(payload, test_xmpa, test_ympa)
+        xfpa_class, yfpa_class = optical_model.coords.convert_mpa_to_fpa(
+            xmpa=test_xmpa, ympa=test_ympa
+        )
+
+        np.testing.assert_allclose(xfpa_jax, xfpa_class, rtol=RTOL, atol=ATOL)
+        np.testing.assert_allclose(yfpa_jax, yfpa_class, rtol=RTOL, atol=ATOL)
