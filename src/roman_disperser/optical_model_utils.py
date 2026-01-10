@@ -146,8 +146,8 @@ class RomanDetectorCoordinates:
         xoff = dx / self.plate_scale
         yoff = dy / self.plate_scale
 
-        xmpa = xoff + self.xy_centers_tbl.loc[sca, "x"].to_numpy()
-        ympa = yoff + self.xy_centers_tbl.loc[sca, "y"].to_numpy()
+        xmpa = xoff + self.xy_centers_tbl.loc[sca, "x"]
+        ympa = yoff + self.xy_centers_tbl.loc[sca, "y"]
 
         return xmpa, ympa
 
