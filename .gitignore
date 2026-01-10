@@ -1,3 +1,14 @@
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+
+# Python ignores
+*.pyc
+__pycache__/
+
+
+# MacOS ignores
+.DS_Store
+
+# Jupyter Notebook ignores
+*.ipynb_checkpoints/

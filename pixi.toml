@@ -19,6 +19,8 @@ scipy = "*"
 # VS Code & Quarto requirements
 ipykernel = "*"  # Required for VS Code to run notebooks
 jupyterlab = "*" # Good for Quarto and debugging
+pandas = ">=2.3.3,<3"
+pytest = ">=9.0.2,<10"
 
 [pypi-dependencies]
 roman_disperser = { path = ".", editable = true }
