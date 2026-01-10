@@ -494,3 +494,72 @@ class TestMapCoords:
         assert isinstance(xmpa, jnp.ndarray)
         assert isinstance(ympa, jnp.ndarray)
 
+
+class TestTraceCoeffs:
+    """Test polynomial trace coefficient computation (get_trace_coeffs)."""
+
+    @pytest.mark.parametrize("sca", [1, 2, 5, 10])
+    @pytest.mark.parametrize("order", ["1", "0", "2"])
+    def test_compare_to_class(self, optical_model, sca, order):
+        """Compare functional get_trace_coeffs to class implementation."""
+        payload = omj.make_sca_payload(optical_model, sca=sca, order=order)
+        
+        # Generate test points in SCA coordinates and convert to FPA
+        xsca = np.array([500.0, 1500.0, 2500.0, 3500.0])
+        ysca = np.array([1000.0, 2000.0, 3000.0, 4000.0])
+        
+        # Convert to FPA using class method
+        xfpa, yfpa = optical_model.coords.convert_sca_to_fpa(
+            xsca=xsca, ysca=ysca, sca=sca
+        )
+        
+        # Test functional implementation
+        crv_jax, ids_jax = omj.get_trace_coeffs(payload, xfpa, yfpa)
+        
+        # Compare to class implementation
+        crv_class, ids_class = optical_model.get_trace_coeffs(
+            xfpa=xfpa, yfpa=yfpa, order=order
+        )
+        
+        np.testing.assert_allclose(crv_jax, crv_class, rtol=RTOL, atol=ATOL)
+        np.testing.assert_allclose(ids_jax, ids_class, rtol=RTOL, atol=ATOL)
+
+    def test_output_shape(self, optical_model):
+        """Test that output has correct shape [i, n]."""
+        payload = omj.make_sca_payload(optical_model, sca=1, order="1")
+        
+        # Test points
+        xfpa = np.array([0.001, 0.002, -0.001, 0.003])
+        yfpa = np.array([-0.002, 0.003, 0.001, -0.001])
+        
+        crv, ids = omj.get_trace_coeffs(payload, xfpa, yfpa)
+        
+        # Shape should be [i, n]
+        n = len(xfpa)
+        crv_i = payload["poly"]["crv_i"]
+        
+        assert crv.shape == (crv_i, n)
+        assert ids.shape == (crv_i, n)  # ids should have same i dimension
+
+    def test_jit_compilation(self, optical_model):
+        """Verify get_trace_coeffs is JIT-compilable."""
+        import jax
+        import jax.numpy as jnp
+        
+        payload = omj.make_sca_payload(optical_model, sca=5, order="2")
+        
+        @jax.jit
+        def jitted_get_trace_coeffs(xfpa, yfpa):
+            return omj.get_trace_coeffs(payload, xfpa, yfpa)
+        
+        xfpa = jnp.array([0.001, 0.002, -0.001])
+        yfpa = jnp.array([-0.002, 0.003, 0.001])
+        
+        # Should compile and run
+        crv, ids = jitted_get_trace_coeffs(xfpa, yfpa)
+        
+        assert crv.shape[1] == 3  # [i, n] shape, n=3
+        assert ids.shape[1] == 3
+        assert isinstance(crv, jnp.ndarray)
+        assert isinstance(ids, jnp.ndarray)
+

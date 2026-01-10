@@ -248,3 +248,42 @@ def get_map_coords(payload, xfpa, yfpa):
     ympa = jnp.einsum('ni,ij,nj->n', x_powers, Y_ij, y_powers)
     
     return xmpa, ympa
+
+
+def get_trace_coeffs(payload, xfpa, yfpa):
+    """
+    Return curvature and inverse dispersion solution coefficients.
+    
+    Args:
+        payload: dict from make_sca_payload
+        xfpa, yfpa: trace offset location in degrees (FPA coords), as 1D arrays
+    
+    Returns:
+        crv: curvature coefficients, shape [i, n]
+        ids: inverse dispersion coefficients, shape [i, n]
+    """
+    # Curvature coefficients (C_ijk)
+    crv_j = payload["poly"]["crv_j"]
+    crv_k = payload["poly"]["crv_k"]
+    x_powers_crv = xfpa[:, jnp.newaxis] ** jnp.arange(crv_j)  # [n, j]
+    y_powers_crv = yfpa[:, jnp.newaxis] ** jnp.arange(crv_k)  # [n, k]
+    
+    C_ijk = payload["poly"]["C_ijk"]  # [i, j, k]
+    
+    # Compute crv[i, n] using einsum: sum over j,k for each i,n
+    # Original: x @ C_ijk @ y.T -> [n,i,n], then diagonal(axis1=1,axis2=2) -> [n,i], then transpose -> [i,n]
+    # Einsum: directly compute shape [i, n]
+    crv = jnp.einsum('nj,ijk,nk->in', x_powers_crv, C_ijk, y_powers_crv)
+    
+    # Inverse dispersion coefficients (D_ijk)
+    ids_j = payload["poly"]["ids_j"]
+    ids_k = payload["poly"]["ids_k"]
+    x_powers_ids = xfpa[:, jnp.newaxis] ** jnp.arange(ids_j)  # [n, j]
+    y_powers_ids = yfpa[:, jnp.newaxis] ** jnp.arange(ids_k)  # [n, k]
+    
+    D_ijk = payload["poly"]["D_ijk"]  # [i, j, k]
+    
+    # Compute ids[i, n] using einsum
+    ids = jnp.einsum('nj,ijk,nk->in', x_powers_ids, D_ijk, y_powers_ids)
+    
+    return crv, ids
