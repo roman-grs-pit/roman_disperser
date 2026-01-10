@@ -172,3 +172,43 @@ def fpa_to_sca(payload, xfpa, yfpa):
     ysca = dy + crpix2
     
     return xsca, ysca
+
+
+def mpa_to_fpa(payload, xmpa, ympa):
+    """
+    Convert MPA (mm) coordinates to FPA (degrees).
+    
+    Args:
+        payload: dict from make_sca_payload
+        xmpa, ympa: position in mm
+    
+    Returns:
+        xfpa, yfpa: position in degrees
+    """
+    plate_scale = payload["det"]["plate_scale"]
+    pixel_scale = payload["det"]["pixel_scale"]
+    
+    xfpa = xmpa * plate_scale * pixel_scale / 3600.0
+    yfpa = ympa * plate_scale * pixel_scale / 3600.0
+    
+    return xfpa, yfpa
+
+
+def fpa_to_mpa(payload, xfpa, yfpa):
+    """
+    Convert FPA (degrees) coordinates to MPA (mm).
+    
+    Args:
+        payload: dict from make_sca_payload
+        xfpa, yfpa: position in degrees
+    
+    Returns:
+        xmpa, ympa: position in mm
+    """
+    plate_scale = payload["det"]["plate_scale"]
+    pixel_scale = payload["det"]["pixel_scale"]
+    
+    xmpa = xfpa * 3600.0 / pixel_scale / plate_scale
+    ympa = yfpa * 3600.0 / pixel_scale / plate_scale
+    
+    return xmpa, ympa
