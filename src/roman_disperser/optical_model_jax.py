@@ -239,9 +239,8 @@ def get_map_coords(payload, xfpa, yfpa):
     X_ij = payload["poly"]["X_ij"]
     Y_ij = payload["poly"]["Y_ij"]
     
-    # Evaluate polynomials: x_powers @ X_ij @ y_powers.T -> [n, n]
-    # Then take diagonal to get [n] result
-    xmpa = jnp.diagonal(x_powers @ X_ij @ y_powers.T)
-    ympa = jnp.diagonal(x_powers @ Y_ij @ y_powers.T)
+    # Evaluate 2D polynomials using einsum (more efficient than matmul + diagonal)
+    xmpa = jnp.einsum('ni,ij,nj->n', x_powers, X_ij, y_powers)
+    ympa = jnp.einsum('ni,ij,nj->n', x_powers, Y_ij, y_powers)
     
     return xmpa, ympa
