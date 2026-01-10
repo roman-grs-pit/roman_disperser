@@ -1,3 +1,16 @@
+"""
+JAX functional optical model utilities.
+
+Notes:
+- This JAX implementation follows the modern path of the class-based model
+    and does not implement the legacy `old_format` behavior. Specifically,
+    coefficients are evaluated in FPA space and offsets are not divided by
+    `plate_scale`. If `old_format` parity is needed, we can add a payload flag
+    and mirror the class’s alternate code path.
+- Function naming: the polynomial mapping of FPA→MPA coordinates is exposed
+    as `get_mpa_coords` (renamed from `get_map_coords` for clarity).
+"""
+
 import jax
 import jax.numpy as jnp
 
@@ -217,7 +230,7 @@ def fpa_to_mpa(payload, xfpa, yfpa):
 # -------- polynomial functions --------
 
 
-def get_map_coords(payload, xfpa, yfpa):
+def get_mpa_coords(payload, xfpa, yfpa):
     """
     Return the trace offset location for a given reference pixel.
     Trace offset location defines the "wl_reference" wavelength.
@@ -287,3 +300,49 @@ def get_trace_coeffs(payload, xfpa, yfpa):
     ids = jnp.einsum('nj,ijk,nk->in', x_powers_ids, D_ijk, y_powers_ids)
     
     return crv, ids
+
+
+def trace_beam(payload, xfpa, yfpa, wavelength):
+    """
+    Trace beam position at given wavelength(s).
+    
+    Computes the position on the MPA (mm) for given FPA (degrees) and wavelength(s).
+    This combines the reference position from get_mpa_coords with wavelength-dependent
+    offsets computed from the curvature and inverse dispersion coefficients.
+    
+    Args:
+        payload: dict from make_sca_payload containing model parameters
+        xfpa, yfpa: FPA coordinates in degrees, shape [n]
+        wavelength: wavelength(s) in microns, shape [n]
+        
+    Returns:
+        xmpa, ympa: position in mm, shape [n]
+    """
+    # Get reference position (at wl_reference)
+    xmpa_ref, ympa_ref = get_mpa_coords(payload, xfpa, yfpa)
+    
+    # Get trace coefficients
+    crv, ids = get_trace_coeffs(payload, xfpa, yfpa)  # [i, n]
+    
+    # Transform wavelength
+    wl_ref = payload["wl"]["reference"]
+    wl_transform = payload["wl"]["transform"]
+    
+    if wl_transform == "linear":
+        wl = wavelength - wl_ref
+    elif wl_transform == "log":
+        wl = jnp.log10(wavelength / wl_ref)
+    else:
+        raise ValueError(f"Invalid wavelength transform: {wl_transform}")
+    
+    # Compute dely: sum over i of ids[i] * wl^i
+    ids_i = payload["poly"]["ids_i"]
+    wl_powers = wl[:, jnp.newaxis] ** jnp.arange(ids_i)  # [n, i]
+    dely = jnp.einsum('ni,in->n', wl_powers, ids)
+    
+    # Compute delx: sum over i of crv[i] * dely^i
+    crv_i = payload["poly"]["crv_i"]
+    dely_powers = dely[:, jnp.newaxis] ** jnp.arange(crv_i)  # [n, i]
+    delx = jnp.einsum('ni,in->n', dely_powers, crv)
+    
+    return xmpa_ref + delx, ympa_ref + dely

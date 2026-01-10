@@ -4,6 +4,8 @@ Compares JAX-based transforms against class-based implementation.
 """
 
 import os
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -444,12 +446,12 @@ class TestJAXCompatibility:
 
 
 class TestMapCoords:
-    """Test polynomial coordinate mapping (get_map_coords)."""
+    """Test polynomial coordinate mapping (get_mpa_coords)."""
 
     @pytest.mark.parametrize("sca", [1, 2, 5, 10])
     @pytest.mark.parametrize("order", ["1", "0", "2"])
     def test_compare_to_class(self, optical_model, sca, order):
-        """Compare functional get_map_coords to class implementation."""
+        """Compare functional get_mpa_coords to class implementation."""
         payload = omj.make_sca_payload(optical_model, sca=sca, order=order)
         
         # Generate test points in SCA coordinates and convert to FPA
@@ -462,7 +464,7 @@ class TestMapCoords:
         )
         
         # Test functional implementation
-        xmpa_jax, ympa_jax = omj.get_map_coords(payload, xfpa, yfpa)
+        xmpa_jax, ympa_jax = omj.get_mpa_coords(payload, xfpa, yfpa)
         
         # Compare to class implementation
         xmpa_class, ympa_class = optical_model.get_map_coords(
@@ -473,21 +475,21 @@ class TestMapCoords:
         np.testing.assert_allclose(ympa_jax, ympa_class, rtol=RTOL, atol=ATOL)
 
     def test_jit_compilation(self, optical_model):
-        """Verify get_map_coords is JIT-compilable."""
+        """Verify get_mpa_coords is JIT-compilable."""
         import jax
         import jax.numpy as jnp
         
         payload = omj.make_sca_payload(optical_model, sca=5, order="2")
         
         @jax.jit
-        def jitted_get_map_coords(xfpa, yfpa):
-            return omj.get_map_coords(payload, xfpa, yfpa)
+        def jitted_get_mpa_coords(xfpa, yfpa):
+            return omj.get_mpa_coords(payload, xfpa, yfpa)
         
         xfpa = jnp.array([0.001, 0.002, -0.001])
         yfpa = jnp.array([-0.002, 0.003, 0.001])
         
         # Should compile and run
-        xmpa, ympa = jitted_get_map_coords(xfpa, yfpa)
+        xmpa, ympa = jitted_get_mpa_coords(xfpa, yfpa)
         
         assert xmpa.shape == (3,)
         assert ympa.shape == (3,)
@@ -562,4 +564,89 @@ class TestTraceCoeffs:
         assert ids.shape[1] == 3
         assert isinstance(crv, jnp.ndarray)
         assert isinstance(ids, jnp.ndarray)
+
+
+class TestTraceBeam:
+    """Test beam tracing (trace_beam)."""
+
+    @pytest.mark.parametrize("sca", [1, 2, 5, 10])
+    @pytest.mark.parametrize("order", ["1", "0", "2"])
+    def test_compare_to_class(self, optical_model, sca, order):
+        """Compare functional trace_beam to class implementation."""
+        payload = omj.make_sca_payload(optical_model, sca=sca, order=order)
+        
+        # Generate ~1000 random SCA points and convert to FPA
+        np.random.seed(42)
+        n_points = 1000
+        naxis1 = optical_model.detmod["naxis1"]
+        naxis2 = optical_model.detmod["naxis2"]
+        xsca = np.random.uniform(0.5, naxis1 + 0.5, size=n_points)
+        ysca = np.random.uniform(0.5, naxis2 + 0.5, size=n_points)
+        xfpa, yfpa = optical_model.coords.convert_sca_to_fpa(
+            xsca=xsca, ysca=ysca, sca=sca
+        )
+        
+        # Extract the wavelength grid used by the class
+        wl_array = optical_model.wl_grid  # shape [n_wavelengths]
+        n_wl = len(wl_array)
+        
+        # Compute class traces for each FPA point (width=1 per point)
+        trace_mpa_x = np.empty((n_points, n_wl))
+        trace_mpa_y = np.empty((n_points, n_wl))
+        for i in range(n_points):
+            coeff = optical_model._get_beam_trace(
+                xref_fpa=xfpa[i], yref_fpa=yfpa[i], sca=sca, width=1, order=order
+            )
+            trace_mpa_x[i, :] = coeff["trace_mpa_x"].reshape(-1)
+            trace_mpa_y[i, :] = coeff["trace_mpa_y"].reshape(-1)
+        
+        # Compute JAX trace_beam for all (xfpa, yfpa, wl) combinations at once
+        xfpa_full = np.repeat(xfpa, n_wl)
+        yfpa_full = np.repeat(yfpa, n_wl)
+        wl_full = np.tile(wl_array, n_points)
+        xmpa_jax, ympa_jax = omj.trace_beam(payload, xfpa_full, yfpa_full, wl_full)
+        xmpa_jax = xmpa_jax.reshape(n_points, n_wl)
+        ympa_jax = ympa_jax.reshape(n_points, n_wl)
+        
+        # Compare JAX vs class
+        np.testing.assert_allclose(xmpa_jax, trace_mpa_x, rtol=RTOL, atol=ATOL)
+        np.testing.assert_allclose(ympa_jax, trace_mpa_y, rtol=RTOL, atol=ATOL)
+
+    def test_single_wavelength(self, optical_model):
+        """Test trace_beam with a single wavelength per FPA point."""
+        payload = omj.make_sca_payload(optical_model, sca=5, order="1")
+        
+        xfpa = np.array([0.001, 0.002, -0.001])
+        yfpa = np.array([-0.002, 0.003, 0.001])
+        wavelength = np.array([1.5, 1.6, 1.7])  # Different wavelength for each point
+        
+        xmpa, ympa = omj.trace_beam(payload, xfpa, yfpa, wavelength)
+        
+        assert xmpa.shape == (3,)
+        assert ympa.shape == (3,)
+        assert isinstance(xmpa, jnp.ndarray)
+        assert isinstance(ympa, jnp.ndarray)
+
+    def test_jit_compilation(self, optical_model):
+        """Verify trace_beam is JIT-compilable."""
+        import jax
+        import jax.numpy as jnp
+        
+        payload = omj.make_sca_payload(optical_model, sca=5, order="2")
+        
+        @jax.jit
+        def jitted_trace_beam(xfpa, yfpa, wavelength):
+            return omj.trace_beam(payload, xfpa, yfpa, wavelength)
+        
+        xfpa = jnp.array([0.001, 0.002, -0.001])
+        yfpa = jnp.array([-0.002, 0.003, 0.001])
+        wavelength = jnp.array([1.5, 1.6, 1.7])
+        
+        # Should compile and run
+        xmpa, ympa = jitted_trace_beam(xfpa, yfpa, wavelength)
+        
+        assert xmpa.shape == (3,)
+        assert ympa.shape == (3,)
+        assert isinstance(xmpa, jnp.ndarray)
+        assert isinstance(ympa, jnp.ndarray)
 
