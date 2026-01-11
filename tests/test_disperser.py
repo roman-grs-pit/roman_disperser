@@ -269,51 +269,67 @@ class TestDisperse2D1DSCA:
         np.testing.assert_allclose(result_10, result_50, rtol=RTOL, atol=ATOL)
 
     def test_jit_compilation(self, optical_model, payload):
-        """Function should be JIT-compilable."""
+        """Function should be JIT-compilable using closure pattern."""
         x0, y0 = 2000.0, 2000.0
         image = jnp.ones((5, 5))
         spec = jnp.ones(20)
         wl_ref = float(payload["wl"]["reference"])
         output = jnp.zeros((4088, 4088), dtype=jnp.float32)
 
-        # JIT compile with static chunk size
+        # JIT compile with payload captured in closure
+        # This is the pattern users should follow (as in notebooks)
+        # Payload contains strings (not traceable) and JAX arrays (not hashable),
+        # so we capture it in a closure rather than passing as a static argument
         @jax.jit
-        def jitted_disperse(image, x0, y0, spec, output):
+        def disperse_jit(image, x0, y0, dx, dy, spec, lam0, dlam, output):
             return disperse_2d1d_sca(
-                payload,
-                image,
-                x0,
-                y0,
-                1.0,
-                1.0,
-                spec,
-                wl_ref,
-                0.01,
-                output,
-                wavelength_chunk_size=10,
+                payload, image, x0, y0, dx, dy, spec, lam0, dlam, output,
+                wavelength_chunk_size=10
             )
 
         # First call (compiles)
-        result1 = jitted_disperse(image, x0, y0, spec, output)
+        result1 = disperse_jit(
+            image=image,
+            x0=x0,
+            y0=y0,
+            dx=1.0,
+            dy=1.0,
+            spec=spec,
+            lam0=wl_ref,
+            dlam=0.01,
+            output=output,
+        )
 
         # Second call (uses cached compilation)
-        result2 = jitted_disperse(image, x0, y0, spec, output)
+        output2 = jnp.zeros((4088, 4088), dtype=jnp.float32)
+        result2 = disperse_jit(
+            image=image,
+            x0=x0,
+            y0=y0,
+            dx=1.0,
+            dy=1.0,
+            spec=spec,
+            lam0=wl_ref,
+            dlam=0.01,
+            output=output2,
+        )
 
         # Results should be identical
         np.testing.assert_allclose(result1, result2, rtol=RTOL, atol=ATOL)
 
         # Should produce same result as non-jitted version
+        output3 = jnp.zeros((4088, 4088), dtype=jnp.float32)
         result_eager = disperse_2d1d_sca(
-            payload,
-            image,
-            x0,
-            y0,
-            1.0,
-            1.0,
-            spec,
-            wl_ref,
-            0.01,
-            output,
+            payload=payload,
+            image=image,
+            x0=x0,
+            y0=y0,
+            dx=1.0,
+            dy=1.0,
+            spec=spec,
+            lam0=wl_ref,
+            dlam=0.01,
+            output=output3,
             wavelength_chunk_size=10,
         )
         # Use looser tolerance for JIT comparison due to XLA reordering
