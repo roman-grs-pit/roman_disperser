@@ -29,8 +29,8 @@ roman_disperser = { path = ".", editable = true }
 [environments]
 # 1. Default (CPU): For generic linux/servers
 default = ["cpu"]
-# 2. Metal (Mac): Your Laptop
-metal = ["cpu", "metal"]
+### 2. Metal (Mac): Your Laptop
+##metal = ["cpu", "metal"]
 # 3. CUDA (Runpod): Your GPU box
 cuda = ["cuda"]
 
@@ -38,15 +38,15 @@ cuda = ["cuda"]
 
 # Feature: CPU (Base JAX)
 [feature.cpu.dependencies]
-jax = "*"
+jax = ">=0.7"
 
-[feature.metal]
-platforms = ["osx-arm64"] 
-
-[feature.metal.dependencies]
-jax = "*"
-[feature.metal.pypi-dependencies]
-jax-metal = "*"
+##[feature.metal]
+##platforms = ["osx-arm64"] 
+##
+##[feature.metal.dependencies]
+##jax = "*"
+##[feature.metal.pypi-dependencies]
+##jax-metal = "*"
 
 # Feature: CUDA (Nvidia GPU Acceleration)
 [feature.cuda]
@@ -54,7 +54,7 @@ platforms = ["linux-64"]
 system-requirements = { cuda = "12" }
 
 [feature.cuda.dependencies]
-jax = "*"
+jax = ">=0.7"
 jaxlib = { version = "*", build = "cuda12*" }
 
 
