@@ -4,12 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-JAX-based optical model for Roman Space Telescope grism spectral tracing. Two implementations:
+JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy. Three main components:
 - **Class-based** (`optical_model.py`): Reference implementation using NumPy
 - **JAX functional** (`optical_model_jax.py`): JIT-compilable, vectorized implementation
+- **Disperser** (`disperser.py`): 2D spatial + 1D spectral → detector simulation
 
 ## Design Documents
 
+ - @docs/optical_model.md : JAX optical model API reference and usage examples.
  - @docs/disperser_design.md : Design document for the disperser module, including bilinear scatter-add and 2D→1D dispersion.
  - @docs/jit_compilation.md : JIT compilation strategy for the disperser (closure pattern for non-traceable payload).
 
@@ -70,5 +72,6 @@ See @docs/jit_compilation.md for full details.
 - JAX implementation uses modern code path only (no `old_format` legacy support)
 - Spectral orders are strings: "1", "0", "2", "m1"
 - Model config: `data/Roman_grism_OpticalModel_v0.8.yaml`
+- `demo_utils.py` provides helpers for generating synthetic galaxy profiles and spectra
 
 

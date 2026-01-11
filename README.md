@@ -1,13 +1,13 @@
-# Roman Disperser: JAX-based Optical Model
+# Roman Disperser
 
-A functional JAX implementation of the Roman Space Telescope grism optical model for efficient spectral tracing and coordinate transformations.
+JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy simulations.
 
 ## Overview
 
-This project provides two complementary implementations of the Roman optical model:
+This project provides tools for simulating Roman grism spectroscopy:
 
-1. **Class-based model** (`optical_model.py`): The original `RomanOpticalModel` class with full functionality
-2. **JAX functional model** (`optical_model_jax.py`): A pure functional, JIT-compilable implementation optimized for batch operations
+1. **Optical Model** (`optical_model.py`, `optical_model_jax.py`): Coordinate transformations and spectral trace calculations
+2. **Disperser** (`disperser.py`): Simulates grism dispersion of 2D spatial images with 1D spectra onto a detector
 
 ### Coordinate Systems
 
@@ -53,99 +53,18 @@ pixi run pytest -v tests/test_optical_model_jax.py::TestTraceBeam::test_order_1_
 
 ### Test Coverage
 
-The test suite (`tests/test_optical_model_jax.py`) includes:
+The test suite includes:
 
-- **SCA↔MPA conversions** (center, corners, random points)
-- **SCA↔FPA conversions** (center, corners, random points)  
-- **FPA→MPA polynomial mapping** (`get_mpa_coords`, ~13 tests)
-- **Trace coefficient computation** (`get_trace_coeffs`, ~14 tests)
-- **Full spectral trace simulation** (`trace_beam`, ~12 parametrized + 2 additional tests)
+- **Optical model tests** (`test_optical_model_jax.py`): SCA/FPA/MPA coordinate transformations, polynomial mappings, trace coefficients, and spectral traces
+- **Disperser tests** (`test_disperser.py`): Bilinear interpolation, flux conservation, boundary handling, multi-galaxy batching
 
-**Total: 113 tests** validating JAX implementation against the class-based reference.
+**Total: 124 tests** validating JAX implementations against reference implementations.
 
-## JAX Optical Model (`optical_model_jax.py`)
+## Documentation
 
-### Key Functions
-
-#### Coordinate Transformations
-
-- **`sca_to_mpa(payload, xsca, ysca)`**: SCA pixels → MPA (mm)
-- **`mpa_to_sca(payload, xmpa, ympa)`**: MPA → SCA pixels
-- **`fpa_to_mpa(payload, xfpa, yfpa)`**: FPA degrees → MPA (mm)
-- **`mpa_to_fpa(payload, xmpa, ympa)`**: MPA → FPA degrees
-
-#### Optical Model Functions
-
-- **`get_mpa_coords(payload, xfpa, yfpa)`**: FPA → MPA polynomial mapping (wavelength-independent, reference wavelength)
-  - Uses Einstein summation (`einsum`) for ~12x speedup over matmul operations
-  
-- **`get_trace_coeffs(payload, xfpa, yfpa)`**: Compute curvature and dispersion coefficients
-  - Returns IDs (wavelength-dependent position shift) and CRV (wavelength-independent curvature)
-  
-- **`trace_beam(payload, xfpa, yfpa, wavelength)`**: Full wavelength-dependent spectral traces
-  - Maps (xfpa, yfpa, wavelength) → (xmpa_trace, ympa_trace)
-  - Combines reference positions with wavelength-dependent coefficients
-  - Handles arbitrary wavelength arrays; supports batching with JAX transformations
-
-#### Utilities
-
-- **`make_sca_payload(model, sca, order)`**: Extract per-SCA/per-order data into JAX-compatible dict
-
-### Design Notes
-
-- **No legacy support**: The JAX implementation uses the modern code path only (not `old_format`)
-- **JIT-compatible**: All functions use JAX operations for `jax.jit()` compilation
-- **Batch operations**: Vectorized to handle N points × M wavelengths efficiently
-- **Einstein summation**: Polynomial evaluation uses `jnp.einsum` for optimal performance
-
-## Example Usage
-
-### Basic Coordinate Transformation
-
-```python
-import roman_disperser.optical_model_jax as omj
-from roman_disperser.optical_model import RomanOpticalModel
-
-# Load model
-model = RomanOpticalModel("data/Roman_grism_OpticalModel_v0.8.yaml")
-
-# Create payload for SCA 1, order +1
-payload = omj.make_sca_payload(model, sca=1, order="1")
-
-# Transform FPA coords to MPA
-xfpa, yfpa = [0.5, 1.0], [0.0, 0.5]
-xmpa, ympa = omj.fpa_to_mpa(payload, xfpa, yfpa)
-```
-
-### Spectral Trace Simulation
-
-```python
-import numpy as np
-
-# Generate traces for 10 FPA points across the wavelength grid
-xfpa = np.linspace(-1.0, 1.0, 10)
-yfpa = np.zeros(10)
-wavelengths = model.wl_grid  # Default wavelength array
-
-# Trace beam: (10 points) × (20 wavelengths) → 10×20 output
-xmpa, ympa = omj.trace_beam(payload, xfpa, yfpa, wavelengths)
-
-# Result shape: (10, 20)
-```
-
-### Batch Processing with vmap
-
-```python
-import jax
-
-# Vectorize over multiple SCAs
-def trace_sca(sca):
-    payload = omj.make_sca_payload(model, sca=sca, order="1")
-    return omj.trace_beam(payload, xfpa, yfpa, wavelengths)
-
-scas = [1, 2, 5, 10]
-results = jax.vmap(trace_sca)(np.array(scas))
-```
+- [Optical Model API](docs/optical_model.md) - JAX optical model functions and examples
+- [JIT Compilation Strategy](docs/jit_compilation.md) - How to JIT-compile the disperser
+- [Disperser Design](docs/disperser_design.md) - Implementation details for the disperser module
 
 ## Disperser Module (`disperser.py`)
 
@@ -177,10 +96,12 @@ See [docs/jit_compilation.md](docs/jit_compilation.md) for detailed documentatio
 
 ## Notebooks
 
-- **`quicklook_jax.ipynb`**: Visualization of spectral traces for orders 0, ±1
-  - Uses `compute_traces_jax` helper to evaluate traces on a grid of FPA points
-  - Plots wavelength-colored traces with source positions and reference markers
-  - Demonstrates single-figure approach for clean matplotlib rendering
+**Demo notebooks** (`notebooks/demos/`):
+- **`single_galaxy_demo.ipynb`**: Single galaxy dispersion with JIT compilation
+- **`multi_galaxy_demo.ipynb`**: Multi-galaxy batch dispersion
+
+**Archive** (`notebooks/archive/`):
+- **`quicklook_jax.ipynb`**: Legacy visualization of spectral traces
 
 ## Project Structure
 
@@ -188,18 +109,29 @@ See [docs/jit_compilation.md](docs/jit_compilation.md) for detailed documentatio
 roman_disperser/
 ├── src/roman_disperser/
 │   ├── __init__.py
-│   ├── optical_model.py              # Class-based model (reference)
-│   ├── optical_model_jax.py          # JAX functional model
-│   └── optical_model_utils.py        # Coordinate system utilities
+│   ├── optical_model.py         # Class-based model (reference)
+│   ├── optical_model_jax.py     # JAX functional model
+│   ├── optical_model_utils.py   # Coordinate system utilities
+│   ├── disperser.py             # 2D+1D dispersion module
+│   └── demo_utils.py            # Utilities for demo notebooks
 ├── tests/
 │   ├── __init__.py
-│   └── test_optical_model_jax.py     # 113 comprehensive tests
+│   ├── test_optical_model_jax.py  # Optical model tests
+│   └── test_disperser.py          # Disperser tests
 ├── notebooks/
-│   └── quicklook_jax.ipynb           # Visualization example
+│   ├── demos/                     # Demonstration notebooks
+│   │   ├── single_galaxy_demo.ipynb
+│   │   └── multi_galaxy_demo.ipynb
+│   └── archive/                   # Legacy/development notebooks
+│       └── quicklook_jax.ipynb
+├── docs/
+│   ├── disperser_design.md        # Disperser implementation plan
+│   ├── jit_compilation.md         # JIT compilation strategy
+│   └── optical_model.md           # Optical model API and examples
 ├── data/
 │   └── Roman_grism_OpticalModel_v0.8.yaml
-├── pixi.toml                         # Environment & task configuration
-└── pyproject.toml                    # Package metadata
+├── pixi.toml                      # Environment & task configuration
+└── pyproject.toml                 # Package metadata
 ```
 
 ## References

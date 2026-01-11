@@ -1,18 +1,20 @@
 # Notebooks
 
-This directory will contain demonstration notebooks showing how to use the roman_disperser package.
+Demonstration notebooks for the roman_disperser package.
 
-## Current Status
+## Demo Notebooks (`demos/`)
 
-Demo notebooks are planned for future development. For now, see:
-- `docs/` - Static documentation and design documents
-- `tests/` - Unit tests with usage examples
-- `archive/` - Development and testing scripts from initial implementation
+- **`single_galaxy_demo.ipynb`**: Single galaxy dispersion demonstration
+  - Creates synthetic galaxy profile and spectrum
+  - Disperses onto detector using the optical model
+  - Demonstrates JIT compilation for performance
 
-## Planned Demos
+- **`multi_galaxy_demo.ipynb`**: Multi-galaxy batch dispersion
+  - Generates multiple galaxies at random positions
+  - Batch dispersion using `disperse_galaxies_sequential`
+  - Shows how to process ~1000s of galaxies efficiently
 
-Future demonstration notebooks will cover:
-- Optical model coordinate transformations
-- Trace beam functionality
-- 2D+1D disperser examples
-- Multi-galaxy simulations
+## Archive (`archive/`)
+
+Legacy development and testing notebooks:
+- **`quicklook_jax.ipynb`**: Visualization of spectral traces for orders 0, +/-1
