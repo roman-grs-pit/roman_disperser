@@ -263,7 +263,11 @@ def make_random_galaxy_positions(
     seed: int = 42,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Generate random galaxy positions within SCA bounds.
+    Generate random galaxy CENTER positions within SCA bounds.
+
+    Note: These are galaxy center positions, NOT the image box corner
+    positions expected by the disperser. Use center_to_corner() to
+    convert to the format needed by disperse_2d1d_sca.
 
     Args:
         n_galaxies: Number of galaxies to generate
@@ -272,17 +276,57 @@ def make_random_galaxy_positions(
         seed: Random seed for reproducibility
 
     Returns:
-        x0s: [n_galaxies] x-coordinates
-        y0s: [n_galaxies] y-coordinates
+        x_centers: [n_galaxies] x-coordinates of galaxy centers
+        y_centers: [n_galaxies] y-coordinates of galaxy centers
 
     Example:
-        >>> x0s, y0s = make_random_galaxy_positions(10, seed=42)
-        >>> len(x0s), len(y0s)
+        >>> x_centers, y_centers = make_random_galaxy_positions(10, seed=42)
+        >>> len(x_centers), len(y_centers)
         (10, 10)
     """
     rng = np.random.default_rng(seed)
 
-    x0s = rng.uniform(x_range[0], x_range[1], size=n_galaxies)
-    y0s = rng.uniform(y_range[0], y_range[1], size=n_galaxies)
+    x_centers = rng.uniform(x_range[0], x_range[1], size=n_galaxies)
+    y_centers = rng.uniform(y_range[0], y_range[1], size=n_galaxies)
 
-    return x0s, y0s
+    return x_centers, y_centers
+
+
+def center_to_corner(x_center, y_center, npix_x, npix_y, dx, dy):
+    """
+    Convert source center position to image box corner position.
+
+    The disperser expects the position of pixel [0,0] of the input image
+    (its center), not the source center. This function computes the corner
+    pixel position from the source center position.
+
+    Note: In this coordinate system, (x0, y0) is the CENTER of pixel [0,0],
+    not its edge. The formula works correctly for both even and odd image
+    dimensions:
+    - Even N: source center is between two pixels (fractional index)
+    - Odd N: source center is exactly at the middle pixel
+
+    Args:
+        x_center, y_center: Desired source center in SCA coordinates
+            (can be scalars or arrays for batch processing)
+        npix_x, npix_y: Image dimensions in pixels (can be even or odd).
+            Will be converted to int if passed as float.
+        dx, dy: Pixel spacing (1/oversample for oversampled images)
+
+    Returns:
+        x0, y0: Position of pixel [0,0] center for disperser input
+
+    Example:
+        For a 150×150 pixel image centered at (2044, 2044) with dx=dy=1/3:
+
+        >>> x0, y0 = center_to_corner(2044.0, 2044.0, 150, 150, 1/3, 1/3)
+        >>> x0  # ≈ 2019.17 (position of first pixel's center)
+        2019.1666666666665
+    """
+    # Convert pixel counts to int in case floats are passed
+    npix_x = int(npix_x)
+    npix_y = int(npix_y)
+
+    x0 = x_center - (npix_x - 1) / 2 * dx
+    y0 = y_center - (npix_y - 1) / 2 * dy
+    return x0, y0

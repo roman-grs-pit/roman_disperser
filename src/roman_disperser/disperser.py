@@ -192,7 +192,12 @@ def disperse_2d1d_sca(
     Args:
         payload: dict from make_sca_payload() containing optical model params
         image: [Ny, Nx] float32 spatial image (flux per pixel)
-        x0, y0: SCA origin of image grid (pixels, can be fractional)
+        x0, y0: SCA coordinates of the CENTER of pixel [0,0] of the input image.
+            Note: This is the first pixel's center position, NOT the source
+            center. Positions are FITS 1-indexed pixel centers, not edges.
+            To place a centered source at position (xc, yc), use:
+            x0 = xc - (Nx-1)/2 * dx, y0 = yc - (Ny-1)/2 * dy.
+            Or use demo_utils.center_to_corner().
         dx, dy: Pixel spacing (1.0 for native, <1.0 for oversampled input)
         spec: [Nlam] float32 spectrum (flux per wavelength bin)
         lam0: Starting wavelength (microns)
@@ -324,8 +329,11 @@ def disperse_galaxies_sequential(
     Args:
         payload: dict from make_sca_payload() containing optical model params
         images: [N_galaxies, Ny, Nx] spatial images (can have different Ny, Nx if padded)
-        x0s: [N_galaxies] SCA x-origins for each galaxy
-        y0s: [N_galaxies] SCA y-origins for each galaxy
+        x0s: [N_galaxies] SCA x-coordinates of pixel [0,0] center for each image.
+            Note: this is the first pixel's center, not the source center.
+            Positions are FITS 1-indexed pixel centers, not edges.
+            Use demo_utils.center_to_corner() to convert from source centers.
+        y0s: [N_galaxies] SCA y-coordinates of pixel [0,0] center for each image.
         dx, dy: Pixel spacing (scalar, same for all galaxies)
         specs: [N_galaxies, Nlam] spectra (can have different Nlam if padded)
         lam0s: [N_galaxies] starting wavelengths for each galaxy
