@@ -1,0 +1,50 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+JAX-based optical model for Roman Space Telescope grism spectral tracing. Two implementations:
+- **Class-based** (`optical_model.py`): Reference implementation using NumPy
+- **JAX functional** (`optical_model_jax.py`): JIT-compilable, vectorized implementation
+
+## Commands
+
+Uses [Pixi](https://pixi.sh) with environments: `default` (CPU), `metal` (macOS), `cuda` (NVIDIA GPU).
+
+```bash
+pixi install                    # Install dependencies
+pixi run pytest -q tests        # Run all tests
+pixi run pytest -v tests/test_optical_model_jax.py::TestTraceBeam  # Test class
+pixi run pytest -v tests/test_optical_model_jax.py::TestTraceBeam::test_order_1_vs_class  # Single test
+pixi run check-jax              # Check JAX backend/device
+```
+
+## Architecture
+
+### Coordinate Systems
+- **SCA**: Sensor Chip Assembly [pixels]
+- **FPA**: Focal Plane Assembly [degrees]
+- **MPA**: Mosaic Plate Assembly [mm]
+
+### JAX Module Pattern
+
+Uses payload dict for JIT compatibility:
+```python
+payload = omj.make_sca_payload(model, sca=1, order="1")
+xmpa, ympa = omj.trace_beam(payload, xfpa, yfpa, wavelength)
+```
+
+Key functions: `sca_to_mpa`, `mpa_to_sca`, `sca_to_fpa`, `fpa_to_sca`, `get_mpa_coords`, `get_trace_coeffs`, `trace_beam`
+
+All use `jnp.einsum` for polynomial evaluation.
+
+### Testing
+
+Tests compare JAX vs class-based reference with `rtol=1e-5, atol=1e-3`. Tests force CPU via `JAX_PLATFORMS=cpu`.
+
+## Notes
+
+- JAX implementation uses modern code path only (no `old_format` legacy support)
+- Spectral orders are strings: "1", "0", "2", "m1"
+- Model config: `data/Roman_grism_OpticalModel_v0.8.yaml`
