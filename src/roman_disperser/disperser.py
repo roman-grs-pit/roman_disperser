@@ -300,3 +300,83 @@ def disperse_2d1d_sca(
     output, _ = jax.lax.scan(process_wavelength_chunk, output, jnp.arange(n_chunks))
 
     return output
+
+
+def disperse_galaxies_sequential(
+    payload,
+    images,
+    x0s,
+    y0s,
+    dx,
+    dy,
+    specs,
+    lam0s,
+    dlams,
+    wavelength_chunk_size=100,
+):
+    """
+    Disperse multiple galaxies sequentially onto a single detector.
+
+    This function processes multiple galaxies one at a time using a
+    JIT-compatible loop (fori_loop), accumulating their dispersed flux
+    onto a single output detector.
+
+    Args:
+        payload: dict from make_sca_payload() containing optical model params
+        images: [N_galaxies, Ny, Nx] spatial images (can have different Ny, Nx if padded)
+        x0s: [N_galaxies] SCA x-origins for each galaxy
+        y0s: [N_galaxies] SCA y-origins for each galaxy
+        dx, dy: Pixel spacing (scalar, same for all galaxies)
+        specs: [N_galaxies, Nlam] spectra (can have different Nlam if padded)
+        lam0s: [N_galaxies] starting wavelengths for each galaxy
+        dlams: [N_galaxies] wavelength spacings for each galaxy
+        wavelength_chunk_size: Number of wavelengths to process at once
+
+    Returns:
+        output: [4088, 4088] accumulated dispersed flux from all galaxies
+
+    Notes:
+        - All galaxies must have the same image dimensions (Ny, Nx) and
+          spectrum length (Nlam). Pad smaller galaxies if needed.
+        - Uses jax.lax.fori_loop for JIT compilation
+        - Memory usage: ~100-200 MB per galaxy (due to wavelength chunking)
+
+    Example:
+        >>> # Create 10 identical galaxies at different positions
+        >>> n_gal = 10
+        >>> images = jnp.ones((n_gal, 100, 100))
+        >>> x0s = jnp.linspace(1000, 3000, n_gal)
+        >>> y0s = jnp.linspace(1000, 3000, n_gal)
+        >>> specs = jnp.ones((n_gal, 500))
+        >>> lam0s = jnp.ones(n_gal) * 1.0
+        >>> dlams = jnp.ones(n_gal) * 0.002
+        >>>
+        >>> payload = omj.make_sca_payload(model, sca=5, order="1")
+        >>> output = disperse_galaxies_sequential(
+        ...     payload, images, x0s, y0s, 1.0, 1.0,
+        ...     specs, lam0s, dlams
+        ... )
+    """
+    n_galaxies = images.shape[0]
+    output = jnp.zeros((4088, 4088), dtype=jnp.float32)
+
+    def body_fn(i, output_accum):
+        """Process galaxy i and accumulate onto output."""
+        return disperse_2d1d_sca(
+            payload,
+            images[i],
+            x0s[i],
+            y0s[i],
+            dx,
+            dy,
+            specs[i],
+            lam0s[i],
+            dlams[i],
+            output_accum,
+            wavelength_chunk_size=wavelength_chunk_size,
+        )
+
+    # Process all galaxies sequentially
+    output = jax.lax.fori_loop(0, n_galaxies, body_fn, output)
+
+    return output

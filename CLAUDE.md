@@ -8,6 +8,10 @@ JAX-based optical model for Roman Space Telescope grism spectral tracing. Two im
 - **Class-based** (`optical_model.py`): Reference implementation using NumPy
 - **JAX functional** (`optical_model_jax.py`): JIT-compilable, vectorized implementation
 
+## Design Documents
+
+ - @docs/disperser_design.md : Design document for the disperser module, including bilinear scatter-add and 2D→1D dispersion.
+
 ## Commands
 
 Uses [Pixi](https://pixi.sh) with environments: `default` (CPU), `cuda` (NVIDIA GPU).
@@ -53,4 +57,5 @@ All use `jnp.einsum` for polynomial evaluation.
 - JAX implementation uses modern code path only (no `old_format` legacy support)
 - Spectral orders are strings: "1", "0", "2", "m1"
 - Model config: `data/Roman_grism_OpticalModel_v0.8.yaml`
+
 

@@ -1,0 +1,220 @@
+"""
+Utility functions for disperser demonstration notebooks.
+
+This module provides helper functions for:
+- Generating galaxy profiles (exponential, Sersic)
+- Creating synthetic spectra
+- Visualization of dispersed results
+"""
+
+import jax.numpy as jnp
+import numpy as np
+from typing import Tuple
+
+
+def make_exponential_galaxy(
+    npix: int,
+    half_light_radius_arcsec: float,
+    pixel_scale_arcsec: float = 0.11,
+    oversample: int = 3,
+    normalize: bool = True,
+) -> jnp.ndarray:
+    """
+    Create a 2D exponential (Sersic n=1) galaxy profile.
+
+    The exponential profile has surface brightness:
+        I(r) = I0 * exp(-r / r_scale)
+    where r_scale = half_light_radius / 1.678 for n=1 Sersic.
+
+    Args:
+        npix: Number of native pixels on each side (output will be npix*oversample)
+        half_light_radius_arcsec: Half-light radius in arcseconds
+        pixel_scale_arcsec: Native pixel scale in arcsec/pixel (default: 0.11 for Roman)
+        oversample: Oversampling factor (default: 3)
+        normalize: If True, normalize to total flux = 1.0
+
+    Returns:
+        image: [npix*oversample, npix*oversample] galaxy image
+
+    Example:
+        >>> # Create 50×50 native pixel galaxy, 3× oversampled
+        >>> galaxy = make_exponential_galaxy(50, half_light_radius_arcsec=0.3, oversample=3)
+        >>> galaxy.shape
+        (150, 150)
+        >>> float(galaxy.sum())  # Should be 1.0
+        1.0
+    """
+    # Oversampled grid size
+    n_oversample = npix * oversample
+
+    # Effective pixel scale after oversampling
+    effective_pixel_scale = pixel_scale_arcsec / oversample
+
+    # Scale radius for exponential profile (n=1 Sersic)
+    # For n=1: r_eff = 1.678 * r_scale
+    r_scale_arcsec = half_light_radius_arcsec / 1.678
+    r_scale_pix = r_scale_arcsec / effective_pixel_scale
+
+    # Create coordinate grid centered at the middle of the array
+    # For odd npix, center is at (npix-1)/2
+    # For even npix, center is at npix/2 - 0.5
+    center = (n_oversample - 1) / 2.0
+    y, x = jnp.mgrid[0:n_oversample, 0:n_oversample]
+    r = jnp.sqrt((x - center)**2 + (y - center)**2)
+
+    # Exponential profile
+    image = jnp.exp(-r / r_scale_pix)
+
+    # Normalize to unit total flux if requested
+    if normalize:
+        image = image / image.sum()
+
+    return image
+
+
+def make_flat_spectrum(
+    lam_min: float,
+    lam_max: float,
+    n_wavelength: int = 1000,
+    flux_density: float = 1.0,
+    normalize: bool = True,
+) -> Tuple[jnp.ndarray, float, float]:
+    """
+    Create a flat spectrum with uniform flux density.
+
+    Args:
+        lam_min: Minimum wavelength in microns
+        lam_max: Maximum wavelength in microns
+        n_wavelength: Number of wavelength samples
+        flux_density: Flux per wavelength bin (before normalization)
+        normalize: If True, normalize to total flux = 1.0
+
+    Returns:
+        spectrum: [n_wavelength] flux array
+        lam0: Starting wavelength (same as lam_min)
+        dlam: Wavelength spacing
+
+    Example:
+        >>> spec, lam0, dlam = make_flat_spectrum(1.0, 2.0, n_wavelength=1000)
+        >>> spec.shape
+        (1000,)
+        >>> float(spec.sum())  # Should be 1.0
+        1.0
+        >>> lam0, dlam
+        (1.0, 0.001001001001001001)
+    """
+    # Create uniform spectrum
+    spectrum = jnp.ones(n_wavelength, dtype=jnp.float32) * flux_density
+
+    # Normalize to unit total flux if requested
+    if normalize:
+        spectrum = spectrum / spectrum.sum()
+
+    # Compute wavelength grid parameters
+    lam0 = float(lam_min)
+    dlam = float((lam_max - lam_min) / n_wavelength)
+
+    return spectrum, lam0, dlam
+
+
+def compute_flux_conservation(
+    input_image: jnp.ndarray,
+    input_spectrum: jnp.ndarray,
+    output_image: jnp.ndarray,
+) -> dict:
+    """
+    Compute flux conservation metrics for dispersed galaxy.
+
+    Args:
+        input_image: [Ny, Nx] input spatial image
+        input_spectrum: [Nlam] input spectrum
+        output_image: [H, W] dispersed output image
+
+    Returns:
+        metrics: dict with keys:
+            - input_flux: total input flux (image.sum() * spectrum.sum())
+            - output_flux: total output flux (output.sum())
+            - conservation_fraction: output / input
+            - conservation_percent: 100 * output / input
+    """
+    input_flux = float(jnp.sum(input_image) * jnp.sum(input_spectrum))
+    output_flux = float(jnp.sum(output_image))
+
+    conservation_fraction = output_flux / input_flux if input_flux > 0 else 0.0
+
+    return {
+        'input_flux': input_flux,
+        'output_flux': output_flux,
+        'conservation_fraction': conservation_fraction,
+        'conservation_percent': 100.0 * conservation_fraction,
+    }
+
+
+def get_dispersed_extent(
+    output: jnp.ndarray,
+    threshold_fraction: float = 0.001,
+) -> Tuple[int, int, int, int]:
+    """
+    Find the bounding box containing significant dispersed flux.
+
+    Args:
+        output: [H, W] dispersed output image
+        threshold_fraction: Fraction of peak flux to use as threshold
+
+    Returns:
+        y_min, y_max, x_min, x_max: Bounding box indices (inclusive)
+
+    Example:
+        >>> y_min, y_max, x_min, x_max = get_dispersed_extent(output)
+        >>> zoomed = output[y_min:y_max+1, x_min:x_max+1]
+    """
+    # Find pixels above threshold
+    peak_flux = float(jnp.max(output))
+    threshold = peak_flux * threshold_fraction
+    mask = output > threshold
+
+    # Find bounding box
+    y_indices, x_indices = jnp.where(mask)
+
+    if len(y_indices) == 0:
+        # No pixels above threshold - return full image
+        return 0, output.shape[0] - 1, 0, output.shape[1] - 1
+
+    y_min = int(jnp.min(y_indices))
+    y_max = int(jnp.max(y_indices))
+    x_min = int(jnp.min(x_indices))
+    x_max = int(jnp.max(x_indices))
+
+    return y_min, y_max, x_min, x_max
+
+
+def make_random_galaxy_positions(
+    n_galaxies: int,
+    x_range: Tuple[float, float] = (500.0, 3500.0),
+    y_range: Tuple[float, float] = (500.0, 3500.0),
+    seed: int = 42,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Generate random galaxy positions within SCA bounds.
+
+    Args:
+        n_galaxies: Number of galaxies to generate
+        x_range: (x_min, x_max) SCA x-coordinate range
+        y_range: (y_min, y_max) SCA y-coordinate range
+        seed: Random seed for reproducibility
+
+    Returns:
+        x0s: [n_galaxies] x-coordinates
+        y0s: [n_galaxies] y-coordinates
+
+    Example:
+        >>> x0s, y0s = make_random_galaxy_positions(10, seed=42)
+        >>> len(x0s), len(y0s)
+        (10, 10)
+    """
+    rng = np.random.default_rng(seed)
+
+    x0s = rng.uniform(x_range[0], x_range[1], size=n_galaxies)
+    y0s = rng.uniform(y_range[0], y_range[1], size=n_galaxies)
+
+    return x0s, y0s
