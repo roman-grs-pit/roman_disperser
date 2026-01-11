@@ -209,8 +209,8 @@ class TestDisperse2D1DSCA:
         expected_flux = float(image.sum() * spec.sum())
         actual_flux = float(result.sum())
 
-        # Should be close (allow some tolerance for edge effects)
-        assert jnp.isclose(actual_flux, expected_flux, rtol=0.01)
+        # Should be close
+        assert jnp.isclose(actual_flux, expected_flux, rtol=RTOL)
 
     def test_chunk_size_invariance(self, optical_model, payload):
         """Result should be the same regardless of wavelength chunk size."""
@@ -303,7 +303,6 @@ class TestDisperse2D1DSCA:
         np.testing.assert_allclose(result1, result2, rtol=RTOL, atol=ATOL)
 
         # Should produce same result as non-jitted version
-        # Note: Small numerical differences are expected due to XLA optimizations
         result_eager = disperse_2d1d_sca(
             payload,
             image,
@@ -317,7 +316,9 @@ class TestDisperse2D1DSCA:
             output,
             wavelength_chunk_size=10,
         )
-        # Use looser tolerance for JIT vs eager comparison (XLA may reorder ops)
+        # Use looser tolerance for JIT comparison due to XLA reordering
+        # Absolute differences reach ~1e-3 at low flux values in the spectrum wings
+        # This is acceptable numerical difference from XLA optimizations
         np.testing.assert_allclose(result1, result_eager, rtol=1e-3, atol=1e-3)
 
     def test_fractional_pixel_spacing(self, optical_model, payload):
@@ -343,10 +344,10 @@ class TestDisperse2D1DSCA:
             wavelength_chunk_size=10,
         )
 
-        # Should still work and produce reasonable output
-        assert result.sum() > 0
-        # With 2× oversampling, each input pixel covers 0.25 detector pixels
-        # So flux is spread differently but total should be similar
+        # Should conserve flux despite oversampling
+        expected_flux = float(image.sum() * spec.sum())
+        actual_flux = float(result.sum())
+        assert jnp.isclose(actual_flux, expected_flux, rtol=RTOL)
 
     def test_output_accumulation(self, optical_model, payload):
         """Multiple calls should accumulate onto output."""
@@ -389,6 +390,7 @@ class TestDisperse2D1DSCA:
         )
         flux2 = output.sum()
 
-        # Total flux should be approximately 2× single dispersion
-        # (some overlap possible but positions are offset)
-        assert flux2 > flux1 * 1.5  # At least 1.5× more flux
+        # Total flux should be exactly 2× single dispersion (positions are offset)
+        # Both images are 3×3 with spec length 5, so each adds image.sum() * spec.sum() = 45
+        expected_flux2 = float(image.sum() * spec.sum() * 2)  # 90.0
+        assert jnp.isclose(flux2, expected_flux2, rtol=RTOL)
