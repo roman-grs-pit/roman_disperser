@@ -10,7 +10,7 @@ JAX-based optical model for Roman Space Telescope grism spectral tracing. Two im
 
 ## Commands
 
-Uses [Pixi](https://pixi.sh) with environments: `default` (CPU), `metal` (macOS), `cuda` (NVIDIA GPU).
+Uses [Pixi](https://pixi.sh) with environments: `default` (CPU), `cuda` (NVIDIA GPU).
 
 ```bash
 pixi install                    # Install dependencies
@@ -27,6 +27,8 @@ pixi run check-jax              # Check JAX backend/device
 - **FPA**: Focal Plane Assembly [degrees]
 - **MPA**: Mosaic Plate Assembly [mm]
 
+The SCA coordinate system is defined in 1-indexed FITS coordinates, where pixel n has its center at n.0.
+
 ### JAX Module Pattern
 
 Uses payload dict for JIT compatibility:
@@ -39,12 +41,16 @@ Key functions: `sca_to_mpa`, `mpa_to_sca`, `sca_to_fpa`, `fpa_to_sca`, `get_mpa_
 
 All use `jnp.einsum` for polynomial evaluation.
 
-### Testing
+## Coding Guidelines
 
-Tests compare JAX vs class-based reference with `rtol=1e-5, atol=1e-3`. Tests force CPU via `JAX_PLATFORMS=cpu`.
+- Significant changes should ALWAYS be done on a new branch. Create a descriptive branch name for the feature or bug fix.
+- When merging a branch back in to `main`, finish by tagging the release with a version number. Use semantic versioning and ask if you have a question. 
+    Also, make sure to update the `CHANGELOG.md` with a summary of the changes.
+- This is a research code, so value simplicity and clarity over deep class hierarchies and generality. Prefer functional routines over complex object-oriented designs.
 
 ## Notes
 
 - JAX implementation uses modern code path only (no `old_format` legacy support)
 - Spectral orders are strings: "1", "0", "2", "m1"
 - Model config: `data/Roman_grism_OpticalModel_v0.8.yaml`
+
