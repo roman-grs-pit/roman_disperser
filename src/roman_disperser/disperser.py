@@ -44,7 +44,8 @@ def bilinear_scatter_add(output, x, y, values):
         output: [H, W] updated array with accumulated values
 
     Notes:
-        - Out-of-bounds points are silently ignored (no contribution)
+        - Out-of-bounds points are silently ignored via JAX's mode="drop"
+        - Negative indices are treated as OOB via wrap_negative_indices=False
         - Uses JAX's .at[].add() for functional scatter-add
         - The four corner weights always sum to 1.0 for valid points
     """
@@ -63,22 +64,13 @@ def bilinear_scatter_add(output, x, y, values):
     w01 = (1 - fx) * fy  # top-left
     w11 = fx * fy  # top-right
 
-    # Bounds check: need x_floor+1 < width and y_floor+1 < height
-    # For 4088×4088 detector, valid range is [0, 4086] for floor indices
-    H, W = output.shape
-    valid = (x_floor >= 0) & (x_floor < W - 1) & (y_floor >= 0) & (y_floor < H - 1)
-
-    # Zero out contributions from invalid points
-    v00 = values * w00 * valid
-    v10 = values * w10 * valid
-    v01 = values * w01 * valid
-    v11 = values * w11 * valid
-
-    # Scatter-add to four corners (JAX functional update)
-    output = output.at[y_floor, x_floor].add(v00)
-    output = output.at[y_floor, x_floor + 1].add(v10)
-    output = output.at[y_floor + 1, x_floor].add(v01)
-    output = output.at[y_floor + 1, x_floor + 1].add(v11)
+    # Scatter-add to four corners using JAX's mode="drop" for OOB handling
+    # wrap_negative_indices=False ensures negative indices are dropped, not wrapped
+    kw = dict(mode="drop", wrap_negative_indices=False)
+    output = output.at[y_floor, x_floor].add(values * w00, **kw)
+    output = output.at[y_floor, x_floor + 1].add(values * w10, **kw)
+    output = output.at[y_floor + 1, x_floor].add(values * w01, **kw)
+    output = output.at[y_floor + 1, x_floor + 1].add(values * w11, **kw)
 
     return output
 

@@ -135,15 +135,13 @@ def bilinear_scatter_add(output, x, y, values):
     w01 = (1 - fx) * fy
     w11 = fx * fy
 
-    # Bounds check (need x_floor+1 < 4088, so x_floor < 4087)
-    valid = (x_floor >= 0) & (x_floor < 4087) & \
-            (y_floor >= 0) & (y_floor < 4087)
-
-    # Scatter-add to four corners
-    output = output.at[y_floor, x_floor].add(values * w00 * valid)
-    output = output.at[y_floor, x_floor + 1].add(values * w10 * valid)
-    output = output.at[y_floor + 1, x_floor].add(values * w01 * valid)
-    output = output.at[y_floor + 1, x_floor + 1].add(values * w11 * valid)
+    # Scatter-add to four corners using JAX's mode="drop" for OOB handling
+    # wrap_negative_indices=False ensures negative indices are dropped, not wrapped
+    kw = dict(mode="drop", wrap_negative_indices=False)
+    output = output.at[y_floor, x_floor].add(values * w00, **kw)
+    output = output.at[y_floor, x_floor + 1].add(values * w10, **kw)
+    output = output.at[y_floor + 1, x_floor].add(values * w01, **kw)
+    output = output.at[y_floor + 1, x_floor + 1].add(values * w11, **kw)
 
     return output
 ```
