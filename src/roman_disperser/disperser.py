@@ -36,26 +36,33 @@ def bilinear_scatter_add(output, x, y, values):
 
     Args:
         output: [H, W] array to accumulate onto
-        x: [N] x-coordinates (column indices, can be fractional)
-        y: [N] y-coordinates (row indices, can be fractional)
+        x: [N] x-coordinates in FITS convention (1-indexed, pixel centers at integers)
+        y: [N] y-coordinates in FITS convention (1-indexed, pixel centers at integers)
         values: [N] values to scatter
 
     Returns:
         output: [H, W] updated array with accumulated values
 
     Notes:
+        - Input coordinates use FITS 1-indexed convention: pixel 1 center at 1.0
+        - Internally converts to 0-indexed array indices by subtracting 0.5
         - Out-of-bounds points are silently ignored via JAX's mode="drop"
         - Negative indices are treated as OOB via wrap_negative_indices=False
         - Uses JAX's .at[].add() for functional scatter-add
         - The four corner weights always sum to 1.0 for valid points
     """
-    # Get integer indices (floor)
-    x_floor = jnp.floor(x).astype(jnp.int32)
-    y_floor = jnp.floor(y).astype(jnp.int32)
+    # Convert FITS 1-indexed SCA coords to 0-indexed array indices
+    # FITS: pixel n has center at coordinate n.0, spans [n-0.5, n+0.5]
+    # Array: pixel at index i corresponds to FITS pixel i+1
+    # The -0.5 shift aligns FITS pixel boundaries with integer array indices
+    x_adj = x - 0.5
+    y_adj = y - 0.5
+    x_floor = jnp.floor(x_adj).astype(jnp.int32)
+    y_floor = jnp.floor(y_adj).astype(jnp.int32)
 
     # Fractional parts for interpolation weights
-    fx = x - x_floor
-    fy = y - y_floor
+    fx = x_adj - x_floor
+    fy = y_adj - y_floor
 
     # Bilinear weights for four corners
     # (x_floor, y_floor) is bottom-left in image coordinates

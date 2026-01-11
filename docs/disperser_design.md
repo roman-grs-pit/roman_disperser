@@ -124,10 +124,16 @@ Step 2: Process wavelength chunks
 ```python
 def bilinear_scatter_add(output, x, y, values):
     """Accumulate values onto output grid using bilinear interpolation."""
-    x_floor = jnp.floor(x).astype(jnp.int32)
-    y_floor = jnp.floor(y).astype(jnp.int32)
-    fx = x - x_floor
-    fy = y - y_floor
+    # Convert FITS 1-indexed SCA coords to 0-indexed array indices
+    # FITS: pixel n has center at coordinate n.0, spans [n-0.5, n+0.5]
+    # Array: pixel at index i corresponds to FITS pixel i+1
+    # The -0.5 shift aligns FITS pixel boundaries with integer array indices
+    x_adj = x - 0.5
+    y_adj = y - 0.5
+    x_floor = jnp.floor(x_adj).astype(jnp.int32)
+    y_floor = jnp.floor(y_adj).astype(jnp.int32)
+    fx = x_adj - x_floor
+    fy = y_adj - y_floor
 
     # Four corner weights
     w00 = (1 - fx) * (1 - fy)
@@ -145,6 +151,15 @@ def bilinear_scatter_add(output, x, y, values):
 
     return output
 ```
+
+**TODO: Coordinate Convention Verification**
+
+The disperser assumes FITS 1-indexed SCA coordinates from the optical model:
+- Pixel 1 has center at coordinate 1.0, spans [0.5, 1.5]
+- Valid range: [0.5, naxis+0.5] for naxis=4088
+
+The `bilinear_scatter_add` function converts to 0-indexed array indices by
+subtracting 0.5 before flooring. Verify this matches the optical model output.
 
 ### Implementation Notes
 
