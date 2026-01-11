@@ -117,6 +117,74 @@ def make_flat_spectrum(
     return spectrum, lam0, dlam
 
 
+def make_sloped_spectrum(
+    lam_min: float,
+    lam_max: float,
+    n_wavelength: int = 1000,
+    slope_min: float = 0.5,
+    slope_max: float = 1.5,
+    taper_fraction: float = 0.2,
+) -> Tuple[jnp.ndarray, float, float]:
+    """
+    Create a spectrum with linear slope and edge roll-off.
+
+    This function creates a more realistic spectrum than make_flat_spectrum by:
+    - Adding a linear slope across wavelength (typically increasing blue to red)
+    - Smoothly rolling off to zero at the edges using a cosine taper
+    - NOT normalizing (uses arbitrary flux units)
+
+    The edge roll-off makes the wavelength extent clearly visible in dispersed
+    images, avoiding visual artifacts where the spectrum extent is unclear.
+
+    Args:
+        lam_min: Minimum wavelength in microns
+        lam_max: Maximum wavelength in microns
+        n_wavelength: Number of wavelength samples
+        slope_min: Flux at blue edge (before taper)
+        slope_max: Flux at red edge (before taper)
+        taper_fraction: Fraction of wavelength range to taper on each edge (0-0.5)
+
+    Returns:
+        spectrum: [n_wavelength] flux array (NOT normalized)
+        lam0: Starting wavelength (same as lam_min)
+        dlam: Wavelength spacing
+
+    Example:
+        >>> # Create realistic increasing spectrum with edge roll-off
+        >>> spec, lam0, dlam = make_sloped_spectrum(
+        ...     lam_min=1.0, lam_max=2.0, n_wavelength=1000,
+        ...     slope_min=0.5, slope_max=1.5, taper_fraction=0.2
+        ... )
+        >>> spec.shape
+        (1000,)
+        >>> float(spec.max())  # Should be ~1.5 at red end (before taper)
+        ~1.5
+    """
+    # Linear slope increasing from blue to red
+    slope = jnp.linspace(slope_min, slope_max, n_wavelength, dtype=jnp.float32)
+
+    # Edge roll-off using cosine taper
+    taper_width = int(taper_fraction * n_wavelength)
+    taper = jnp.ones(n_wavelength, dtype=jnp.float32)
+
+    # Left edge (blue) taper: smoothly rise from 0 to 1
+    left_taper = 0.5 * (1 - jnp.cos(jnp.pi * jnp.arange(taper_width) / taper_width))
+    taper = taper.at[:taper_width].set(left_taper)
+
+    # Right edge (red) taper: smoothly fall from 1 to 0
+    right_taper = 0.5 * (1 + jnp.cos(jnp.pi * jnp.arange(taper_width) / taper_width))
+    taper = taper.at[-taper_width:].set(right_taper)
+
+    # Combined spectrum: slope × taper (NOT normalized)
+    spectrum = slope * taper
+
+    # Compute wavelength grid parameters
+    lam0 = float(lam_min)
+    dlam = float((lam_max - lam_min) / n_wavelength)
+
+    return spectrum, lam0, dlam
+
+
 def compute_flux_conservation(
     input_image: jnp.ndarray,
     input_spectrum: jnp.ndarray,
