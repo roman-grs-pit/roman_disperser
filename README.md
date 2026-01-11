@@ -147,6 +147,34 @@ scas = [1, 2, 5, 10]
 results = jax.vmap(trace_sca)(np.array(scas))
 ```
 
+## Disperser Module (`disperser.py`)
+
+The disperser module simulates grism spectroscopy by dispersing 2D spatial images with 1D spectra onto a detector.
+
+### Key Functions
+
+- **`disperse_2d1d_sca(payload, image, x0, y0, dx, dy, spec, lam0, dlam, output, ...)`**: Disperse a single galaxy
+- **`disperse_galaxies_sequential(payload, images, x0s, y0s, dx, dy, specs, lam0s, dlams, ...)`**: Disperse multiple galaxies sequentially
+
+### JIT Compilation
+
+The disperser uses a closure pattern for JIT compilation because the payload contains non-traceable types (strings) and non-hashable types (dicts with JAX arrays):
+
+```python
+payload = omj.make_sca_payload(model, sca=5, order="1")
+
+@jax.jit
+def disperse_jit(image, x0, y0, dx, dy, spec, lam0, dlam, output):
+    return disperser.disperse_2d1d_sca(
+        payload, image, x0, y0, dx, dy, spec, lam0, dlam, output,
+        wavelength_chunk_size=100
+    )
+
+output = disperse_jit(image, x0, y0, dx, dy, spec, lam0, dlam, output)
+```
+
+See [docs/jit_compilation.md](docs/jit_compilation.md) for detailed documentation on the JIT strategy.
+
 ## Notebooks
 
 - **`quicklook_jax.ipynb`**: Visualization of spectral traces for orders 0, ±1

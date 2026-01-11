@@ -11,6 +11,7 @@ JAX-based optical model for Roman Space Telescope grism spectral tracing. Two im
 ## Design Documents
 
  - @docs/disperser_design.md : Design document for the disperser module, including bilinear scatter-add and 2D→1D dispersion.
+ - @docs/jit_compilation.md : JIT compilation strategy for the disperser (closure pattern for non-traceable payload).
 
 ## Commands
 
@@ -44,6 +45,18 @@ xmpa, ympa = omj.trace_beam(payload, xfpa, yfpa, wavelength)
 Key functions: `sca_to_mpa`, `mpa_to_sca`, `sca_to_fpa`, `fpa_to_sca`, `get_mpa_coords`, `get_trace_coeffs`, `trace_beam`
 
 All use `jnp.einsum` for polynomial evaluation.
+
+### Disperser JIT Pattern
+
+The disperser uses a **closure pattern** for JIT compilation because the payload contains non-traceable types (strings) and non-hashable types (dicts with JAX arrays). Capture the payload in a closure before applying `@jax.jit`:
+
+```python
+@jax.jit
+def disperse_jit(image, x0, y0, dx, dy, spec, lam0, dlam, output):
+    return disperser.disperse_2d1d_sca(payload, ...)  # payload captured in closure
+```
+
+See @docs/jit_compilation.md for full details.
 
 ## Coding Guidelines
 
