@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-01-12
+
+### Added
+- GPU scaling benchmark script (`scripts/benchmark_gpu_scaling.py`) testing performance across:
+  - Galaxy counts: 100, 250, 500, 1000
+  - Spectral orders: +1, 0, +2
+  - Wavelength chunk sizes: 50, 100, 200
+- GPU scaling analysis notebook (`notebooks/demos/gpu_scaling_analysis.ipynb`) with presentation-quality visualizations
+- Order efficiency scaling factors: Order +1 (100%), Order 0 (2%), Order +2 (1%) for realistic flux ratios
+- Benchmark results committed to repo (`scripts/output/`) including combined detector PNG
+
+### Performance
+- 1000 galaxies across 3 orders: ~19s total on NVIDIA RTX A5000
+- Per-galaxy throughput: ~52 galaxies/second (all orders)
+- Peak memory: ~418 MB (well under GPU capacity)
+
 ## [0.3.2] - 2026-01-12
 
 ### Fixed
