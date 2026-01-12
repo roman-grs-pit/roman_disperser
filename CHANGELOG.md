@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-01-12
+
+### Fixed
+- Added `precision='highest'` to all einsum calls for GPU/CPU numerical consistency
+- Removed hardcoded `JAX_PLATFORMS="cpu"` from test files to allow GPU testing
+
+### Added
+- GPU consistency tests (`test_disperser_gpu.py`) comparing CPU vs GPU results
+- GPU verification checklist documentation (`docs/guides/2026-01-11-gpu-verification-checklist.md`)
+- GPU support section in README
+
+### Performance
+- Verified ~50x speedup on NVIDIA RTX A5000 vs CPU for multi-galaxy dispersion
+- JIT compilation provides additional 4-10x speedup on GPU (first vs cached calls)
+
 ## [0.3.1] - 2026-01-11
 
 ### Fixed

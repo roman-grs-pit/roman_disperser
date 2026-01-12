@@ -73,5 +73,7 @@ See @docs/jit_compilation.md for full details.
 - Spectral orders are strings: "1", "0", "2", "m1"
 - Model config: `data/Roman_grism_OpticalModel_v0.8.yaml`
 - `demo_utils.py` provides helpers for generating synthetic galaxy profiles and spectra
+- All `jnp.einsum` calls use `precision='highest'` for CPU/GPU numerical consistency
+- GPU tests in `test_disperser_gpu.py` verify CPU vs GPU results match
 
 

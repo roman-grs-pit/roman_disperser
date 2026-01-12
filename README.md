@@ -25,6 +25,17 @@ pixi install
 
 This installs all dependencies including JAX, NumPy, pytest, and matplotlib.
 
+### GPU Support
+
+For NVIDIA GPU acceleration, use the `cuda` environment:
+
+```bash
+pixi run -e cuda pytest -q tests    # Run tests on GPU
+pixi run -e cuda check-jax          # Verify GPU is detected
+```
+
+The GPU provides ~50x speedup for multi-galaxy dispersion (see `docs/guides/2026-01-11-gpu-verification-checklist.md`).
+
 ## Running Tests
 
 Run the full test suite:
@@ -57,8 +68,9 @@ The test suite includes:
 
 - **Optical model tests** (`test_optical_model_jax.py`): SCA/FPA/MPA coordinate transformations, polynomial mappings, trace coefficients, and spectral traces
 - **Disperser tests** (`test_disperser.py`): Bilinear interpolation, flux conservation, boundary handling, multi-galaxy batching
+- **GPU tests** (`test_disperser_gpu.py`): CPU vs GPU consistency verification (skipped if no GPU available)
 
-**Total: 124 tests** validating JAX implementations against reference implementations.
+**Total: 134 tests** validating JAX implementations against reference implementations.
 
 ## Documentation
 
@@ -117,7 +129,8 @@ roman_disperser/
 ├── tests/
 │   ├── __init__.py
 │   ├── test_optical_model_jax.py  # Optical model tests
-│   └── test_disperser.py          # Disperser tests
+│   ├── test_disperser.py          # Disperser tests
+│   └── test_disperser_gpu.py      # GPU consistency tests
 ├── notebooks/
 │   ├── demos/                     # Demonstration notebooks
 │   │   ├── single_galaxy_demo.ipynb
