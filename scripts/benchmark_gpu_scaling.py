@@ -72,6 +72,14 @@ N_WARMUP = 2
 # Number of timed runs for averaging
 N_RUNS = 3
 
+# Order efficiency factors (accounts for grism throughput)
+# These scale the spectrum to reflect realistic relative flux levels
+ORDER_EFFICIENCIES = {
+    "1": 1.0,    # Order +1: full efficiency (reference)
+    "0": 0.02,   # Order 0: 2% efficiency
+    "2": 0.01,   # Order +2: 1% efficiency
+}
+
 
 # ============================================================================
 # DATA STRUCTURES
@@ -264,6 +272,10 @@ def run_single_benchmark(
     dx = test_data['dx']
     dy = test_data['dy']
 
+    # Apply order efficiency scaling
+    efficiency = ORDER_EFFICIENCIES.get(order, 1.0)
+    specs = specs * efficiency
+
     # Create payload and JIT-compiled function
     payload = omj.make_sca_payload(model, sca=SCA, order=order)
 
@@ -343,6 +355,10 @@ def disperse_all_orders(
     combined_output = jnp.zeros((4088, 4088), dtype=jnp.float32)
 
     for order in orders:
+        # Apply order efficiency scaling
+        efficiency = ORDER_EFFICIENCIES.get(order, 1.0)
+        specs_scaled = specs * efficiency
+
         payload = omj.make_sca_payload(model, sca=SCA, order=order)
 
         @jax.jit
@@ -352,7 +368,7 @@ def disperse_all_orders(
                 wavelength_chunk_size=chunk_size
             )
 
-        output = disperse_jit(images, x0s, y0s, dx, dy, specs, lam0s, dlams)
+        output = disperse_jit(images, x0s, y0s, dx, dy, specs_scaled, lam0s, dlams)
         output.block_until_ready()
         combined_output = combined_output + output
 
@@ -382,6 +398,7 @@ def save_results_json(results: list[BenchmarkResult], gpu_info: dict, output_pat
                 'half_light_radius': HALF_LIGHT_RADIUS,
                 'n_warmup': N_WARMUP,
                 'n_runs': N_RUNS,
+                'order_efficiencies': ORDER_EFFICIENCIES,
             }
         },
         'results': [asdict(r) for r in results]
