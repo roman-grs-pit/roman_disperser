@@ -1,0 +1,614 @@
+{
+  "metadata": {
+    "timestamp": "2026-01-12T08:21:18.089189",
+    "gpu": {
+      "name": "NVIDIA RTX A5000",
+      "memory_total_gb": 23.98828125,
+      "cuda_version": "12.4",
+      "driver_version": "550.127.05"
+    },
+    "jax_backend": "gpu",
+    "jax_devices": [
+      "cuda:0"
+    ],
+    "config": {
+      "sca": 5,
+      "npix_native": 50,
+      "oversample": 3,
+      "n_wavelength": 1000,
+      "lam_range": [
+        1.0,
+        2.0
+      ],
+      "x_range": [
+        0.0,
+        4088.0
+      ],
+      "y_range": [
+        0.0,
+        4088.0
+      ],
+      "half_light_radius": 0.3,
+      "n_warmup": 2,
+      "n_runs": 3
+    }
+  },
+  "results": [
+    {
+      "n_galaxies": 100,
+      "order": "1",
+      "chunk_size": 50,
+      "compile_time_s": 1.3035072600468993,
+      "run_times_s": [
+        0.47103068395517766,
+        0.46530359191820025,
+        0.4680587979964912
+      ],
+      "mean_time_s": 0.4681310246232897,
+      "std_time_s": 0.0023386332638554133,
+      "time_per_galaxy_ms": 4.681310246232897,
+      "total_flux": 77266.8046875,
+      "peak_memory_bytes": 270287360
+    },
+    {
+      "n_galaxies": 100,
+      "order": "1",
+      "chunk_size": 100,
+      "compile_time_s": 0.9048888902179897,
+      "run_times_s": [
+        0.408305570948869,
+        0.4091926119290292,
+        0.4083449011668563
+      ],
+      "mean_time_s": 0.4086143613482515,
+      "std_time_s": 0.00040920004654534107,
+      "time_per_galaxy_ms": 4.086143613482515,
+      "total_flux": 77266.8046875,
+      "peak_memory_bytes": 330114048
+    },
+    {
+      "n_galaxies": 100,
+      "order": "1",
+      "chunk_size": 200,
+      "compile_time_s": 0.8741445939522237,
+      "run_times_s": [
+        0.3638564159628004,
+        0.35945189697667956,
+        0.36182906199246645
+      ],
+      "mean_time_s": 0.3617124583106488,
+      "std_time_s": 0.0018000267014195036,
+      "time_per_galaxy_ms": 3.617124583106488,
+      "total_flux": 77266.8046875,
+      "peak_memory_bytes": 348113920
+    },
+    {
+      "n_galaxies": 100,
+      "order": "0",
+      "chunk_size": 50,
+      "compile_time_s": 1.3338542450219393,
+      "run_times_s": [
+        0.8713139679748565,
+        0.8749012260232121,
+        0.8741182049270719
+      ],
+      "mean_time_s": 0.8734444663083801,
+      "std_time_s": 0.0015400320064012701,
+      "time_per_galaxy_ms": 8.734444663083801,
+      "total_flux": 54431.6171875,
+      "peak_memory_bytes": 348113920
+    },
+    {
+      "n_galaxies": 100,
+      "order": "0",
+      "chunk_size": 100,
+      "compile_time_s": 1.6946706851013005,
+      "run_times_s": [
+        1.185539459111169,
+        1.1850309679284692,
+        1.184985697036609
+      ],
+      "mean_time_s": 1.1851853746920824,
+      "std_time_s": 0.0002510566938526848,
+      "time_per_galaxy_ms": 11.851853746920824,
+      "total_flux": 54431.6171875,
+      "peak_memory_bytes": 348113920
+    },
+    {
+      "n_galaxies": 100,
+      "order": "0",
+      "chunk_size": 200,
+      "compile_time_s": 1.2745629490818828,
+      "run_times_s": [
+        0.7690663109533489,
+        0.7705047230701894,
+        0.7692971408832818
+      ],
+      "mean_time_s": 0.76962272496894,
+      "std_time_s": 0.0006307461729802197,
+      "time_per_galaxy_ms": 7.6962272496894,
+      "total_flux": 54431.6328125,
+      "peak_memory_bytes": 348113920
+    },
+    {
+      "n_galaxies": 100,
+      "order": "2",
+      "chunk_size": 50,
+      "compile_time_s": 0.7936373229604214,
+      "run_times_s": [
+        0.3526403419673443,
+        0.3530482230708003,
+        0.35085879801772535
+      ],
+      "mean_time_s": 0.35218245435195666,
+      "std_time_s": 0.0009506633883775063,
+      "time_per_galaxy_ms": 3.5218245435195668,
+      "total_flux": 52286.46484375,
+      "peak_memory_bytes": 348113920
+    },
+    {
+      "n_galaxies": 100,
+      "order": "2",
+      "chunk_size": 100,
+      "compile_time_s": 0.8248836691491306,
+      "run_times_s": [
+        0.3303909241221845,
+        0.3300937539897859,
+        0.32931245281361043
+      ],
+      "mean_time_s": 0.3299323769751936,
+      "std_time_s": 0.000454831101606895,
+      "time_per_galaxy_ms": 3.299323769751936,
+      "total_flux": 52286.46484375,
+      "peak_memory_bytes": 348113920
+    },
+    {
+      "n_galaxies": 100,
+      "order": "2",
+      "chunk_size": 200,
+      "compile_time_s": 0.7965015990193933,
+      "run_times_s": [
+        0.3008869120385498,
+        0.2992970191407949,
+        0.3002135700080544
+      ],
+      "mean_time_s": 0.3001325003957997,
+      "std_time_s": 0.000651597558879313,
+      "time_per_galaxy_ms": 3.001325003957997,
+      "total_flux": 52286.46484375,
+      "peak_memory_bytes": 348113920
+    },
+    {
+      "n_galaxies": 250,
+      "order": "1",
+      "chunk_size": 50,
+      "compile_time_s": 1.6194859850220382,
+      "run_times_s": [
+        1.1759359179995954,
+        1.1771135008893907,
+        1.1782568828202784
+      ],
+      "mean_time_s": 1.1771021005697548,
+      "std_time_s": 0.0009475642107276497,
+      "time_per_galaxy_ms": 4.708408402279019,
+      "total_flux": 189632.53125,
+      "peak_memory_bytes": 348113920
+    },
+    {
+      "n_galaxies": 250,
+      "order": "1",
+      "chunk_size": 100,
+      "compile_time_s": 1.538224081043154,
+      "run_times_s": [
+        1.034815747058019,
+        1.0366996920201927,
+        1.0352954978588969
+      ],
+      "mean_time_s": 1.035603645645703,
+      "std_time_s": 0.0007993866186062101,
+      "time_per_galaxy_ms": 4.142414582582812,
+      "total_flux": 189632.53125,
+      "peak_memory_bytes": 353217024
+    },
+    {
+      "n_galaxies": 250,
+      "order": "1",
+      "chunk_size": 200,
+      "compile_time_s": 1.410966438939795,
+      "run_times_s": [
+        0.9152036919258535,
+        0.9185985589865595,
+        0.9168947848957032
+      ],
+      "mean_time_s": 0.9168990119360387,
+      "std_time_s": 0.0013859518969211932,
+      "time_per_galaxy_ms": 3.667596047744155,
+      "total_flux": 189632.53125,
+      "peak_memory_bytes": 371216896
+    },
+    {
+      "n_galaxies": 250,
+      "order": "0",
+      "chunk_size": 50,
+      "compile_time_s": 2.5218539889901876,
+      "run_times_s": [
+        2.0559284950140864,
+        2.06524725491181,
+        2.0553259840235114
+      ],
+      "mean_time_s": 2.0588339113164693,
+      "std_time_s": 0.004541584666711647,
+      "time_per_galaxy_ms": 8.235335645265877,
+      "total_flux": 125656.40625,
+      "peak_memory_bytes": 371216896
+    },
+    {
+      "n_galaxies": 250,
+      "order": "0",
+      "chunk_size": 100,
+      "compile_time_s": 3.308952707797289,
+      "run_times_s": [
+        2.8000787729397416,
+        2.7999373921193182,
+        2.80033378303051
+      ],
+      "mean_time_s": 2.80011664936319,
+      "std_time_s": 0.00016402724612855126,
+      "time_per_galaxy_ms": 11.20046659745276,
+      "total_flux": 125656.4140625,
+      "peak_memory_bytes": 371216896
+    },
+    {
+      "n_galaxies": 250,
+      "order": "0",
+      "chunk_size": 200,
+      "compile_time_s": 2.374670695979148,
+      "run_times_s": [
+        1.8505300669930875,
+        1.8606679989024997,
+        1.8548672359902412
+      ],
+      "mean_time_s": 1.8553551006286095,
+      "std_time_s": 0.00415314537661894,
+      "time_per_galaxy_ms": 7.421420402514438,
+      "total_flux": 125656.4453125,
+      "peak_memory_bytes": 371216896
+    },
+    {
+      "n_galaxies": 250,
+      "order": "2",
+      "chunk_size": 50,
+      "compile_time_s": 1.424529658863321,
+      "run_times_s": [
+        0.9127523670904338,
+        0.9122835460584611,
+        0.9141616499982774
+      ],
+      "mean_time_s": 0.9130658543823907,
+      "std_time_s": 0.0007981329521043896,
+      "time_per_galaxy_ms": 3.652263417529563,
+      "total_flux": 134993.109375,
+      "peak_memory_bytes": 371216896
+    },
+    {
+      "n_galaxies": 250,
+      "order": "2",
+      "chunk_size": 100,
+      "compile_time_s": 1.3969606801401824,
+      "run_times_s": [
+        0.8580343199428171,
+        0.8550665541552007,
+        0.8573657588567585
+      ],
+      "mean_time_s": 0.8568222109849254,
+      "std_time_s": 0.001271086584847057,
+      "time_per_galaxy_ms": 3.4272888439397016,
+      "total_flux": 134993.109375,
+      "peak_memory_bytes": 371216896
+    },
+    {
+      "n_galaxies": 250,
+      "order": "2",
+      "chunk_size": 200,
+      "compile_time_s": 1.2572264820337296,
+      "run_times_s": [
+        0.766951346071437,
+        0.7687268091831356,
+        0.7653293330222368
+      ],
+      "mean_time_s": 0.7670024960922698,
+      "std_time_s": 0.0013874853295181941,
+      "time_per_galaxy_ms": 3.068009984369079,
+      "total_flux": 134993.109375,
+      "peak_memory_bytes": 371216896
+    },
+    {
+      "n_galaxies": 500,
+      "order": "1",
+      "chunk_size": 50,
+      "compile_time_s": 2.8339347240980715,
+      "run_times_s": [
+        2.3897076270077378,
+        2.3866905600298196,
+        2.39326029503718
+      ],
+      "mean_time_s": 2.3898861606915793,
+      "std_time_s": 0.0026850524791810263,
+      "time_per_galaxy_ms": 4.779772321383159,
+      "total_flux": 376474.5625,
+      "peak_memory_bytes": 389028096
+    },
+    {
+      "n_galaxies": 500,
+      "order": "1",
+      "chunk_size": 100,
+      "compile_time_s": 2.609089374076575,
+      "run_times_s": [
+        2.1013804031535983,
+        2.102257173974067,
+        2.1037276671268046
+      ],
+      "mean_time_s": 2.1024550814181566,
+      "std_time_s": 0.0009684308811328453,
+      "time_per_galaxy_ms": 4.204910162836313,
+      "total_flux": 376474.5625,
+      "peak_memory_bytes": 421068544
+    },
+    {
+      "n_galaxies": 500,
+      "order": "1",
+      "chunk_size": 200,
+      "compile_time_s": 2.4187333690933883,
+      "run_times_s": [
+        1.8628234839998186,
+        1.8670098020229489,
+        1.863338973838836
+      ],
+      "mean_time_s": 1.864390753287201,
+      "std_time_s": 0.001863865991910166,
+      "time_per_galaxy_ms": 3.728781506574402,
+      "total_flux": 376474.5625,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 500,
+      "order": "0",
+      "chunk_size": 50,
+      "compile_time_s": 4.706298888893798,
+      "run_times_s": [
+        4.243637542007491,
+        4.25967269600369,
+        4.24273973912932
+      ],
+      "mean_time_s": 4.2486833257135,
+      "std_time_s": 0.007779297613246575,
+      "time_per_galaxy_ms": 8.497366651427,
+      "total_flux": 257410.15625,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 500,
+      "order": "0",
+      "chunk_size": 100,
+      "compile_time_s": 6.283445883076638,
+      "run_times_s": [
+        5.773343245033175,
+        5.769862195942551,
+        5.770512738963589
+      ],
+      "mean_time_s": 5.771239393313105,
+      "std_time_s": 0.001511168554592991,
+      "time_per_galaxy_ms": 11.54247878662621,
+      "total_flux": 257410.171875,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 500,
+      "order": "0",
+      "chunk_size": 200,
+      "compile_time_s": 4.32929391390644,
+      "run_times_s": [
+        3.7941889229696244,
+        3.795413156040013,
+        3.7938230731524527
+      ],
+      "mean_time_s": 3.794475050720697,
+      "std_time_s": 0.0006799474071711411,
+      "time_per_galaxy_ms": 7.588950101441394,
+      "total_flux": 257410.234375,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 500,
+      "order": "2",
+      "chunk_size": 50,
+      "compile_time_s": 2.3028399921022356,
+      "run_times_s": [
+        1.8206203340087086,
+        1.8148637309204787,
+        1.8217757751699537
+      ],
+      "mean_time_s": 1.8190866133663803,
+      "std_time_s": 0.0030230573027100645,
+      "time_per_galaxy_ms": 3.6381732267327607,
+      "total_flux": 270052.34375,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 500,
+      "order": "2",
+      "chunk_size": 100,
+      "compile_time_s": 2.263390216976404,
+      "run_times_s": [
+        1.7137196860276163,
+        1.7188872760161757,
+        1.7144174869172275
+      ],
+      "mean_time_s": 1.71567481632034,
+      "std_time_s": 0.002289345538709431,
+      "time_per_galaxy_ms": 3.43134963264068,
+      "total_flux": 270052.34375,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 500,
+      "order": "2",
+      "chunk_size": 200,
+      "compile_time_s": 2.091850372031331,
+      "run_times_s": [
+        1.5428199910093099,
+        1.5461930779274553,
+        1.5445814449340105
+      ],
+      "mean_time_s": 1.544531504623592,
+      "std_time_s": 0.0013775096769882643,
+      "time_per_galaxy_ms": 3.089063009247184,
+      "total_flux": 270052.34375,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 1000,
+      "order": "1",
+      "chunk_size": 50,
+      "compile_time_s": 5.321275810012594,
+      "run_times_s": [
+        4.812696676002815,
+        4.828450899105519,
+        4.816894514020532
+      ],
+      "mean_time_s": 4.819347363042955,
+      "std_time_s": 0.006661393129445852,
+      "time_per_galaxy_ms": 4.819347363042955,
+      "total_flux": 753169.875,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 1000,
+      "order": "1",
+      "chunk_size": 100,
+      "compile_time_s": 4.80842277710326,
+      "run_times_s": [
+        4.245252086082473,
+        4.2508042578119785,
+        4.2459700759500265
+      ],
+      "mean_time_s": 4.2473421399481595,
+      "std_time_s": 0.0024655726095856147,
+      "time_per_galaxy_ms": 4.2473421399481595,
+      "total_flux": 753169.875,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 1000,
+      "order": "1",
+      "chunk_size": 200,
+      "compile_time_s": 4.303966690786183,
+      "run_times_s": [
+        3.7505831201560795,
+        3.745726329041645,
+        3.7528636851347983
+      ],
+      "mean_time_s": 3.749724378110841,
+      "std_time_s": 0.002976411869495863,
+      "time_per_galaxy_ms": 3.749724378110841,
+      "total_flux": 753169.875,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 1000,
+      "order": "0",
+      "chunk_size": 50,
+      "compile_time_s": 9.006306680850685,
+      "run_times_s": [
+        8.485615479992703,
+        8.476685489993542,
+        8.484737077960745
+      ],
+      "mean_time_s": 8.48234601598233,
+      "std_time_s": 0.004018628570772233,
+      "time_per_galaxy_ms": 8.48234601598233,
+      "total_flux": 507970.6875,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 1000,
+      "order": "0",
+      "chunk_size": 100,
+      "compile_time_s": 12.007738742046058,
+      "run_times_s": [
+        11.49793971516192,
+        11.490888559026644,
+        11.497635765001178
+      ],
+      "mean_time_s": 11.495488013063246,
+      "std_time_s": 0.003254671463314849,
+      "time_per_galaxy_ms": 11.495488013063246,
+      "total_flux": 507970.6875,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 1000,
+      "order": "0",
+      "chunk_size": 200,
+      "compile_time_s": 8.09152434905991,
+      "run_times_s": [
+        7.564513684948906,
+        7.565750737208873,
+        7.57194884121418
+      ],
+      "mean_time_s": 7.567404421123986,
+      "std_time_s": 0.0032528336406471062,
+      "time_per_galaxy_ms": 7.567404421123986,
+      "total_flux": 507970.875,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 1000,
+      "order": "2",
+      "chunk_size": 50,
+      "compile_time_s": 4.152182726887986,
+      "run_times_s": [
+        3.6358253851067275,
+        3.6472968300804496,
+        3.6388079109601676
+      ],
+      "mean_time_s": 3.640643375382448,
+      "std_time_s": 0.004859712589606981,
+      "time_per_galaxy_ms": 3.640643375382448,
+      "total_flux": 531181.25,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 1000,
+      "order": "2",
+      "chunk_size": 100,
+      "compile_time_s": 3.984296028036624,
+      "run_times_s": [
+        3.420040635159239,
+        3.4243547439109534,
+        3.4217903590761125
+      ],
+      "mean_time_s": 3.422061912715435,
+      "std_time_s": 0.0017716639287547935,
+      "time_per_galaxy_ms": 3.422061912715435,
+      "total_flux": 531181.25,
+      "peak_memory_bytes": 439068416
+    },
+    {
+      "n_galaxies": 1000,
+      "order": "2",
+      "chunk_size": 200,
+      "compile_time_s": 3.6745193279348314,
+      "run_times_s": [
+        3.1026441981084645,
+        3.080491689965129,
+        3.1044614422135055
+      ],
+      "mean_time_s": 3.0958657767623663,
+      "std_time_s": 0.010896406217068956,
+      "time_per_galaxy_ms": 3.0958657767623663,
+      "total_flux": 531181.25,
+      "peak_memory_bytes": 439068416
+    }
+  ]
+}
