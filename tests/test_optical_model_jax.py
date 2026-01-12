@@ -9,8 +9,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-os.environ["JAX_PLATFORMS"] = "cpu"
-
 import roman_disperser.optical_model_jax as omj
 from roman_disperser.optical_model import RomanOpticalModel
 

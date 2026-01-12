@@ -129,7 +129,7 @@ def _eval_ids_polynomial(wl_transformed, ids):
 
     # Polynomial evaluation via einsum
     # [N_wl, i] × [i, N_spatial] → [N_spatial, N_wl]
-    return jnp.einsum("wi,is->sw", wl_powers, ids)
+    return jnp.einsum("wi,is->sw", wl_powers, ids, precision='highest')
 
 
 def _eval_crv_polynomial(dely, crv):
@@ -157,7 +157,7 @@ def _eval_crv_polynomial(dely, crv):
     # Polynomial evaluation via einsum
     # [N_spatial, N_wl, i] × [i, N_spatial] → [N_spatial, N_wl]
     # Need to be careful with indices - crv[i, s] applies to spatial point s
-    return jnp.einsum("swi,is->sw", dely_powers, crv)
+    return jnp.einsum("swi,is->sw", dely_powers, crv, precision='highest')
 
 
 # -----------------------------------------------------------------------------
