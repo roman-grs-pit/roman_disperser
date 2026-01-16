@@ -12,3 +12,6 @@ __pycache__/
 
 # Jupyter Notebook ignores
 *.ipynb_checkpoints/
+
+# Claude related ignores
+.claude/
