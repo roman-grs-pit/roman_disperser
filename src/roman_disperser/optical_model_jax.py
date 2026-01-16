@@ -346,3 +346,24 @@ def trace_beam(payload, xfpa, yfpa, wavelength):
     delx = jnp.einsum('ni,in->n', dely_powers, crv)
     
     return xmpa_ref + delx, ympa_ref + dely
+
+
+def trace_sca_to_sca(payload, xsca, ysca, wavelength):
+    """
+    Trace from SCA input coordinates to SCA output coordinates.
+
+    This is a convenience function that chains the coordinate transformations
+    for computing where a point (xsca, ysca) at a given wavelength lands on
+    the detector after dispersion.
+
+    Args:
+        payload: dict from make_sca_payload containing model parameters
+        xsca, ysca: SCA coordinates in pixels (FITS 1-indexed), shape [n]
+        wavelength: wavelength(s) in microns, shape [n]
+
+    Returns:
+        xsca_out, ysca_out: output SCA coordinates in pixels, shape [n]
+    """
+    xfpa, yfpa = sca_to_fpa(payload, xsca, ysca)
+    xmpa, ympa = trace_beam(payload, xfpa, yfpa, wavelength)
+    return mpa_to_sca(payload, xmpa, ympa)

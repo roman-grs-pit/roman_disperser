@@ -16,13 +16,85 @@ To be more careful with how the flux gets distributed, one needs relatively smal
 
 ## Implementation Plan
 
-### Step 0
+### Step 0: Jacobian Accuracy Validation ✓ COMPLETE
 
-Let's test to see that the Jacobian calculation is accurate enough. Here's how I propose doing it. Let 
-us consider cells that are (10 pix x 10 pix) x 100A where the first two are in SCA pixel units. 
-Run this from -500 pix to 5500 pix and 0.9 um to 2um in wavelength. For eacj of these cells, take the 8 corners and see where they get displaced to, both using the full solution as well as the Jacobian, and 
-measure the largest displacement in the output x',y'.
+**Goal:** Test that the Jacobian calculation is accurate enough for the proposed algorithm.
 
-We should compute the full Jacobian, instead of relying on the Jacobian vector-product, since we're 
-going to be running this against many points.
+**Test parameters:**
+- Cell size: 10 × 10 SCA pixels × 100Å (0.01 μm)
+- Spatial range: -500 to 5500 SCA pixels (extends beyond detector)
+- Wavelength range: 0.9 to 2.0 μm
+- All 18 SCAs, orders "0", "1", "2" (54 configurations)
+- 1000 random cells sampled per configuration
+
+**Method:** For each cell, compute dispersion at the 8 corners using both:
+1. Full solution: `omj.trace_sca_to_sca(payload, x, y, λ)`
+2. Jacobian approximation: `center_output + J @ [dx, dy, dλ]`
+
+Measure the maximum Euclidean error in output (x', y') pixels.
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| Worst max error | 0.0079 pixels |
+| Best max error | 0.0020 pixels |
+| Mean of max errors | 0.0047 pixels |
+| Worst 99th percentile | 0.0054 pixels |
+
+**Conclusion:** ✓ EXCELLENT - All errors < 0.01 pixel. The Jacobian approximation is validated for 10×10×100Å cells.
+
+**Artifacts:**
+- `notebooks/demos/jacobian_accuracy_test.ipynb` - exploration notebook with visualizations
+- `notebooks/demos/jacobian_accuracy_results.json` - full validation results (54 configs)
+- `tests/test_jacobian_accuracy.py` - regression test (54 parametrized tests)
+
+
+## Implementation Notes
+
+### Key Functions
+
+**`omj.trace_sca_to_sca(payload, xsca, ysca, wavelength)`**
+- Computes full dispersion: (xsca, ysca, λ) → (xsca', ysca')
+- Chains: `sca_to_fpa` → `trace_beam` → `mpa_to_sca`
+- Returns tuple `(xsca_out, ysca_out)`
+
+**Jacobian computation:**
+```python
+def compute_jacobian_at_point(payload, xsca, ysca, wavelength):
+    def trace_single(inputs):
+        xout, yout = omj.trace_sca_to_sca(payload, inputs[0:1], inputs[1:2], inputs[2:3])
+        return jnp.stack([xout, yout]).squeeze()
+    return jax.jacobian(trace_single)(jnp.array([xsca, ysca, wavelength]))
+```
+
+**Typical Jacobian values (at detector center, λ=1.5μm):**
+- ∂x'/∂x ≈ 0.98, ∂x'/∂y ≈ 0, ∂x'/∂λ ≈ -6 pix/μm (small cross-dispersion)
+- ∂y'/∂x ≈ 0, ∂y'/∂y ≈ 1, ∂y'/∂λ ≈ 913 pix/μm (main dispersion direction)
+
+### JIT Compilation Pattern
+
+The payload contains non-traceable strings (`wl_transform`), so use the closure pattern:
+```python
+payload = omj.make_sca_payload(model, sca=5, order="1")
+
+@jax.jit
+def my_jitted_function(x, y, lam):
+    return omj.trace_sca_to_sca(payload, x, y, lam)  # payload captured in closure
+```
+
+See `docs/jit_compilation.md` for full details.
+
+
+## Next Steps
+
+### Steps 1-8: Sobol Disperser Implementation
+
+1. **Divide x-y-lambda into cells** - "relatively large cells" (e.g., 10×10×100Å validated)
+2. **Calculate dispersion + Jacobian at cell center**
+3. **Allocate points using Sobol sequence within cell**
+4. **Calculate flux at each point** using input image and spectrum
+5. **Disperse points using Jacobian** - put in smaller subgrid, save position
+6. **Repeat 3-5 for all cells**
+7. **Normalize** dispersed points by full flux in input box
+8. **Deposit subgrids** into full 4088×4088 detector grid
 

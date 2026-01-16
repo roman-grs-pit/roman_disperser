@@ -33,18 +33,16 @@ MAX_ERROR_THRESHOLD = 0.01  # pixels
 
 # --- Helper functions (module-level for reuse) ---
 
-def trace_sca_to_sca(payload, xsca, ysca, wavelength):
-    """Full trace from SCA input to SCA output coordinates."""
-    xfpa, yfpa = omj.sca_to_fpa(payload, xsca, ysca)
-    xmpa, ympa = omj.trace_beam(payload, xfpa, yfpa, wavelength)
-    xsca_out, ysca_out = omj.mpa_to_sca(payload, xmpa, ympa)
+def trace_sca_to_sca_stacked(payload, xsca, ysca, wavelength):
+    """Wrapper that returns stacked [2, n] output for Jacobian computation."""
+    xsca_out, ysca_out = omj.trace_sca_to_sca(payload, xsca, ysca, wavelength)
     return jnp.stack([xsca_out, ysca_out])
 
 
 def compute_jacobian_at_point(payload, xsca, ysca, wavelength):
     """Compute 2x3 Jacobian at a single point."""
     def trace_single(inputs):
-        return trace_sca_to_sca(
+        return trace_sca_to_sca_stacked(
             payload, inputs[0:1], inputs[1:2], inputs[2:3]
         ).squeeze()
     inputs = jnp.array([xsca, ysca, wavelength])
@@ -66,7 +64,7 @@ CORNER_OFFSETS = jnp.array([
 
 def measure_cell_error(payload, xc, yc, lamc):
     """Compute max Jacobian approximation error at cell corners."""
-    center_out = trace_sca_to_sca(
+    center_out = trace_sca_to_sca_stacked(
         payload, jnp.array([xc]), jnp.array([yc]), jnp.array([lamc])
     ).squeeze()
     J = compute_jacobian_at_point(payload, xc, yc, lamc)
@@ -74,7 +72,7 @@ def measure_cell_error(payload, xc, yc, lamc):
     max_error = 0.0
     for offset in CORNER_OFFSETS:
         corner_x, corner_y, corner_lam = xc + offset[0], yc + offset[1], lamc + offset[2]
-        full_out = trace_sca_to_sca(
+        full_out = trace_sca_to_sca_stacked(
             payload, jnp.array([corner_x]), jnp.array([corner_y]), jnp.array([corner_lam])
         ).squeeze()
         approx_out = center_out + J @ offset
