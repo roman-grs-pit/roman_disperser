@@ -224,6 +224,50 @@ class TestPSFPayload:
                 verbose=False
             )
 
+    def test_non_increasing_wavelengths_raises_error(self):
+        """Test that non-strictly-increasing wavelengths raise ValueError."""
+        # Duplicate wavelengths
+        with pytest.raises(ValueError, match="strictly increasing"):
+            psf_model.make_psf_payload(
+                order='1',
+                wavelengths=np.array([1.0e-6, 1.5e-6, 1.5e-6, 2.0e-6]),  # Duplicate
+                spatial_grid={'x': np.array([2000.0]), 'y': np.array([2000.0])},
+                use_fast=True,
+                verbose=False
+            )
+
+        # Decreasing wavelengths
+        with pytest.raises(ValueError, match="strictly increasing"):
+            psf_model.make_psf_payload(
+                order='1',
+                wavelengths=np.array([2.0e-6, 1.5e-6, 1.0e-6]),  # Decreasing
+                spatial_grid={'x': np.array([2000.0]), 'y': np.array([2000.0])},
+                use_fast=True,
+                verbose=False
+            )
+
+    def test_non_increasing_spatial_grid_raises_error(self):
+        """Test that non-strictly-increasing spatial grids raise ValueError."""
+        # Duplicate x values
+        with pytest.raises(ValueError, match="Spatial x grid"):
+            psf_model.make_psf_payload(
+                order='1',
+                wavelengths=np.array([1.5e-6]),
+                spatial_grid={'x': np.array([1000.0, 2000.0, 2000.0]), 'y': np.array([2000.0])},
+                use_fast=True,
+                verbose=False
+            )
+
+        # Duplicate y values
+        with pytest.raises(ValueError, match="Spatial y grid"):
+            psf_model.make_psf_payload(
+                order='1',
+                wavelengths=np.array([1.5e-6]),
+                spatial_grid={'x': np.array([2000.0]), 'y': np.array([1000.0, 2000.0, 2000.0])},
+                use_fast=True,
+                verbose=False
+            )
+
 
 # ============================================================================
 # PSF INTERPOLATION TESTS
@@ -277,9 +321,9 @@ class TestPSFInterpolation:
 
         # Should match grid value at [1, 1, 1]
         # value = iwl + iy + ix = 1 + 1 + 1 = 3.0
-        # Allow some numerical error from trilinear interpolation
+        # Should be at machine precision for float32 (~1e-7 relative error)
         expected_value = 3.0
-        assert jnp.allclose(psf, expected_value, rtol=1e-3, atol=1e-3)
+        assert jnp.allclose(psf, expected_value, rtol=1e-6, atol=1e-6)
 
     def test_interpolation_shape(self, simple_payload):
         """Interpolated PSF should have correct shape."""
@@ -308,20 +352,33 @@ class TestPSFInterpolation:
         assert psf1.shape == psf2.shape
 
     def test_edge_extrapolation(self, simple_payload):
-        """Interpolation should use edge values for out-of-bounds positions."""
-        # Test position outside grid (x < x_min)
-        xsca, ysca, wavelength = 500.0, 2000.0, 1.5e-6
+        """Interpolation should use edge values for out-of-bounds positions (not linear extrapolation)."""
+        # simple_payload has grid: x=[1000, 2000, 3000], y=[1000, 2000, 3000], wl=[1.0e-6, 1.5e-6, 1.9e-6]
+        # PSF values: value = iwl + iy + ix
 
-        # Should not crash, should use nearest edge value
-        psf = psf_model.interpolate_psf(simple_payload, xsca, ysca, wavelength)
+        # Test position outside grid (x < x_min, but y and wl on grid)
+        xsca, ysca, wavelength = 500.0, 2000.0, 1.5e-6  # x off-grid low
 
-        # Should have valid shape
-        assert psf.shape == (10, 10)
+        # Should use edge PSF: x_idx=[0,1], y_idx=[1,1], wl_idx=[1,1]
+        # With x_frac clamped to 0, should get psf[wl=1, y=1, x=0] = 1+1+0 = 2.0
+        psf_low = psf_model.interpolate_psf(simple_payload, xsca, ysca, wavelength)
+        assert psf_low.shape == (10, 10)
+        assert jnp.allclose(psf_low, 2.0, rtol=1e-6)
 
         # Test high edge (x > x_max)
-        xsca_high = 4000.0
+        xsca_high = 4000.0  # x off-grid high
+        # Should use edge PSF: x_idx=[1,2], y_idx=[1,1], wl_idx=[1,1]
+        # With x_frac clamped to 1, should get psf[wl=1, y=1, x=2] = 1+1+2 = 4.0
         psf_high = psf_model.interpolate_psf(simple_payload, xsca_high, ysca, wavelength)
         assert psf_high.shape == (10, 10)
+        assert jnp.allclose(psf_high, 4.0, rtol=1e-6)
+
+        # Test wavelength off-grid low
+        wavelength_low = 0.5e-6  # Below wl_grid[0] = 1.0e-6
+        # Should use edge PSF: wl_idx=[0,1], x_idx=[1,1], y_idx=[1,1]
+        # With wl_frac clamped to 0, should get psf[wl=0, y=1, x=1] = 0+1+1 = 2.0
+        psf_wl_low = psf_model.interpolate_psf(simple_payload, 2000.0, 2000.0, wavelength_low)
+        assert jnp.allclose(psf_wl_low, 2.0, rtol=1e-6)
 
     def test_vectorized_interpolation(self, simple_payload):
         """Interpolation should work with array inputs via vmap."""

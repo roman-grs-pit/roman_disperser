@@ -160,6 +160,11 @@ def make_psf_payload(
         # 15 wavelengths across full grism range (0.9 - 2.0 μm)
         wavelengths = np.linspace(0.9e-6, 2.0e-6, 15)
 
+    # Validate wavelengths are strictly increasing (required for interpolation)
+    wavelengths = np.asarray(wavelengths)
+    if not np.all(np.diff(wavelengths) > 0):
+        raise ValueError("Wavelengths must be strictly increasing")
+
     # Setup default spatial grid
     if spatial_grid is None:
         # 10×10 grid across full usable detector (100 to 3988)
@@ -167,6 +172,14 @@ def make_psf_payload(
         x_grid = np.linspace(100, 3988, 10)
         y_grid = np.linspace(100, 3988, 10)
         spatial_grid = {'x': x_grid, 'y': y_grid}
+
+    # Validate spatial grids are strictly increasing
+    x_grid = np.asarray(spatial_grid['x'])
+    y_grid = np.asarray(spatial_grid['y'])
+    if not np.all(np.diff(x_grid) > 0):
+        raise ValueError("Spatial x grid must be strictly increasing")
+    if not np.all(np.diff(y_grid) > 0):
+        raise ValueError("Spatial y grid must be strictly increasing")
 
     # Compute PSF grid with timing
     if verbose:
@@ -405,7 +418,11 @@ def interpolate_psf(payload, xsca, ysca, wavelength):
 
     wl_lo = wl_grid[wl_idx_lo]
     wl_hi = wl_grid[wl_idx_hi]
-    wl_frac = (wavelength - wl_lo) / (wl_hi - wl_lo + 1e-10)  # Avoid div by zero
+    # Division is safe: grid values should be distinct
+    wl_frac = (wavelength - wl_lo) / (wl_hi - wl_lo)
+    # Clamp to [0, 1] for edge extrapolation (not linear extrapolation)
+    # For PSFs, we want to use nearest edge value for off-grid points
+    wl_frac = jnp.clip(wl_frac, 0.0, 1.0)
 
     # 2. Find spatial bracket (x dimension)
     x_idx = jnp.searchsorted(x_grid, xsca)
@@ -416,7 +433,10 @@ def interpolate_psf(payload, xsca, ysca, wavelength):
 
     x_lo = x_grid[x_idx_lo]
     x_hi = x_grid[x_idx_hi]
-    x_frac = (xsca - x_lo) / (x_hi - x_lo + 1e-10)
+    # Division is safe: grid values should be distinct
+    x_frac = (xsca - x_lo) / (x_hi - x_lo)
+    # Clamp to [0, 1] for edge extrapolation
+    x_frac = jnp.clip(x_frac, 0.0, 1.0)
 
     # 3. Find spatial bracket (y dimension)
     y_idx = jnp.searchsorted(y_grid, ysca)
@@ -427,7 +447,10 @@ def interpolate_psf(payload, xsca, ysca, wavelength):
 
     y_lo = y_grid[y_idx_lo]
     y_hi = y_grid[y_idx_hi]
-    y_frac = (ysca - y_lo) / (y_hi - y_lo + 1e-10)
+    # Division is safe: grid values should be distinct
+    y_frac = (ysca - y_lo) / (y_hi - y_lo)
+    # Clamp to [0, 1] for edge extrapolation
+    y_frac = jnp.clip(y_frac, 0.0, 1.0)
 
     # 4. Trilinear interpolation
     # Get 8 corner PSFs (indices already clamped, handles extrapolation)
