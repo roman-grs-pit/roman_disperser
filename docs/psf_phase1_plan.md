@@ -81,7 +81,7 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 
 **Accuracy Validation:**
 - [ ] PSF interpolation achieves <1% flux error vs direct STPSF
-- [ ] Enclosed energy >99% in all PSFs
+- [ ] Enclosed energy >95% in all PSFs (5" FOV captures 96-98%)
 - [ ] Interpolation errors documented across grid
 - [ ] Edge cases handled gracefully (warnings, not crashes)
 
@@ -89,7 +89,7 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 - [ ] PSF grid generation timing measured and documented
 - [ ] JIT compilation works with PSF payload (closure pattern)
 - [ ] JIT compilation works with coordinate conversion functions
-- [ ] PSF grid fits in GPU memory (~70 MB for 10×10×15 oversampled grid)
+- [ ] PSF grid fits in GPU memory (~188 MB for 10×10×15 grid, 5" FOV, 4× oversampled)
 - [ ] Interpolation runs efficiently on GPU
 - [ ] Edge extrapolation handles off-grid positions correctly
 - [ ] Caching added if needed based on performance data (optional for Phase 1)
@@ -135,13 +135,15 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 - If <5 min, skip caching for Phase 1
 - If >10 min, implement disk caching to HDF5/npz
 
-### 5. PSF Oversampling: Use OVERDIST Extension
-**Decision:** CRITICAL - must use 4× oversampled PSFs with detector effects
+### 5. PSF Oversampling and FOV: Always Use OVERDIST
+**Decision:** CRITICAL - always use 4× oversampled PSFs with detector effects
 - Stars land at sub-pixel positions after dispersion
 - Need oversampled PSFs for accurate flux deposition
-- Use STPSF OVERDIST extension (oversampled + detector effects)
+- Always use STPSF OVERDIST extension (oversampled + detector effects)
 - OVERDIST includes geometric distortion, charge diffusion, pixel sampling
-- Fast mode uses OVERSAMP (no detector effects) for speed testing only
+- No fast path - detector effects always included (Roman detectors always have distortion)
+- FOV: 5" (not 3") for better flux conservation (95-98% vs 92-96%)
+- Wavelength range: 0.9-2.0 μm (ignore STPSF warnings about reference data edges)
 
 ### 6. Documentation Requirement: Development Notebooks
 **Decision:** Create 4 notebooks demonstrating each development step
