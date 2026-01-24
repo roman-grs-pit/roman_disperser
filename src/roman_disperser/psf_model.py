@@ -20,7 +20,7 @@ Coordinate Systems:
 Usage:
     >>> import roman_disperser.psf_model as psf_model
     >>> # Generate PSF grid (this is slow, ~30-60 min for 10×10×15 grid)
-    >>> payload = psf_model.make_psf_payload(detector='WFI05')
+    >>> payload = psf_model.make_psf_payload(detector='WFI05', order='1')
     >>> # Interpolate PSF at arbitrary position
     >>> psf = psf_model.interpolate_psf(payload, xsca=2000.0, ysca=2000.0,
     ...                                  wavelength=1.5e-6)
@@ -45,6 +45,7 @@ from .psf_utils import sca_to_stpsf_position, stpsf_to_sca_position
 
 def make_psf_payload(
     detector='WFI05',
+    order='1',
     wavelengths=None,
     spatial_grid=None,
     fov_arcsec=3.0,
@@ -69,15 +70,20 @@ def make_psf_payload(
         WFI detector name (default: 'WFI05' - central detector)
         Valid: 'WFI01' through 'WFI18'
 
+    order : str, optional
+        Grism spectral order (default: '1')
+        Valid: '0' (zeroth order, undispersed), '1' (first order, dispersed)
+        Maps to STPSF filters: '0' -> 'GRISM0', '1' -> 'GRISM1'
+
     wavelengths : array_like, optional
         Wavelengths in meters for PSF calculations
-        Default: 15 wavelengths from 1.0 to 1.93 μm (grism range)
+        Default: 15 wavelengths from 0.9 to 2.0 μm (full grism range)
         Recommendation: 15-20 wavelengths for good interpolation
 
     spatial_grid : dict, optional
         Spatial grid specification: {'x': x_array, 'y': y_array}
         x_array, y_array in SCA coordinates (1-indexed FITS, range 1-4088)
-        Default: 10×10 grid from pixel 500 to 3500 (avoiding edges)
+        Default: 10×10 grid from pixel 100 to 3988 (full usable detector)
 
     fov_arcsec : float, optional
         PSF field of view in arcseconds (default: 3.0)
@@ -114,21 +120,24 @@ def make_psf_payload(
 
     Examples
     --------
-    >>> # Generate PSF grid with default settings
-    >>> payload = make_psf_payload(detector='WFI05')
+    >>> # Generate PSF grid with default settings (first order)
+    >>> payload = make_psf_payload(detector='WFI05', order='1')
     >>> print(f"PSF grid shape: {payload['psf_grid'].shape}")
     >>> # Expected: (15, 10, 10, ~108, ~108) for 3" FOV at 4× oversample
 
+    >>> # Zeroth order (undispersed) PSFs
+    >>> payload_0th = make_psf_payload(detector='WFI05', order='0')
+
     >>> # Custom wavelength sampling (faster for testing)
-    >>> wavelengths = np.linspace(1.0e-6, 1.93e-6, 5)  # Only 5 wavelengths
-    >>> payload = make_psf_payload(wavelengths=wavelengths)
+    >>> wavelengths = np.linspace(0.9e-6, 2.0e-6, 5)  # Only 5 wavelengths
+    >>> payload = make_psf_payload(order='1', wavelengths=wavelengths)
 
     >>> # Coarse spatial grid for quick tests
     >>> spatial_grid = {
     ...     'x': np.linspace(1000, 3000, 5),
     ...     'y': np.linspace(1000, 3000, 5)
     ... }
-    >>> payload = make_psf_payload(spatial_grid=spatial_grid)
+    >>> payload = make_psf_payload(order='1', spatial_grid=spatial_grid)
 
     Notes
     -----
@@ -145,32 +154,34 @@ def make_psf_payload(
     """
     # Setup default wavelengths
     if wavelengths is None:
-        # 15 wavelengths across grism range (1.0 - 1.93 μm)
-        wavelengths = np.linspace(1.0e-6, 1.93e-6, 15)
+        # 15 wavelengths across full grism range (0.9 - 2.0 μm)
+        wavelengths = np.linspace(0.9e-6, 2.0e-6, 15)
 
     # Setup default spatial grid
     if spatial_grid is None:
-        # 10×10 grid across detector, avoiding edges
-        x_grid = np.linspace(500, 3500, 10)
-        y_grid = np.linspace(500, 3500, 10)
+        # 10×10 grid across full usable detector (100 to 3988)
+        # Goes to edges since we use interpolation/extrapolation
+        x_grid = np.linspace(100, 3988, 10)
+        y_grid = np.linspace(100, 3988, 10)
         spatial_grid = {'x': x_grid, 'y': y_grid}
 
     # Compute PSF grid with timing
     if verbose:
-        print(f"Generating PSF grid for {detector}...")
+        print(f"Generating PSF grid for {detector}, order {order}...")
         print(f"  Spatial grid: {len(spatial_grid['x'])}×{len(spatial_grid['y'])} positions")
-        print(f"  Wavelengths: {len(wavelengths)} samples")
+        print(f"  Wavelengths: {len(wavelengths)} samples ({wavelengths[0]*1e6:.2f}-{wavelengths[-1]*1e6:.2f} μm)")
         print(f"  Total PSFs: {len(spatial_grid['x']) * len(spatial_grid['y']) * len(wavelengths)}")
         print(f"  FOV: {fov_arcsec:.1f} arcsec, Oversample: {oversample}×")
         print(f"  This may take 30-60 minutes...")
 
     psf_grid, timing = _compute_psf_grid_with_timing(
-        detector, wavelengths, spatial_grid, fov_arcsec, oversample, use_fast, verbose
+        detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, use_fast, verbose
     )
 
     # Return JAX-compatible payload
     payload = {
         'detector': detector,
+        'order': order,
         'wavelengths': jnp.array(wavelengths),
         'wl_grid': jnp.array(wavelengths),  # Alias for consistency with optical model
         'spatial_x': jnp.array(spatial_grid['x']),
@@ -198,7 +209,7 @@ def make_psf_payload(
 
 
 def _compute_psf_grid_with_timing(
-    detector, wavelengths, spatial_grid, fov_arcsec, oversample, use_fast, verbose
+    detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, use_fast, verbose
 ):
     """
     Compute PSF grid using STPSF with detailed timing information.
@@ -207,6 +218,8 @@ def _compute_psf_grid_with_timing(
     ----------
     detector : str
         WFI detector name
+    order : str
+        Spectral order ('0' or '1')
     wavelengths : array_like
         Wavelengths in meters
     spatial_grid : dict
@@ -231,8 +244,16 @@ def _compute_psf_grid_with_timing(
 
     start_time = time.time()
 
+    # Map order to STPSF filter name
+    filter_map = {
+        '0': 'GRISM0',  # Zeroth order (undispersed)
+        '1': 'GRISM1',  # First order (dispersed)
+    }
+    if order not in filter_map:
+        raise ValueError(f"Invalid order '{order}'. Must be '0' or '1'.")
+
     wfi = stpsf.roman.WFI()
-    wfi.filter = 'GRISM1'  # First order grism
+    wfi.filter = filter_map[order]
     wfi.detector = detector
 
     x_grid = spatial_grid['x']
