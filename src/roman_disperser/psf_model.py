@@ -10,7 +10,7 @@ Key Features:
 - Trilinear interpolation across spatial position (x, y) and wavelength (λ)
 - Field-dependent PSFs (vary across detector)
 - Wavelength-dependent PSF shape
-- Oversampled PSFs (4×) for sub-pixel positioning accuracy
+- Oversampled PSFs (4×) with detector effects for sub-pixel positioning accuracy
 
 Coordinate Systems:
 - STPSF uses 0-indexed coordinates, 4096×4096 pixels
@@ -97,8 +97,9 @@ def make_psf_payload(
 
     use_fast : bool, optional
         Use STPSF's calc_datacube_fast() method (default: False)
-        Fast method is ~150× faster but omits detector effects
-        Recommendation: False for Phase 1 (need detector effects)
+        Fast method is ~150× faster but omits detector effects (uses OVERSAMP)
+        Standard method uses OVERDIST extension (oversampled + detector effects)
+        Recommendation: False for Phase 1 (need detector effects for realism)
 
     verbose : bool, optional
         Print timing and progress information (default: True)
@@ -141,8 +142,10 @@ def make_psf_payload(
 
     Notes
     -----
-    - PSFs are calculated using STPSF's OVERSAMP extension (oversampled optical model)
-    - Oversampling is REQUIRED for sub-pixel positioning accuracy
+    - PSFs calculated using STPSF's OVERDIST extension (oversampled + detector effects)
+    - OVERDIST includes geometric distortion, charge diffusion, pixel sampling
+    - Oversampling (4×) is REQUIRED for sub-pixel positioning accuracy
+    - Fast mode uses OVERSAMP only (no detector effects) for speed
     - PSF grid is stored as JAX arrays for GPU compatibility
     - Use JIT closure pattern for efficient disperser integration
 
@@ -274,8 +277,9 @@ def _compute_psf_grid_with_timing(
             wfi.detector_position = (float(x_stpsf), float(y_stpsf))
 
             # Calculate datacube at this position
-            # CRITICAL: Use OVERSAMP extension for sub-pixel accuracy
+            # CRITICAL: Use OVERDIST extension for sub-pixel accuracy + detector effects
             if use_fast:
+                # Fast method only provides OVERSAMP (no detector effects)
                 datacube = wfi.calc_datacube_fast(
                     wavelengths, fov_arcsec=fov_arcsec, oversample=oversample
                 )
@@ -285,8 +289,8 @@ def _compute_psf_grid_with_timing(
                     wavelengths, fov_arcsec=fov_arcsec, oversample=oversample,
                     add_distortion=True
                 )
-                # Use OVERSAMP extension (not DET_DIST) for sub-pixel positioning
-                psf_cube = datacube['OVERSAMP'].data  # [N_wl, PSF_y, PSF_x]
+                # Use OVERDIST: oversampled + detector effects (distortion, diffusion)
+                psf_cube = datacube['OVERDIST'].data  # [N_wl, PSF_y, PSF_x]
 
             psf_grid.append(psf_cube)
             n_calculated += 1

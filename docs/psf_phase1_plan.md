@@ -74,7 +74,7 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 - [ ] Coordinate functions compile under @jax.jit
 - [ ] Round-trip conversion exact (no rounding errors)
 - [ ] PSF payload generated for WFI05, 10×10 spatial grid, 15 wavelengths
-- [ ] **OVERSAMP extension used** (4× oversampling for sub-pixel accuracy)
+- [ ] **OVERDIST extension used** (4× oversampling + detector effects)
 - [ ] **Timing benchmarks** completed for PSF grid generation
 - [ ] Caching implemented **only if** generation time >10 minutes
 - [ ] Trilinear interpolation with **edge extrapolation** implemented and JIT-compilable
@@ -135,11 +135,13 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 - If <5 min, skip caching for Phase 1
 - If >10 min, implement disk caching to HDF5/npz
 
-### 5. PSF Oversampling: Use OVERSAMP Extension
-**Decision:** CRITICAL - must use 4× oversampled PSFs
+### 5. PSF Oversampling: Use OVERDIST Extension
+**Decision:** CRITICAL - must use 4× oversampled PSFs with detector effects
 - Stars land at sub-pixel positions after dispersion
 - Need oversampled PSFs for accurate flux deposition
-- Use STPSF OVERSAMP extension (not DET_DIST)
+- Use STPSF OVERDIST extension (oversampled + detector effects)
+- OVERDIST includes geometric distortion, charge diffusion, pixel sampling
+- Fast mode uses OVERSAMP (no detector effects) for speed testing only
 
 ### 6. Documentation Requirement: Development Notebooks
 **Decision:** Create 4 notebooks demonstrating each development step
