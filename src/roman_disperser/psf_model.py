@@ -77,8 +77,9 @@ def make_psf_payload(
 
     wavelengths : array_like, optional
         Wavelengths in meters for PSF calculations
-        Default: 15 wavelengths from 0.9 to 2.0 μm (full grism range)
+        Default: 15 wavelengths from 1.0 to 1.93 μm (grism range)
         Recommendation: 15-20 wavelengths for good interpolation
+        Note: Stay within 1.0-1.93 μm to avoid STPSF reference data warnings
 
     spatial_grid : dict, optional
         Spatial grid specification: {'x': x_array, 'y': y_array}
@@ -96,10 +97,10 @@ def make_psf_payload(
         4× oversampling is required for accurate star dispersion
 
     use_fast : bool, optional
-        Use STPSF's calc_datacube_fast() method (default: False)
-        Fast method is ~150× faster but omits detector effects (uses OVERSAMP)
-        Standard method uses OVERDIST extension (oversampled + detector effects)
-        Recommendation: False for Phase 1 (need detector effects for realism)
+        Skip detector effects for faster calculation (default: False)
+        Fast mode: add_distortion=False, uses OVERSAMP extension only
+        Standard mode: add_distortion=True, uses OVERDIST extension
+        Recommendation: False for science-quality PSFs (need detector effects)
 
     verbose : bool, optional
         Print timing and progress information (default: True)
@@ -157,8 +158,9 @@ def make_psf_payload(
     """
     # Setup default wavelengths
     if wavelengths is None:
-        # 15 wavelengths across full grism range (0.9 - 2.0 μm)
-        wavelengths = np.linspace(0.9e-6, 2.0e-6, 15)
+        # 15 wavelengths across grism range (1.0 - 1.93 μm)
+        # Note: Stays within STPSF reference data range to avoid warnings
+        wavelengths = np.linspace(1.0e-6, 1.93e-6, 15)
 
     # Validate wavelengths are strictly increasing (required for interpolation)
     wavelengths = np.asarray(wavelengths)
@@ -292,12 +294,14 @@ def _compute_psf_grid_with_timing(
             # Calculate datacube at this position
             # CRITICAL: Use OVERDIST extension for sub-pixel accuracy + detector effects
             if use_fast:
-                # Fast method only provides OVERSAMP (no detector effects)
-                datacube = wfi.calc_datacube_fast(
-                    wavelengths, fov_arcsec=fov_arcsec, oversample=oversample
+                # Fast method: skip detector effects for speed (OVERSAMP only)
+                datacube = wfi.calc_datacube(
+                    wavelengths, fov_arcsec=fov_arcsec, oversample=oversample,
+                    add_distortion=False
                 )
                 psf_cube = datacube['OVERSAMP'].data  # [N_wl, PSF_y, PSF_x]
             else:
+                # Standard method: include detector effects (OVERDIST)
                 datacube = wfi.calc_datacube(
                     wavelengths, fov_arcsec=fov_arcsec, oversample=oversample,
                     add_distortion=True
