@@ -1971,6 +1971,28 @@ If coordinate conversion proves problematic, consider:
 - `Roman_grism_OpticalModel_v0.8.yaml`: Check for detector size/offset parameters
 - This project's `optical_model.py`: Compare coordinate handling with STPSF
 
+### 18.11 Empirical PSF Characterization
+
+The PSF analysis notebook (`notebooks/psf/psf_analysis.ipynb`) provides empirical measurements using STPSF:
+
+**Key Findings:**
+
+| Parameter | Value |
+|-----------|-------|
+| **Recommended FOV** | 5 arcsec (captures >95% EE at all wavelengths) |
+| **EE50 radius** | 0.08" (1.0 μm) to 0.125" (1.93 μm) |
+| **EE90 radius** | 0.6" (1.0 μm) to 1.0" (1.93 μm) |
+| **EE95 radius** | 1.1" (1.0 μm) to 1.8" (1.93 μm) |
+| **FWHM** | ~2 × EE50 radius |
+| **Calc time** | ~0.4-0.5s per PSF |
+
+**Observations:**
+- Encircled energy curves are similar at detector center vs corners (note: PSF shapes may still vary)
+- Corner positions (1,1), etc. trigger STPSF warnings about being outside reference data range
+- Use full grid range (1 to 4088); STPSF handles edge extrapolation internally
+
+See `docs/psf_phase1_plan.md` for full findings and implementation plan.
+
 ---
 
 **End of Document**

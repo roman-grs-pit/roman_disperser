@@ -153,6 +153,48 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 
 ---
 
+## Empirical Findings from PSF Analysis
+
+> **Source:** `notebooks/psf/psf_analysis.ipynb` - comprehensive PSF characterization notebook
+
+### PSF Size Measurements (GRISM1, 4× oversampled, OVERDIST extension)
+
+| Wavelength | EE50 Radius | EE90 Radius | EE95 Radius | FWHM (≈2×EE50) |
+|------------|-------------|-------------|-------------|----------------|
+| 1.0 μm     | ~0.08"      | ~0.6"       | ~1.1"       | ~0.16"         |
+| 1.5 μm     | ~0.10"      | ~0.7"       | ~1.3"       | ~0.20"         |
+| 1.93 μm    | ~0.125"     | ~1.0"       | ~1.8"       | ~0.25"         |
+
+### Key Observations
+
+1. **Field Dependence is Minimal (for EE curves)**
+   - Encircled energy curves are nearly identical at detector center vs corners
+   - EE curves overlap closely across all 5 positions tested
+   - Note: PSF shapes may still vary across the field; EE is just one metric
+
+2. **Performance**
+   - ~0.4-0.5 seconds per PSF calculation with STPSF
+   - Full 10×10×15 grid would take ~10-12 minutes (caching recommended)
+
+3. **5" FOV is Sufficient**
+   - Captures >95% encircled energy at all wavelengths
+   - Max radius of 2.5" from PSF center
+   - EE95 is ~1.8" at longest wavelength, well within bounds
+
+4. **STPSF Edge Handling**
+   - Corner positions (1,1), (1,4088), (4088,1), (4088,4088) trigger warnings about being outside reference data range
+   - PSFs are still generated using STPSF's internal model
+   - Use full grid range (1 to 4088) and let STPSF handle edge extrapolation
+
+### Implications for Implementation
+
+- **Spatial Grid:** 10×10 grid spans full detector range; STPSF handles edge cases
+- **Order Grid:** Maintain separate grids for each order (PSF shapes may differ even if EE is similar)
+- **Caching:** Recommended given ~10+ minute generation time for full grid
+- **FOV:** 5" provides good margin for EE95 at all wavelengths
+
+---
+
 ## Implementation Roadmap
 
 ### Phase 1A: Core Infrastructure
@@ -226,11 +268,12 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 
 | File | Action | Purpose |
 |------|--------|---------|
-| `src/roman_disperser/psf_utils.py` | **Create** | Coordinate conversion utilities |
-| `src/roman_disperser/psf_model.py` | **Create** | PSF payload, interpolation, caching |
+| `src/roman_disperser/psf_utils.py` | ✅ **Done** | Coordinate conversion utilities |
+| `src/roman_disperser/psf_model.py` | ✅ **Done** | PSF payload, interpolation, caching |
 | `src/roman_disperser/disperser.py` | **Modify** | Add `disperse_star_psf()` |
 | `tests/test_psf_model.py` | **Create** | PSF validation tests |
 | `docs/psf_integration.md` | **Create** | Coordinate systems and usage |
+| `notebooks/psf/psf_analysis.ipynb` | ✅ **Done** | PSF characterization and EE analysis |
 | `notebooks/01_psf_generation.ipynb` | **Create** | Generate and visualize PSF grids |
 | `notebooks/02_psf_interpolation.ipynb` | **Create** | Test interpolation accuracy |
 | `notebooks/03_single_star_demo.ipynb` | **Create** | Single star dispersion |

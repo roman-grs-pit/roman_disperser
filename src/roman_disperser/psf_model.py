@@ -82,7 +82,7 @@ def make_psf_payload(
     spatial_grid : dict, optional
         Spatial grid specification: {'x': x_array, 'y': y_array}
         x_array, y_array in SCA coordinates (1-indexed FITS, range 1-4088)
-        Default: 10×10 grid from pixel 100 to 3988 (full usable detector)
+        Default: 10×10 grid from pixel 1 to 4088 (full detector range)
 
     fov_arcsec : float, optional
         PSF field of view in arcseconds (default: 5.0)
@@ -160,10 +160,10 @@ def make_psf_payload(
 
     # Setup default spatial grid
     if spatial_grid is None:
-        # 10×10 grid across full usable detector (100 to 3988)
-        # Goes to edges since we use interpolation/extrapolation
-        x_grid = np.linspace(100, 3988, 10)
-        y_grid = np.linspace(100, 3988, 10)
+        # 10×10 grid across full detector range (1 to 4088)
+        # STPSF handles edge extrapolation for corner positions
+        x_grid = np.linspace(1, 4088, 10)
+        y_grid = np.linspace(1, 4088, 10)
         spatial_grid = {'x': x_grid, 'y': y_grid}
 
     # Validate spatial grids are strictly increasing
