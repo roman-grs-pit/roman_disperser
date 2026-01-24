@@ -48,9 +48,8 @@ def make_psf_payload(
     order='1',
     wavelengths=None,
     spatial_grid=None,
-    fov_arcsec=3.0,
+    fov_arcsec=5.0,
     oversample=4,
-    use_fast=False,
     verbose=True,
 ):
     """
@@ -77,9 +76,8 @@ def make_psf_payload(
 
     wavelengths : array_like, optional
         Wavelengths in meters for PSF calculations
-        Default: 15 wavelengths from 1.0 to 1.93 μm (grism range)
+        Default: 15 wavelengths from 0.9 to 2.0 μm (full grism range)
         Recommendation: 15-20 wavelengths for good interpolation
-        Note: Stay within 1.0-1.93 μm to avoid STPSF reference data warnings
 
     spatial_grid : dict, optional
         Spatial grid specification: {'x': x_array, 'y': y_array}
@@ -87,20 +85,14 @@ def make_psf_payload(
         Default: 10×10 grid from pixel 100 to 3988 (full usable detector)
 
     fov_arcsec : float, optional
-        PSF field of view in arcseconds (default: 3.0)
-        Larger FOV captures more flux but increases computation time
-        Recommendation: 3-5 arcsec (captures >99% enclosed energy)
+        PSF field of view in arcseconds (default: 5.0)
+        Larger FOV captures more flux but increases memory usage
+        5" FOV ≈ 15× FWHM, captures >99% enclosed energy
 
     oversample : int, optional
         PSF oversampling factor (default: 4)
         CRITICAL: Must use oversampling for sub-pixel positioning accuracy
         4× oversampling is required for accurate star dispersion
-
-    use_fast : bool, optional
-        Skip detector effects for faster calculation (default: False)
-        Fast mode: add_distortion=False, uses OVERSAMP extension only
-        Standard mode: add_distortion=True, uses OVERDIST extension
-        Recommendation: False for science-quality PSFs (need detector effects)
 
     verbose : bool, optional
         Print timing and progress information (default: True)
@@ -158,9 +150,8 @@ def make_psf_payload(
     """
     # Setup default wavelengths
     if wavelengths is None:
-        # 15 wavelengths across grism range (1.0 - 1.93 μm)
-        # Note: Stays within STPSF reference data range to avoid warnings
-        wavelengths = np.linspace(1.0e-6, 1.93e-6, 15)
+        # 15 wavelengths across full grism range (0.9 - 2.0 μm)
+        wavelengths = np.linspace(0.9e-6, 2.0e-6, 15)
 
     # Validate wavelengths are strictly increasing (required for interpolation)
     wavelengths = np.asarray(wavelengths)
@@ -193,7 +184,7 @@ def make_psf_payload(
         print(f"  This may take 30-60 minutes...")
 
     psf_grid, timing = _compute_psf_grid_with_timing(
-        detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, use_fast, verbose
+        detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, verbose
     )
 
     # Return JAX-compatible payload
@@ -227,7 +218,7 @@ def make_psf_payload(
 
 
 def _compute_psf_grid_with_timing(
-    detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, use_fast, verbose
+    detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, verbose
 ):
     """
     Compute PSF grid using STPSF with detailed timing information.
@@ -293,21 +284,12 @@ def _compute_psf_grid_with_timing(
 
             # Calculate datacube at this position
             # CRITICAL: Use OVERDIST extension for sub-pixel accuracy + detector effects
-            if use_fast:
-                # Fast method: skip detector effects for speed (OVERSAMP only)
-                datacube = wfi.calc_datacube(
-                    wavelengths, fov_arcsec=fov_arcsec, oversample=oversample,
-                    add_distortion=False
-                )
-                psf_cube = datacube['OVERSAMP'].data  # [N_wl, PSF_y, PSF_x]
-            else:
-                # Standard method: include detector effects (OVERDIST)
-                datacube = wfi.calc_datacube(
-                    wavelengths, fov_arcsec=fov_arcsec, oversample=oversample,
-                    add_distortion=True
-                )
-                # Use OVERDIST: oversampled + detector effects (distortion, diffusion)
-                psf_cube = datacube['OVERDIST'].data  # [N_wl, PSF_y, PSF_x]
+            datacube = wfi.calc_datacube(
+                wavelengths, fov_arcsec=fov_arcsec, oversample=oversample,
+                add_distortion=True
+            )
+            # Use OVERDIST: oversampled + detector effects (distortion, diffusion)
+            psf_cube = datacube['OVERDIST'].data  # [N_wl, PSF_y, PSF_x]
 
             psf_grid.append(psf_cube)
             n_calculated += 1

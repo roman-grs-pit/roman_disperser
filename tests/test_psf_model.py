@@ -118,7 +118,7 @@ class TestPSFPayload:
     def test_minimal_payload_generation(self):
         """Generate minimal PSF payload for quick validation."""
         # Minimal configuration: 2×2 spatial, 3 wavelengths
-        wavelengths = np.linspace(1.0e-6, 1.93e-6, 3)
+        wavelengths = np.linspace(0.9e-6, 2.0e-6, 3)
         spatial_grid = {
             'x': np.array([1000.0, 3000.0]),
             'y': np.array([1000.0, 3000.0])
@@ -129,9 +129,8 @@ class TestPSFPayload:
             order='1',
             wavelengths=wavelengths,
             spatial_grid=spatial_grid,
-            fov_arcsec=3.0,
+            fov_arcsec=5.0,
             oversample=4,
-            use_fast=True,  # Use fast method for testing
             verbose=True
         )
 
@@ -157,14 +156,14 @@ class TestPSFPayload:
                     psf = psf_grid[i, j, k]
                     total_flux = float(psf.sum())
                     # PSFs lose some flux outside FOV (extended wings)
-                    # Expect 92-100% flux within 3" FOV
-                    assert 0.92 < total_flux < 1.00, \
-                        f"PSF flux {total_flux} outside [0.92, 1.00]"
+                    # Expect 95-100% flux within 5" FOV
+                    assert 0.95 < total_flux < 1.00, \
+                        f"PSF flux {total_flux} outside [0.95, 1.00]"
 
     @pytest.mark.slow
     def test_payload_timing_reported(self):
         """Check that timing information is captured."""
-        wavelengths = np.linspace(1.0e-6, 1.93e-6, 2)
+        wavelengths = np.linspace(0.9e-6, 2.0e-6, 2)
         spatial_grid = {
             'x': np.array([2000.0]),
             'y': np.array([2000.0])
@@ -174,7 +173,6 @@ class TestPSFPayload:
             order='1',
             wavelengths=wavelengths,
             spatial_grid=spatial_grid,
-            use_fast=True,
             verbose=False
         )
 
@@ -189,7 +187,7 @@ class TestPSFPayload:
     @pytest.mark.slow
     def test_zeroth_order_psf_generation(self):
         """Test that zeroth order PSFs can be generated."""
-        wavelengths = np.linspace(1.0e-6, 1.93e-6, 2)
+        wavelengths = np.linspace(0.9e-6, 2.0e-6, 2)
         spatial_grid = {
             'x': np.array([2000.0]),
             'y': np.array([2000.0])
@@ -201,7 +199,6 @@ class TestPSFPayload:
             order='0',  # Zeroth order
             wavelengths=wavelengths,
             spatial_grid=spatial_grid,
-            use_fast=True,
             verbose=False
         )
 
@@ -220,7 +217,6 @@ class TestPSFPayload:
                 order='99',  # Invalid
                 wavelengths=np.array([1.5e-6]),
                 spatial_grid={'x': np.array([2000.0]), 'y': np.array([2000.0])},
-                use_fast=True,
                 verbose=False
             )
 
@@ -230,9 +226,8 @@ class TestPSFPayload:
         with pytest.raises(ValueError, match="strictly increasing"):
             psf_model.make_psf_payload(
                 order='1',
-                wavelengths=np.array([1.0e-6, 1.5e-6, 1.5e-6, 1.93e-6]),  # Duplicate
+                wavelengths=np.array([1.0e-6, 1.5e-6, 1.5e-6, 2.0e-6]),  # Duplicate
                 spatial_grid={'x': np.array([2000.0]), 'y': np.array([2000.0])},
-                use_fast=True,
                 verbose=False
             )
 
@@ -240,9 +235,8 @@ class TestPSFPayload:
         with pytest.raises(ValueError, match="strictly increasing"):
             psf_model.make_psf_payload(
                 order='1',
-                wavelengths=np.array([1.93e-6, 1.5e-6, 1.0e-6]),  # Decreasing
+                wavelengths=np.array([2.0e-6, 1.5e-6, 1.0e-6]),  # Decreasing
                 spatial_grid={'x': np.array([2000.0]), 'y': np.array([2000.0])},
-                use_fast=True,
                 verbose=False
             )
 
@@ -254,7 +248,6 @@ class TestPSFPayload:
                 order='1',
                 wavelengths=np.array([1.5e-6]),
                 spatial_grid={'x': np.array([1000.0, 2000.0, 2000.0]), 'y': np.array([2000.0])},
-                use_fast=True,
                 verbose=False
             )
 
@@ -264,7 +257,6 @@ class TestPSFPayload:
                 order='1',
                 wavelengths=np.array([1.5e-6]),
                 spatial_grid={'x': np.array([2000.0]), 'y': np.array([1000.0, 2000.0, 2000.0])},
-                use_fast=True,
                 verbose=False
             )
 
@@ -426,8 +418,7 @@ class TestPSFIntegration:
             order='1',
             wavelengths=wavelengths,
             spatial_grid=spatial_grid,
-            fov_arcsec=3.0,
-            use_fast=True,
+            fov_arcsec=5.0,
             verbose=False
         )
 
@@ -452,7 +443,7 @@ class TestPSFIntegration:
         wfi.detector_position = (float(x_stpsf), float(y_stpsf))
 
         datacube = wfi.calc_datacube(
-            np.array([wavelength_test]), fov_arcsec=3.0, oversample=4,
+            np.array([wavelength_test]), fov_arcsec=5.0, oversample=4,
             add_distortion=False
         )
         psf_direct = datacube['OVERSAMP'].data[0]  # First wavelength
@@ -473,7 +464,7 @@ class TestPSFIntegration:
         pytest.importorskip("stpsf")
 
         # Generate minimal payload
-        wavelengths = np.linspace(1.0e-6, 1.93e-6, 3)
+        wavelengths = np.linspace(0.9e-6, 2.0e-6, 3)
         spatial_grid = {
             'x': np.array([2000.0]),
             'y': np.array([2000.0])
@@ -483,8 +474,7 @@ class TestPSFIntegration:
             order='1',
             wavelengths=wavelengths,
             spatial_grid=spatial_grid,
-            fov_arcsec=3.0,
-            use_fast=True,
+            fov_arcsec=5.0,
             verbose=False
         )
 
@@ -497,6 +487,6 @@ class TestPSFIntegration:
                     total_flux = float(psf.sum())
 
                     # PSFs lose some flux outside FOV (extended wings)
-                    # Expect 92-100% flux within 3" FOV
-                    assert 0.92 < total_flux < 1.00, \
-                        f"PSF[{iwl},{iy},{ix}] flux {total_flux} outside [0.92, 1.00]"
+                    # Expect 95-100% flux within 5" FOV
+                    assert 0.95 < total_flux < 1.00, \
+                        f"PSF[{iwl},{iy},{ix}] flux {total_flux} outside [0.95, 1.00]"
