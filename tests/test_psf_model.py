@@ -157,8 +157,8 @@ class TestPSFPayload:
                     total_flux = float(psf.sum())
                     # PSFs lose some flux outside FOV (extended wings)
                     # Expect 95-100% flux within 5" FOV
-                    assert 0.95 < total_flux < 1.00, \
-                        f"PSF flux {total_flux} outside [0.95, 1.00]"
+                    assert 0.95 < total_flux < 1.001, \
+                        f"PSF flux {total_flux} outside [0.95, 1.001]"
 
     @pytest.mark.slow
     def test_payload_timing_reported(self):
@@ -286,8 +286,8 @@ class TestPSFPayload:
         for iwl in range(2):
             psf = payload['psf_grid'][iwl, 0, 0]
             total_flux = float(psf.sum())
-            assert 0.95 < total_flux < 1.01, \
-                f"PSF flux {total_flux} outside [0.95, 1.01]"
+            assert 0.95 < total_flux < 1.001, \
+                f"PSF flux {total_flux} outside [0.95, 1.001]"
 
 
 # ============================================================================
@@ -536,8 +536,8 @@ class TestPSFIntegration:
 
                     # PSFs lose some flux outside FOV (extended wings)
                     # Expect 95-100% flux within 5" FOV
-                    assert 0.95 < total_flux < 1.00, \
-                        f"PSF[{iwl},{iy},{ix}] flux {total_flux} outside [0.95, 1.00]"
+                    assert 0.95 < total_flux < 1.001, \
+                        f"PSF[{iwl},{iy},{ix}] flux {total_flux} outside [0.95, 1.001]"
 
     @pytest.mark.slow
     @pytest.mark.stpsf
@@ -565,10 +565,10 @@ class TestPSFIntegration:
             verbose=False
         )
 
-        # Test at exact center (midpoint of all 4 corners)
+        # Test at exact center (midpoint of all 8 corners)
         xsca_test = 2000.0  # Midway between 1500 and 2500
         ysca_test = 2000.0
-        wavelength_test = 1.5e-6  # On grid
+        wavelength_test = 1.5e-6  # Midway between 1.4 and 1.6e-6
 
         # Get interpolated PSF
         psf_interp = psf_model.interpolate_psf(

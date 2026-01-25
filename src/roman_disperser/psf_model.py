@@ -144,8 +144,8 @@ def make_psf_payload(
     See Also
     --------
     interpolate_psf : Interpolate PSF at arbitrary position
-    save_psf_payload : Save payload to disk (caching)
-    load_psf_payload : Load payload from disk
+    save_psf_payload : Save payload to disk (caching) - NOT YET IMPLEMENTED
+    load_psf_payload : Load payload from disk - NOT YET IMPLEMENTED
     """
     # Setup default wavelengths
     if wavelengths is None:
