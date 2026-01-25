@@ -146,6 +146,15 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 - FOV: 5" (not 3") for better flux conservation (95-98% vs 92-96%)
 - Wavelength range: 0.9-2.0 μm (ignore STPSF warnings about reference data edges)
 
+### 7. PSF Grid Ordering: Spatial-First
+**Decision:** Use `[N_y, N_x, N_wl, PSF_y, PSF_x]` array ordering
+- Wavelength dimension contiguous with PSF data for better memory access
+- Efficient for undispersed case: bilinear spatial interp → slice all wavelengths
+- No penalty for dispersed case (trilinear still works)
+- Two interpolation functions provided:
+  - `interpolate_psf(payload, x, y, wl)` - trilinear for arbitrary (x, y, λ)
+  - `interpolate_psf_spatial(payload, x, y)` - bilinear, returns all wavelengths
+
 ### 6. Documentation Requirement: Development Notebooks
 **Decision:** Create 4 notebooks demonstrating each development step
 - Show high-level assessment of success at each phase

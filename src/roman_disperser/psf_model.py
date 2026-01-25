@@ -107,7 +107,7 @@ def make_psf_payload(
         - 'wl_grid': jnp.ndarray [N_wl], same as wavelengths (for consistency)
         - 'spatial_x': jnp.ndarray [N_x], SCA x-coordinates
         - 'spatial_y': jnp.ndarray [N_y], SCA y-coordinates
-        - 'psf_grid': jnp.ndarray [N_wl, N_y, N_x, PSF_y, PSF_x], PSF datacube
+        - 'psf_grid': jnp.ndarray [N_y, N_x, N_wl, PSF_y, PSF_x], PSF datacube
         - 'psf_fov_pixels': int, PSF array size (pixels)
         - 'pixel_scale': float, detector pixel scale (0.11 arcsec/pixel for WFI)
         - 'oversample': int, oversampling factor used
@@ -118,7 +118,7 @@ def make_psf_payload(
     >>> # Generate PSF grid with default settings (first order)
     >>> payload = make_psf_payload(detector='WFI05', order='1')
     >>> print(f"PSF grid shape: {payload['psf_grid'].shape}")
-    >>> # Expected: (56, 4, 4, ~182, ~182) for 5" FOV at 4× oversample
+    >>> # Expected: (4, 4, 56, ~182, ~182) for 5" FOV at 4× oversample
 
     >>> # Zeroth order (undispersed) PSFs
     >>> payload_0th = make_psf_payload(detector='WFI05', order='0')
@@ -246,7 +246,7 @@ def _compute_psf_grid_with_timing(
     Returns
     -------
     psf_grid : ndarray
-        Shape: [N_wl, N_y, N_x, PSF_y, PSF_x]
+        Shape: [N_y, N_x, N_wl, PSF_y, PSF_x]
     timing : dict
         {'total_time': float, 'per_psf_time': float, 'n_psfs': int}
     """
@@ -303,10 +303,12 @@ def _compute_psf_grid_with_timing(
                       f"({100*n_calculated/n_total:.1f}%), "
                       f"ETA: {remaining/60:.1f} min")
 
-    # Reshape to [N_wl, N_y, N_x, PSF_y, PSF_x]
+    # Reshape to [N_y, N_x, N_wl, PSF_y, PSF_x]
+    # This ordering puts wavelength contiguous with PSF data, which is efficient for:
+    # - Undispersed case: bilinear spatial interp → slice all wavelengths at once
+    # - Dispersed case: trilinear still works, no penalty
     psf_grid = np.array(psf_grid)  # [N_y*N_x, N_wl, PSF_y, PSF_x]
     psf_grid = psf_grid.reshape(N_y, N_x, N_wl, *psf_grid.shape[-2:])
-    psf_grid = psf_grid.transpose(2, 0, 1, 3, 4)  # [N_wl, N_y, N_x, PSF_y, PSF_x]
 
     elapsed = time.time() - start_time
     n_psfs = N_x * N_y * N_wl
@@ -394,7 +396,7 @@ def interpolate_psf(payload, xsca, ysca, wavelength):
     wl_grid = payload['wl_grid']
     x_grid = payload['spatial_x']
     y_grid = payload['spatial_y']
-    psf_grid = payload['psf_grid']  # [N_wl, N_y, N_x, PSF_y, PSF_x]
+    psf_grid = payload['psf_grid']  # [N_y, N_x, N_wl, PSF_y, PSF_x]
 
     # 1. Find wavelength bracket
     wl_idx = jnp.searchsorted(wl_grid, wavelength)  # Index of next wavelength
@@ -441,26 +443,125 @@ def interpolate_psf(payload, xsca, ysca, wavelength):
 
     # 4. Trilinear interpolation
     # Get 8 corner PSFs (indices already clamped, handles extrapolation)
-    psf_000 = psf_grid[wl_idx_lo, y_idx_lo, x_idx_lo]
-    psf_001 = psf_grid[wl_idx_lo, y_idx_lo, x_idx_hi]
-    psf_010 = psf_grid[wl_idx_lo, y_idx_hi, x_idx_lo]
-    psf_011 = psf_grid[wl_idx_lo, y_idx_hi, x_idx_hi]
-    psf_100 = psf_grid[wl_idx_hi, y_idx_lo, x_idx_lo]
-    psf_101 = psf_grid[wl_idx_hi, y_idx_lo, x_idx_hi]
-    psf_110 = psf_grid[wl_idx_hi, y_idx_hi, x_idx_lo]
-    psf_111 = psf_grid[wl_idx_hi, y_idx_hi, x_idx_hi]
+    # Grid shape: [N_y, N_x, N_wl, PSF_y, PSF_x]
+    # Naming: psf_YXW where Y=y_idx, X=x_idx, W=wl_idx (0=lo, 1=hi)
+    psf_000 = psf_grid[y_idx_lo, x_idx_lo, wl_idx_lo]
+    psf_001 = psf_grid[y_idx_lo, x_idx_lo, wl_idx_hi]
+    psf_010 = psf_grid[y_idx_lo, x_idx_hi, wl_idx_lo]
+    psf_011 = psf_grid[y_idx_lo, x_idx_hi, wl_idx_hi]
+    psf_100 = psf_grid[y_idx_hi, x_idx_lo, wl_idx_lo]
+    psf_101 = psf_grid[y_idx_hi, x_idx_lo, wl_idx_hi]
+    psf_110 = psf_grid[y_idx_hi, x_idx_hi, wl_idx_lo]
+    psf_111 = psf_grid[y_idx_hi, x_idx_hi, wl_idx_hi]
 
-    # Interpolate along x
-    psf_00 = (1 - x_frac) * psf_000 + x_frac * psf_001
-    psf_01 = (1 - x_frac) * psf_010 + x_frac * psf_011
-    psf_10 = (1 - x_frac) * psf_100 + x_frac * psf_101
-    psf_11 = (1 - x_frac) * psf_110 + x_frac * psf_111
+    # Interpolate along wavelength (W dimension, index 2)
+    psf_00 = (1 - wl_frac) * psf_000 + wl_frac * psf_001  # Y=lo, X=lo
+    psf_01 = (1 - wl_frac) * psf_010 + wl_frac * psf_011  # Y=lo, X=hi
+    psf_10 = (1 - wl_frac) * psf_100 + wl_frac * psf_101  # Y=hi, X=lo
+    psf_11 = (1 - wl_frac) * psf_110 + wl_frac * psf_111  # Y=hi, X=hi
 
-    # Interpolate along y
-    psf_0 = (1 - y_frac) * psf_00 + y_frac * psf_01
-    psf_1 = (1 - y_frac) * psf_10 + y_frac * psf_11
+    # Interpolate along x (X dimension, index 1)
+    psf_0 = (1 - x_frac) * psf_00 + x_frac * psf_01  # Y=lo
+    psf_1 = (1 - x_frac) * psf_10 + x_frac * psf_11  # Y=hi
 
-    # Interpolate along wavelength
-    psf = (1 - wl_frac) * psf_0 + wl_frac * psf_1
+    # Interpolate along y (Y dimension, index 0)
+    psf = (1 - y_frac) * psf_0 + y_frac * psf_1
 
     return psf
+
+
+def interpolate_psf_spatial(payload, xsca, ysca):
+    """
+    Interpolate PSF at (x, y) for ALL wavelengths using bilinear interpolation.
+
+    This is more efficient than calling interpolate_psf() for each wavelength
+    when the spatial position is fixed (undispersed star case). Returns the
+    full wavelength stack at once.
+
+    Uses edge extrapolation: positions outside the spatial grid use the nearest
+    edge PSF.
+
+    This function is JAX-compatible and JIT-compilable.
+
+    Parameters
+    ----------
+    payload : dict
+        PSF payload from make_psf_payload()
+    xsca, ysca : float
+        SCA coordinates (1-indexed FITS, range 1-4088)
+        Must be scalar values (not arrays)
+
+    Returns
+    -------
+    psfs : jnp.ndarray
+        Interpolated PSF array for all wavelengths in the grid
+        Shape: [N_wl, PSF_y, PSF_x]
+
+    Examples
+    --------
+    >>> # Get PSFs at detector center for all wavelengths
+    >>> psfs = interpolate_psf_spatial(payload, xsca=2044.0, ysca=2044.0)
+    >>> psfs.shape
+    (56, 182, 182)  # For default 56-wavelength grid, 5" FOV at 4× oversample
+
+    >>> # Access PSF at specific wavelength index
+    >>> psf_at_wl_10 = psfs[10]  # 10th wavelength in grid
+
+    Notes
+    -----
+    - Interpolation is bilinear in (x, y) only - no wavelength interpolation
+    - Returns PSFs at grid wavelengths (payload['wavelengths'])
+    - For wavelength interpolation, use interpolate_psf() instead
+    - Edge extrapolation: uses nearest grid PSF for out-of-bounds positions
+    - Efficient for undispersed star dispersion where spatial position is fixed
+
+    See Also
+    --------
+    interpolate_psf : Trilinear interpolation at arbitrary (x, y, λ)
+    make_psf_payload : Create PSF payload
+    """
+    # Extract grid parameters
+    x_grid = payload['spatial_x']
+    y_grid = payload['spatial_y']
+    psf_grid = payload['psf_grid']  # [N_y, N_x, N_wl, PSF_y, PSF_x]
+
+    # 1. Find spatial bracket (x dimension)
+    x_idx = jnp.searchsorted(x_grid, xsca)
+    x_idx = jnp.clip(x_idx, 1, len(x_grid) - 1)
+
+    x_idx_lo = x_idx - 1
+    x_idx_hi = x_idx
+
+    x_lo = x_grid[x_idx_lo]
+    x_hi = x_grid[x_idx_hi]
+    x_frac = (xsca - x_lo) / (x_hi - x_lo)
+    x_frac = jnp.clip(x_frac, 0.0, 1.0)
+
+    # 2. Find spatial bracket (y dimension)
+    y_idx = jnp.searchsorted(y_grid, ysca)
+    y_idx = jnp.clip(y_idx, 1, len(y_grid) - 1)
+
+    y_idx_lo = y_idx - 1
+    y_idx_hi = y_idx
+
+    y_lo = y_grid[y_idx_lo]
+    y_hi = y_grid[y_idx_hi]
+    y_frac = (ysca - y_lo) / (y_hi - y_lo)
+    y_frac = jnp.clip(y_frac, 0.0, 1.0)
+
+    # 3. Bilinear interpolation over spatial dimensions
+    # Get 4 corner PSF stacks (all wavelengths at once)
+    # Grid shape: [N_y, N_x, N_wl, PSF_y, PSF_x]
+    psf_00 = psf_grid[y_idx_lo, x_idx_lo]  # [N_wl, PSF_y, PSF_x]
+    psf_01 = psf_grid[y_idx_lo, x_idx_hi]  # [N_wl, PSF_y, PSF_x]
+    psf_10 = psf_grid[y_idx_hi, x_idx_lo]  # [N_wl, PSF_y, PSF_x]
+    psf_11 = psf_grid[y_idx_hi, x_idx_hi]  # [N_wl, PSF_y, PSF_x]
+
+    # Interpolate along x
+    psf_0 = (1 - x_frac) * psf_00 + x_frac * psf_01  # Y=lo
+    psf_1 = (1 - x_frac) * psf_10 + x_frac * psf_11  # Y=hi
+
+    # Interpolate along y
+    psfs = (1 - y_frac) * psf_0 + y_frac * psf_1
+
+    return psfs

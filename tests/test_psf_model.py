@@ -141,19 +141,19 @@ class TestPSFPayload:
         assert 'spatial_y' in payload
         assert 'timing' in payload
 
-        # Check PSF grid shape: [N_wl, N_y, N_x, PSF_y, PSF_x]
+        # Check PSF grid shape: [N_y, N_x, N_wl, PSF_y, PSF_x]
         psf_grid = payload['psf_grid']
-        assert psf_grid.shape[0] == 3  # 3 wavelengths
-        assert psf_grid.shape[1] == 2  # 2 y positions
-        assert psf_grid.shape[2] == 2  # 2 x positions
+        assert psf_grid.shape[0] == 2  # 2 y positions
+        assert psf_grid.shape[1] == 2  # 2 x positions
+        assert psf_grid.shape[2] == 3  # 3 wavelengths
         assert psf_grid.shape[3] > 0  # PSF has size
         assert psf_grid.shape[4] > 0
 
         # Check PSFs are normalized (approximately)
-        for i in range(3):
-            for j in range(2):
-                for k in range(2):
-                    psf = psf_grid[i, j, k]
+        for iy in range(2):
+            for ix in range(2):
+                for iwl in range(3):
+                    psf = psf_grid[iy, ix, iwl]
                     total_flux = float(psf.sum())
                     # PSFs lose some flux outside FOV (extended wings)
                     # Expect 95-100% flux within 5" FOV
@@ -205,10 +205,10 @@ class TestPSFPayload:
         # Check order is stored
         assert payload['order'] == '0'
 
-        # Check PSF grid exists and has correct shape
-        assert payload['psf_grid'].shape[0] == 2  # 2 wavelengths
-        assert payload['psf_grid'].shape[1] == 1  # 1 y position
-        assert payload['psf_grid'].shape[2] == 1  # 1 x position
+        # Check PSF grid exists and has correct shape: [N_y, N_x, N_wl, PSF_y, PSF_x]
+        assert payload['psf_grid'].shape[0] == 1  # 1 y position
+        assert payload['psf_grid'].shape[1] == 1  # 1 x position
+        assert payload['psf_grid'].shape[2] == 2  # 2 wavelengths
 
     def test_invalid_order_raises_error(self):
         """Test that invalid order raises ValueError."""
@@ -280,11 +280,12 @@ class TestPSFPayload:
 
         # Verify payload is valid
         assert payload['detector'] == 'WFI01'
-        assert payload['psf_grid'].shape[0] == 2  # 2 wavelengths
+        # Shape: [N_y, N_x, N_wl, PSF_y, PSF_x]
+        assert payload['psf_grid'].shape[2] == 2  # 2 wavelengths
 
         # Check PSF normalization
         for iwl in range(2):
-            psf = payload['psf_grid'][iwl, 0, 0]
+            psf = payload['psf_grid'][0, 0, iwl]
             total_flux = float(psf.sum())
             assert 0.95 < total_flux < 1.001, \
                 f"PSF flux {total_flux} outside [0.95, 1.001]"
@@ -306,17 +307,18 @@ class TestPSFInterpolation:
         spatial_x = np.array([1000.0, 2000.0, 3000.0])
         spatial_y = np.array([1000.0, 2000.0, 3000.0])
 
-        # Create simple PSF grid (just identity matrices for testing)
+        # Create simple PSF grid (just constant values for testing)
+        # Shape: [N_y, N_x, N_wl, PSF_y, PSF_x]
         psf_size = 10
         psf_grid = np.zeros((3, 3, 3, psf_size, psf_size))
 
         # Fill with simple patterns (different for each position/wavelength)
-        for iwl in range(3):
-            for iy in range(3):
-                for ix in range(3):
-                    # Create a simple pattern: value = iwl + iy + ix
-                    value = float(iwl + iy + ix)
-                    psf_grid[iwl, iy, ix, :, :] = value
+        # Value = iy + ix + iwl (same formula, but indexing matches new array order)
+        for iy in range(3):
+            for ix in range(3):
+                for iwl in range(3):
+                    value = float(iy + ix + iwl)
+                    psf_grid[iy, ix, iwl, :, :] = value
 
         payload = {
             'detector': 'WFI05',
@@ -439,6 +441,119 @@ class TestPSFInterpolation:
 
 
 # ============================================================================
+# SPATIAL INTERPOLATION TESTS (interpolate_psf_spatial)
+# ============================================================================
+
+
+class TestPSFSpatialInterpolation:
+    """Test bilinear spatial interpolation (all wavelengths at once)."""
+
+    @pytest.fixture
+    def simple_payload(self):
+        """Create a simple test payload with analytical PSFs."""
+        # Same as TestPSFInterpolation fixture
+        wavelengths = np.array([1.0e-6, 1.5e-6, 1.9e-6])
+        spatial_x = np.array([1000.0, 2000.0, 3000.0])
+        spatial_y = np.array([1000.0, 2000.0, 3000.0])
+
+        # Shape: [N_y, N_x, N_wl, PSF_y, PSF_x]
+        psf_size = 10
+        psf_grid = np.zeros((3, 3, 3, psf_size, psf_size))
+
+        for iy in range(3):
+            for ix in range(3):
+                for iwl in range(3):
+                    value = float(iy + ix + iwl)
+                    psf_grid[iy, ix, iwl, :, :] = value
+
+        payload = {
+            'detector': 'WFI05',
+            'wavelengths': jnp.array(wavelengths),
+            'wl_grid': jnp.array(wavelengths),
+            'spatial_x': jnp.array(spatial_x),
+            'spatial_y': jnp.array(spatial_y),
+            'psf_grid': jnp.array(psf_grid, dtype=jnp.float32),
+            'psf_fov_pixels': psf_size,
+            'pixel_scale': 0.11,
+            'oversample': 4,
+        }
+
+        return payload
+
+    def test_spatial_interpolation_shape(self, simple_payload):
+        """Spatial interpolation should return all wavelengths."""
+        psfs = psf_model.interpolate_psf_spatial(simple_payload, 2000.0, 2000.0)
+
+        # Should return [N_wl, PSF_y, PSF_x]
+        assert psfs.shape == (3, 10, 10)
+
+    def test_spatial_interpolation_at_grid_point(self, simple_payload):
+        """Interpolation at exact grid point should match grid values."""
+        # At grid point (2000.0, 2000.0), which is index [1, 1] in spatial grid
+        psfs = psf_model.interpolate_psf_spatial(simple_payload, 2000.0, 2000.0)
+
+        # Values should be: value = iy + ix + iwl = 1 + 1 + iwl
+        # For iwl=0,1,2: values should be 2, 3, 4
+        assert jnp.allclose(psfs[0], 2.0, rtol=1e-6)
+        assert jnp.allclose(psfs[1], 3.0, rtol=1e-6)
+        assert jnp.allclose(psfs[2], 4.0, rtol=1e-6)
+
+    def test_spatial_interpolation_midpoint(self, simple_payload):
+        """Interpolation at spatial midpoint should average 4 corners."""
+        # At midpoint (1500.0, 1500.0), which is between [0,0], [0,1], [1,0], [1,1]
+        psfs = psf_model.interpolate_psf_spatial(simple_payload, 1500.0, 1500.0)
+
+        # For each wavelength, average of 4 corners:
+        # iwl=0: (0+1+1+2)/4 = 1.0
+        # iwl=1: (1+2+2+3)/4 = 2.0
+        # iwl=2: (2+3+3+4)/4 = 3.0
+        assert jnp.allclose(psfs[0], 1.0, rtol=1e-6)
+        assert jnp.allclose(psfs[1], 2.0, rtol=1e-6)
+        assert jnp.allclose(psfs[2], 3.0, rtol=1e-6)
+
+    def test_spatial_matches_trilinear_at_grid_wavelengths(self, simple_payload):
+        """Spatial interpolation should match trilinear at grid wavelengths."""
+        xsca, ysca = 1500.0, 2500.0
+
+        # Get all wavelengths via spatial interpolation
+        psfs_spatial = psf_model.interpolate_psf_spatial(simple_payload, xsca, ysca)
+
+        # Compare to trilinear at each grid wavelength
+        wavelengths = simple_payload['wavelengths']
+        for i, wl in enumerate(wavelengths):
+            psf_trilinear = psf_model.interpolate_psf(simple_payload, xsca, ysca, float(wl))
+            assert jnp.allclose(psfs_spatial[i], psf_trilinear, rtol=1e-6)
+
+    def test_spatial_jit_compilation(self, simple_payload):
+        """Spatial interpolation should be JIT-compilable."""
+        payload = simple_payload
+
+        @jax.jit
+        def interp_spatial_jit(xsca, ysca):
+            return psf_model.interpolate_psf_spatial(payload, xsca, ysca)
+
+        # First call (compile + run)
+        psfs1 = interp_spatial_jit(2000.0, 2000.0)
+
+        # Second call (cached)
+        psfs2 = interp_spatial_jit(2500.0, 2500.0)
+
+        # Both should have same shape
+        assert psfs1.shape == psfs2.shape == (3, 10, 10)
+
+    def test_spatial_edge_extrapolation(self, simple_payload):
+        """Spatial interpolation should use edge values for out-of-bounds."""
+        # x off-grid low (500 < 1000)
+        psfs_low = psf_model.interpolate_psf_spatial(simple_payload, 500.0, 2000.0)
+
+        # Should clamp to x_idx=0, y_idx=1
+        # Values: iy=1, ix=0, iwl=0,1,2 → 1, 2, 3
+        assert jnp.allclose(psfs_low[0], 1.0, rtol=1e-6)
+        assert jnp.allclose(psfs_low[1], 2.0, rtol=1e-6)
+        assert jnp.allclose(psfs_low[2], 3.0, rtol=1e-6)
+
+
+# ============================================================================
 # INTEGRATION TESTS (SLOW - require STPSF)
 # ============================================================================
 
@@ -527,17 +642,18 @@ class TestPSFIntegration:
         )
 
         # Check all PSFs have flux ~1.0 (normalized)
+        # Shape: [N_y, N_x, N_wl, PSF_y, PSF_x]
         psf_grid = payload['psf_grid']
-        for iwl in range(psf_grid.shape[0]):
-            for iy in range(psf_grid.shape[1]):
-                for ix in range(psf_grid.shape[2]):
-                    psf = psf_grid[iwl, iy, ix]
+        for iy in range(psf_grid.shape[0]):
+            for ix in range(psf_grid.shape[1]):
+                for iwl in range(psf_grid.shape[2]):
+                    psf = psf_grid[iy, ix, iwl]
                     total_flux = float(psf.sum())
 
                     # PSFs lose some flux outside FOV (extended wings)
                     # Expect 95-100% flux within 5" FOV
                     assert 0.95 < total_flux < 1.001, \
-                        f"PSF[{iwl},{iy},{ix}] flux {total_flux} outside [0.95, 1.001]"
+                        f"PSF[{iy},{ix},{iwl}] flux {total_flux} outside [0.95, 1.001]"
 
     @pytest.mark.slow
     @pytest.mark.stpsf

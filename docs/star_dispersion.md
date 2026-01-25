@@ -10,6 +10,36 @@ Disperse a set of stars throughout the grism.
 4. Interpolate the PSF at this position and wavelength.
 5. Deposit/accumulate the PSF position into the output image.
 
+## Open Question: PSF Position for Interpolation
+
+**Which position should be used for PSF lookup?**
+
+There are two valid approaches for step 4:
+
+### Option A: Undispersed Position
+- Use the original star position (x₀, y₀) for PSF lookup at all wavelengths
+- Same spatial position for all wavelengths → more efficient
+- Single bilinear spatial interpolation, then slice all wavelengths
+- Use `interpolate_psf_spatial(payload, x₀, y₀)` → returns `[N_wl, PSF_y, PSF_x]`
+
+### Option B: Dispersed Position
+- Use the dispersed position (xλ, yλ) for PSF lookup at each wavelength
+- Different spatial position for each wavelength → requires per-wavelength interpolation
+- Use `interpolate_psf(payload, xλ, yλ, λ)` for each wavelength
+
+### Which is Correct?
+
+Both are physically valid. The choice depends on how STPSF defines its `detector_position`:
+- If `detector_position` means "where light originates in the field" → use **undispersed**
+- If `detector_position` means "where light lands on detector" → use **dispersed**
+
+**Current status:** The PSF grid uses `[N_y, N_x, N_wl, ...]` ordering which is efficient for
+both approaches. Both interpolation functions are implemented. The choice of which to use
+will be determined when we better understand STPSF's coordinate convention.
+
+**Practical note:** PSF analysis showed field dependence is minimal for enclosed energy curves,
+so the difference may be small in practice.
+
 # Design Phases
 
 ## Phase 1 : Build data model for PSF interpolation ✅ COMPLETE
