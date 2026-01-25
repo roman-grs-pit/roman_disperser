@@ -138,7 +138,6 @@ def make_psf_payload(
     - PSFs calculated using STPSF's OVERDIST extension (oversampled + detector effects)
     - OVERDIST includes geometric distortion, charge diffusion, pixel sampling
     - Oversampling (4×) is REQUIRED for sub-pixel positioning accuracy
-    - Fast mode uses OVERSAMP only (no detector effects) for speed
     - PSF grid is stored as JAX arrays for GPU compatibility
     - Use JIT closure pattern for efficient disperser integration
 
@@ -284,9 +283,9 @@ def _compute_psf_grid_with_timing(
 
             # Calculate datacube at this position
             # CRITICAL: Use OVERDIST extension for sub-pixel accuracy + detector effects
+            # Note: add_distortion is no longer needed - all WFI PSFs natively include distortion
             datacube = wfi.calc_datacube(
-                wavelengths, fov_arcsec=fov_arcsec, oversample=oversample,
-                add_distortion=True
+                wavelengths, fov_arcsec=fov_arcsec, oversample=oversample
             )
             # Use OVERDIST: oversampled + detector effects (distortion, diffusion)
             psf_cube = datacube['OVERDIST'].data  # [N_wl, PSF_y, PSF_x]

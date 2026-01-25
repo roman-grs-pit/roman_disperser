@@ -260,6 +260,35 @@ class TestPSFPayload:
                 verbose=False
             )
 
+    @pytest.mark.slow
+    def test_corner_detector_generation(self):
+        """Test PSF generation works for corner detector (not just central WFI05)."""
+        # Use WFI01 (corner detector) to test edge handling
+        wavelengths = np.linspace(0.9e-6, 2.0e-6, 2)
+        spatial_grid = {
+            'x': np.array([2000.0]),
+            'y': np.array([2000.0])
+        }
+
+        payload = psf_model.make_psf_payload(
+            detector='WFI01',  # Corner detector
+            order='1',
+            wavelengths=wavelengths,
+            spatial_grid=spatial_grid,
+            verbose=False
+        )
+
+        # Verify payload is valid
+        assert payload['detector'] == 'WFI01'
+        assert payload['psf_grid'].shape[0] == 2  # 2 wavelengths
+
+        # Check PSF normalization
+        for iwl in range(2):
+            psf = payload['psf_grid'][iwl, 0, 0]
+            total_flux = float(psf.sum())
+            assert 0.95 < total_flux < 1.01, \
+                f"PSF flux {total_flux} outside [0.95, 1.01]"
+
 
 # ============================================================================
 # PSF INTERPOLATION TESTS
@@ -389,6 +418,25 @@ class TestPSFInterpolation:
         # Should have shape [3, 10, 10]
         assert psfs.shape == (3, 10, 10)
 
+    def test_interpolation_flux_conservation(self, simple_payload):
+        """Interpolated PSFs should produce values between grid corners."""
+        # Interpolate at midpoint between grid positions
+        # Grid: x=[1000, 2000, 3000], y=[1000, 2000, 3000], wl=[1.0e-6, 1.5e-6, 1.9e-6]
+        xsca_mid = 1500.0  # Between 1000 and 2000
+        ysca_mid = 1500.0
+        wavelength_mid = 1.25e-6  # Between 1.0e-6 and 1.5e-6
+
+        psf = psf_model.interpolate_psf(simple_payload, xsca_mid, ysca_mid, wavelength_mid)
+
+        # For our simple test payload with constant values per PSF,
+        # the interpolated value should be the weighted average of corners
+        # Corners involved: [wl=0,y=0,x=0], [wl=0,y=0,x=1], [wl=0,y=1,x=0], [wl=0,y=1,x=1],
+        #                   [wl=1,y=0,x=0], [wl=1,y=0,x=1], [wl=1,y=1,x=0], [wl=1,y=1,x=1]
+        # Values: 0, 1, 1, 2, 1, 2, 2, 3
+        # With all fractions at 0.5: average = (0+1+1+2+1+2+2+3)/8 = 12/8 = 1.5
+        assert psf.shape == (10, 10)
+        assert jnp.allclose(psf, 1.5, rtol=1e-6)
+
 
 # ============================================================================
 # INTEGRATION TESTS (SLOW - require STPSF)
@@ -408,7 +456,8 @@ class TestPSFIntegration:
         pytest.importorskip("stpsf")  # Skip if STPSF not available
 
         # Generate coarse payload
-        wavelengths = np.array([0.9e-6, 1.5e-6, 2.0e-6])
+        # Use wavelengths within STPSF aberration reference range [1.0e-6, 1.9e-6]
+        wavelengths = np.array([1.0e-6, 1.5e-6, 1.9e-6])
         spatial_grid = {
             'x': np.array([1500.0, 2500.0]),
             'y': np.array([1500.0, 2500.0])
@@ -443,19 +492,18 @@ class TestPSFIntegration:
         wfi.detector_position = (float(x_stpsf), float(y_stpsf))
 
         datacube = wfi.calc_datacube(
-            np.array([wavelength_test]), fov_arcsec=5.0, oversample=4,
-            add_distortion=False
+            np.array([wavelength_test]), fov_arcsec=5.0, oversample=4
         )
-        psf_direct = datacube['OVERSAMP'].data[0]  # First wavelength
+        psf_direct = datacube['OVERDIST'].data[0]  # First wavelength
 
-        # Compare total flux (should be within a few percent)
+        # Compare total flux (should be within 1%)
         flux_interp = float(psf_interp.sum())
         flux_direct = float(psf_direct.sum())
         flux_error = abs(flux_interp - flux_direct) / flux_direct
 
-        # Allow 5% error due to spatial interpolation
-        assert flux_error < 0.05, \
-            f"Flux error {flux_error:.2%} exceeds 5% threshold"
+        # Allow 1% error due to spatial interpolation
+        assert flux_error < 0.01, \
+            f"Flux error {flux_error:.2%} exceeds 1% threshold"
 
     @pytest.mark.slow
     @pytest.mark.stpsf
@@ -490,3 +538,61 @@ class TestPSFIntegration:
                     # Expect 95-100% flux within 5" FOV
                     assert 0.95 < total_flux < 1.00, \
                         f"PSF[{iwl},{iy},{ix}] flux {total_flux} outside [0.95, 1.00]"
+
+    @pytest.mark.slow
+    @pytest.mark.stpsf
+    def test_interpolation_at_spatial_midpoint(self):
+        """Interpolated PSF at spatial midpoint should be close to direct STPSF calculation."""
+        pytest.importorskip("stpsf")
+
+        import stpsf.roman
+
+        # Generate payload with 2x2 spatial grid
+        # Need at least 2 wavelengths for interpolation to work
+        # Use wavelengths within STPSF aberration reference range [1.0e-6, 1.9e-6]
+        wavelengths = np.array([1.4e-6, 1.6e-6])
+        spatial_grid = {
+            'x': np.array([1500.0, 2500.0]),
+            'y': np.array([1500.0, 2500.0])
+        }
+
+        payload = psf_model.make_psf_payload(
+            detector='WFI05',
+            order='1',
+            wavelengths=wavelengths,
+            spatial_grid=spatial_grid,
+            fov_arcsec=5.0,
+            verbose=False
+        )
+
+        # Test at exact center (midpoint of all 4 corners)
+        xsca_test = 2000.0  # Midway between 1500 and 2500
+        ysca_test = 2000.0
+        wavelength_test = 1.5e-6  # On grid
+
+        # Get interpolated PSF
+        psf_interp = psf_model.interpolate_psf(
+            payload, xsca_test, ysca_test, wavelength_test
+        )
+
+        # Get direct STPSF PSF at same position
+        wfi = stpsf.roman.WFI()
+        wfi.filter = 'GRISM1'
+        wfi.detector = 'WFI05'
+
+        x_stpsf, y_stpsf = psf_utils.sca_to_stpsf_position(xsca_test, ysca_test)
+        wfi.detector_position = (float(x_stpsf), float(y_stpsf))
+
+        datacube = wfi.calc_datacube(
+            np.array([wavelength_test]), fov_arcsec=5.0, oversample=4
+        )
+        psf_direct = datacube['OVERDIST'].data[0]
+
+        # Compare total flux (should be within 1%)
+        flux_interp = float(psf_interp.sum())
+        flux_direct = float(psf_direct.sum())
+        flux_error = abs(flux_interp - flux_direct) / flux_direct
+
+        # Allow 1% error due to spatial interpolation
+        assert flux_error < 0.01, \
+            f"Flux error {flux_error:.2%} exceeds 1% threshold"

@@ -8,3 +8,13 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = ["numpy"]
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (require STPSF PSF generation)",
+    "stpsf: marks tests that require STPSF library",
+]
+filterwarnings = [
+    # Ignore STPSF internal deprecation warnings about _log.warn
+    "ignore:The 'warn' method is deprecated:DeprecationWarning:stpsf",
+]
+
