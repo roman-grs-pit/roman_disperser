@@ -712,3 +712,271 @@ class TestPSFIntegration:
         # Allow 1% error due to spatial interpolation
         assert flux_error < 0.01, \
             f"Flux error {flux_error:.2%} exceeds 1% threshold"
+
+
+# ============================================================================
+# PSF CACHING TESTS
+# ============================================================================
+
+
+class TestPSFCaching:
+    """Test PSF payload caching (save/load)."""
+
+    @pytest.fixture
+    def simple_payload(self):
+        """Create a simple test payload with analytical PSFs."""
+        # Same as TestPSFInterpolation fixture
+        wavelengths = np.array([1.0e-6, 1.5e-6, 1.9e-6])
+        spatial_x = np.array([1000.0, 2000.0, 3000.0])
+        spatial_y = np.array([1000.0, 2000.0, 3000.0])
+
+        psf_size = 10
+        psf_grid = np.zeros((3, 3, 3, psf_size, psf_size))
+
+        for iy in range(3):
+            for ix in range(3):
+                for iwl in range(3):
+                    value = float(iy + ix + iwl)
+                    psf_grid[iy, ix, iwl, :, :] = value
+
+        payload = {
+            'detector': 'WFI05',
+            'order': '1',
+            'wavelengths': jnp.array(wavelengths),
+            'wl_grid': jnp.array(wavelengths),
+            'spatial_x': jnp.array(spatial_x),
+            'spatial_y': jnp.array(spatial_y),
+            'psf_grid': jnp.array(psf_grid, dtype=jnp.float32),
+            'psf_fov_pixels': psf_size,
+            'pixel_scale': 0.11,
+            'oversample': 4,
+            'timing': {'total_time': 10.0, 'n_psfs': 27},
+        }
+
+        return payload
+
+    def test_get_cache_filename(self):
+        """Test cache filename generation."""
+        wavelengths = np.arange(0.9e-6, 2.01e-6, 0.02e-6)
+        spatial_grid = {
+            'x': np.linspace(1, 4088, 4),
+            'y': np.linspace(1, 4088, 4)
+        }
+
+        filename = psf_model.get_cache_filename(
+            detector='WFI05',
+            order='1',
+            wavelengths=wavelengths,
+            spatial_grid=spatial_grid,
+            fov_arcsec=5.0,
+            oversample=4,
+        )
+
+        # Check filename structure
+        assert filename.startswith('psf_WFI05_GRISM1_')
+        assert '4x4x56' in filename
+        assert '0.90-2.00um' in filename
+        assert 'fov5.0' in filename
+        assert 'os4' in filename
+        assert filename.endswith('.npz')
+
+    def test_get_cache_filename_different_orders(self):
+        """Test that different orders produce different filenames."""
+        wavelengths = np.array([1.0e-6, 1.5e-6])
+        spatial_grid = {'x': np.array([1000.0, 3000.0]), 'y': np.array([1000.0, 3000.0])}
+
+        filename_0 = psf_model.get_cache_filename(
+            'WFI05', '0', wavelengths, spatial_grid, 5.0, 4
+        )
+        filename_1 = psf_model.get_cache_filename(
+            'WFI05', '1', wavelengths, spatial_grid, 5.0, 4
+        )
+
+        assert 'GRISM0' in filename_0
+        assert 'GRISM1' in filename_1
+        assert filename_0 != filename_1
+
+    def test_save_and_load_roundtrip(self, simple_payload, tmp_path):
+        """Test that save/load roundtrip preserves payload."""
+        cache_file = tmp_path / "test_payload.npz"
+
+        # Save
+        psf_model.save_psf_payload(simple_payload, cache_file, verbose=False)
+        assert cache_file.exists()
+
+        # Load
+        loaded = psf_model.load_psf_payload(cache_file, verbose=False)
+
+        # Verify key fields match
+        assert loaded['detector'] == simple_payload['detector']
+        assert loaded['order'] == simple_payload['order']
+        assert loaded['oversample'] == simple_payload['oversample']
+        assert jnp.allclose(loaded['wavelengths'], simple_payload['wavelengths'])
+        assert jnp.allclose(loaded['spatial_x'], simple_payload['spatial_x'])
+        assert jnp.allclose(loaded['spatial_y'], simple_payload['spatial_y'])
+        assert jnp.allclose(loaded['psf_grid'], simple_payload['psf_grid'])
+
+    def test_load_nonexistent_raises(self, tmp_path):
+        """Test that loading nonexistent file raises FileNotFoundError."""
+        with pytest.raises(FileNotFoundError):
+            psf_model.load_psf_payload(tmp_path / "nonexistent.npz", verbose=False)
+
+    def test_interpolation_works_after_load(self, simple_payload, tmp_path):
+        """Test that loaded payload works with interpolation."""
+        cache_file = tmp_path / "test_payload.npz"
+
+        # Save and reload
+        psf_model.save_psf_payload(simple_payload, cache_file, verbose=False)
+        loaded = psf_model.load_psf_payload(cache_file, verbose=False)
+
+        # Interpolate with loaded payload
+        psf = psf_model.interpolate_psf(loaded, 2000.0, 2000.0, 1.5e-6)
+
+        # Should match expected value (same as test_interpolation_at_grid_points)
+        expected_value = 3.0  # iwl=1, iy=1, ix=1
+        assert jnp.allclose(psf, expected_value, rtol=1e-6)
+
+    def test_get_or_make_without_cache_dir(self, simple_payload, monkeypatch):
+        """Test get_or_make_psf_payload without cache_dir always generates."""
+        # This test would be slow with real STPSF, so we mock make_psf_payload
+        call_count = [0]
+
+        def mock_make_psf_payload(**kwargs):
+            call_count[0] += 1
+            return simple_payload
+
+        monkeypatch.setattr(psf_model, 'make_psf_payload', mock_make_psf_payload)
+
+        # Without cache_dir, should call make_psf_payload
+        result = psf_model.get_or_make_psf_payload(
+            detector='WFI05', order='1', cache_dir=None, verbose=False
+        )
+
+        assert call_count[0] == 1
+        assert result is simple_payload
+
+    def test_get_or_make_uses_cache(self, simple_payload, tmp_path, monkeypatch):
+        """Test that get_or_make_psf_payload uses cache on second call."""
+        call_count = [0]
+
+        def mock_make_psf_payload(**kwargs):
+            call_count[0] += 1
+            return simple_payload
+
+        monkeypatch.setattr(psf_model, 'make_psf_payload', mock_make_psf_payload)
+
+        cache_dir = tmp_path / "cache"
+
+        # First call: should generate and save
+        result1 = psf_model.get_or_make_psf_payload(
+            detector='WFI05', order='1', cache_dir=cache_dir, verbose=False
+        )
+        assert call_count[0] == 1
+
+        # Second call: should load from cache (no new generation)
+        result2 = psf_model.get_or_make_psf_payload(
+            detector='WFI05', order='1', cache_dir=cache_dir, verbose=False
+        )
+        assert call_count[0] == 1  # Still 1, not 2
+
+        # Both should be equivalent
+        assert jnp.allclose(result1['psf_grid'], result2['psf_grid'])
+
+    def test_get_or_make_force_regenerate(self, simple_payload, tmp_path, monkeypatch):
+        """Test that force_regenerate bypasses cache."""
+        call_count = [0]
+
+        def mock_make_psf_payload(**kwargs):
+            call_count[0] += 1
+            return simple_payload
+
+        monkeypatch.setattr(psf_model, 'make_psf_payload', mock_make_psf_payload)
+
+        cache_dir = tmp_path / "cache"
+
+        # First call
+        psf_model.get_or_make_psf_payload(
+            detector='WFI05', order='1', cache_dir=cache_dir, verbose=False
+        )
+        assert call_count[0] == 1
+
+        # Second call with force_regenerate
+        psf_model.get_or_make_psf_payload(
+            detector='WFI05', order='1', cache_dir=cache_dir,
+            force_regenerate=True, verbose=False
+        )
+        assert call_count[0] == 2  # Should regenerate
+
+    def test_cache_creates_directory(self, simple_payload, tmp_path, monkeypatch):
+        """Test that caching creates cache directory if it doesn't exist."""
+        def mock_make_psf_payload(**kwargs):
+            return simple_payload
+
+        monkeypatch.setattr(psf_model, 'make_psf_payload', mock_make_psf_payload)
+
+        # Use a nested directory that doesn't exist
+        cache_dir = tmp_path / "nested" / "cache" / "dir"
+        assert not cache_dir.exists()
+
+        psf_model.get_or_make_psf_payload(
+            detector='WFI05', order='1', cache_dir=cache_dir, verbose=False
+        )
+
+        # Directory should have been created
+        assert cache_dir.exists()
+        # Should have one .npz file
+        npz_files = list(cache_dir.glob("*.npz"))
+        assert len(npz_files) == 1
+
+    @pytest.mark.slow
+    @pytest.mark.stpsf
+    def test_stpsf_payload_cache_roundtrip(self, tmp_path):
+        """Test full roundtrip: generate real STPSF payload, save, load, verify."""
+        pytest.importorskip("stpsf")
+
+        # Generate minimal real STPSF payload
+        # Note: need at least 2 points per dimension for interpolation to work
+        wavelengths = np.array([1.4e-6, 1.6e-6])
+        spatial_grid = {
+            'x': np.array([1500.0, 2500.0]),
+            'y': np.array([1500.0, 2500.0])
+        }
+
+        original = psf_model.make_psf_payload(
+            detector='WFI05',
+            order='1',
+            wavelengths=wavelengths,
+            spatial_grid=spatial_grid,
+            fov_arcsec=5.0,
+            verbose=False,
+        )
+
+        # Save to cache
+        cache_file = tmp_path / "test_stpsf_payload.npz"
+        psf_model.save_psf_payload(original, cache_file, verbose=False)
+        assert cache_file.exists()
+
+        # Load from cache
+        loaded = psf_model.load_psf_payload(cache_file, verbose=False)
+
+        # Verify metadata matches
+        assert loaded['detector'] == original['detector']
+        assert loaded['order'] == original['order']
+        assert loaded['oversample'] == original['oversample']
+
+        # Verify arrays match
+        assert jnp.allclose(loaded['wavelengths'], original['wavelengths'])
+        assert jnp.allclose(loaded['spatial_x'], original['spatial_x'])
+        assert jnp.allclose(loaded['spatial_y'], original['spatial_y'])
+        assert jnp.allclose(loaded['psf_grid'], original['psf_grid'])
+
+        # Verify interpolation works and produces same results
+        test_wl = 1.5e-6
+        psf_original = psf_model.interpolate_psf(original, 2000.0, 2000.0, test_wl)
+        psf_loaded = psf_model.interpolate_psf(loaded, 2000.0, 2000.0, test_wl)
+
+        assert jnp.allclose(psf_original, psf_loaded, rtol=1e-6)
+
+        # Verify flux is reasonable (should be ~1.0 for normalized PSF)
+        flux = float(psf_loaded.sum())
+        assert 0.95 < flux < 1.001, f"Unexpected flux: {flux}"

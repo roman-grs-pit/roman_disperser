@@ -18,6 +18,7 @@ python = ">=3.12, <3.13"
 numpy = ">=2.0"
 matplotlib = ">=3.10"
 scipy = "*"
+tqdm = "*"
 
 # VS Code & Quarto requirements
 ipykernel = "*"  # Required for VS Code to run notebooks

@@ -92,7 +92,7 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 - [x] PSF grid fits in GPU memory (~121 MB for 4×4×56 grid, 5" FOV, 4× oversampled)
 - [x] Interpolation runs efficiently on GPU (~5-6 ms per interpolation)
 - [x] Edge extrapolation handles off-grid positions correctly
-- [ ] Caching added if needed based on performance data (not needed for Phase 1)
+- [x] Caching implemented (`save_psf_payload`, `load_psf_payload`, `get_or_make_psf_payload`)
 
 **Integration:**
 - [ ] `disperse_star_psf()` function working for single star
@@ -317,9 +317,9 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 | File | Action | Purpose |
 |------|--------|---------|
 | `src/roman_disperser/psf_utils.py` | ✅ **Done** | Coordinate conversion utilities |
-| `src/roman_disperser/psf_model.py` | ✅ **Done** | PSF payload, interpolation (defaults: 4×4, 0.02μm) |
+| `src/roman_disperser/psf_model.py` | ✅ **Done** | PSF payload, interpolation, caching (defaults: 4×4, 0.02μm) |
 | `src/roman_disperser/disperser.py` | **Modify** | Add `disperse_star_psf()` |
-| `tests/test_psf_model.py` | ✅ **Done** | PSF validation tests (21 tests) |
+| `tests/test_psf_model.py` | ✅ **Done** | PSF validation tests (29 tests, includes caching) |
 | `docs/psf_integration.md` | **Create** | Coordinate systems and usage |
 | `notebooks/psf/psf_analysis.ipynb` | ✅ **Done** | PSF characterization and EE analysis |
 | `notebooks/psf/psf_interpolation_validation.ipynb` | ✅ **Done** | Grid optimization and accuracy validation |
