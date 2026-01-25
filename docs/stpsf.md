@@ -33,33 +33,32 @@ STPSF uses different coordinate conventions than the `roman_disperser` optical m
 - **Size mismatch:** STPSF can compute PSFs at positions that fall outside the usable science region
 - **Integration:** Care needed when using STPSF PSFs with dispersed spectra from optical model
 
-**Integration Status:** ✅ RESOLVED
-- [x] STPSF detector_position is 0-indexed (confirmed)
-- [x] STPSF uses full 4096×4096 detector array
-- [x] Coordinate transformation implemented: assumes 4088 region centered in 4096 (4-pixel border)
-- [x] Utility functions: `psf_utils.sca_to_stpsf_position()` and `psf_utils.stpsf_to_sca_position()`
-- [x] Round-trip tests pass; validated in `tests/test_psf_model.py`
+**TODOs for Integration:**
+- [ ] **TODO:** Confirm STPSF detector_position is 0-indexed (initial evidence from source code suggests yes)
+- [ ] **TODO:** Confirm STPSF uses full 4096×4096 detector array (not just 4088 usable region)
+- [ ] **TODO:** Determine exact coordinate transformation between STPSF (0-indexed, 4096) and optical model (1-indexed FITS, 4088 usable)
+- [ ] **TODO:** Document whether 4088 usable region is centered in 4096 array or offset
+- [x] Add utility function for coordinate conversion between systems (`psf_utils.py` - uses placeholder assumption)
 
-**Note:** The 4-pixel border assumption is a working placeholder. Validation shows excellent
-interpolation accuracy (<0.002% flux error), suggesting the coordinate conversion is adequate.
+**Current Implementation:** `psf_utils.sca_to_stpsf_position()` assumes 4-pixel centered border.
+This is a working placeholder - interpolation accuracy is excellent (<0.002% flux error),
+but the coordinate assumption has not been independently validated.
 
-**Example Usage:**
+**Example Issue:**
 ```python
-from roman_disperser.psf_utils import sca_to_stpsf_position, stpsf_to_sca_position
-
 # Disperser optical model output (1-indexed FITS)
 xsca_dispersed = 2500.5  # Valid: 1.0 to 4088.0
-ysca_dispersed = 2000.0
 
-# Convert to STPSF coordinates (0-indexed, 4096×4096)
-x_stpsf, y_stpsf = sca_to_stpsf_position(xsca_dispersed, ysca_dispersed)
-# x_stpsf = 2503.5, y_stpsf = 2003.0 (includes 4-pixel border offset)
+# Current implementation (psf_utils.py) - uses placeholder assumption:
+from roman_disperser.psf_utils import sca_to_stpsf_position
+x_stpsf, y_stpsf = sca_to_stpsf_position(xsca_dispersed, 2000.0)
+# Assumes 4-pixel centered border: x_stpsf = xsca + 3.0
 
-# Use with STPSF
-wfi.detector_position = (x_stpsf, y_stpsf)
+# This assumption has NOT been validated against STPSF documentation
+# The coordinate offset could be different (e.g., [0:4088] or [4:4092])
 ```
 
-See `src/roman_disperser/psf_utils.py` for implementation details.
+See Section 18 (end of document) for detailed discussion of this issue.
 
 ---
 
