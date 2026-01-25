@@ -60,7 +60,7 @@ def make_psf_payload(
     positions and wavelengths, then interpolated for intermediate values.
 
     ⚠️ PERFORMANCE WARNING: This function is SLOW!
-    Expected time: ~30-60 minutes for default 10×10×15 grid (1500 PSF calculations)
+    Expected time: ~5-6 minutes for default 4×4×56 grid (896 PSF calculations)
     Consider using caching (save/load) for repeated use.
 
     Parameters
@@ -76,13 +76,14 @@ def make_psf_payload(
 
     wavelengths : array_like, optional
         Wavelengths in meters for PSF calculations
-        Default: 15 wavelengths from 0.9 to 2.0 μm (full grism range)
-        Recommendation: 15-20 wavelengths for good interpolation
+        Default: 56 wavelengths from 0.9 to 2.0 μm at 0.02 μm spacing
+        Finer wavelength sampling reduces interpolation errors in PSF wings
 
     spatial_grid : dict, optional
         Spatial grid specification: {'x': x_array, 'y': y_array}
         x_array, y_array in SCA coordinates (1-indexed FITS, range 1-4088)
-        Default: 10×10 grid from pixel 1 to 4088 (full detector range)
+        Default: 4×4 grid from pixel 1 to 4088 (full detector range)
+        4×4 is sufficient for PSF core accuracy; coarser grids degrade core
 
     fov_arcsec : float, optional
         PSF field of view in arcseconds (default: 5.0)
@@ -117,7 +118,7 @@ def make_psf_payload(
     >>> # Generate PSF grid with default settings (first order)
     >>> payload = make_psf_payload(detector='WFI05', order='1')
     >>> print(f"PSF grid shape: {payload['psf_grid'].shape}")
-    >>> # Expected: (15, 10, 10, ~108, ~108) for 3" FOV at 4× oversample
+    >>> # Expected: (56, 4, 4, ~182, ~182) for 5" FOV at 4× oversample
 
     >>> # Zeroth order (undispersed) PSFs
     >>> payload_0th = make_psf_payload(detector='WFI05', order='0')
@@ -149,8 +150,9 @@ def make_psf_payload(
     """
     # Setup default wavelengths
     if wavelengths is None:
-        # 15 wavelengths across full grism range (0.9 - 2.0 μm)
-        wavelengths = np.linspace(0.9e-6, 2.0e-6, 15)
+        # 56 wavelengths across full grism range (0.9 - 2.0 μm) at 0.02 μm spacing
+        # Finer wavelength sampling reduces interpolation errors in PSF wings
+        wavelengths = np.arange(0.9e-6, 2.01e-6, 0.02e-6)
 
     # Validate wavelengths are strictly increasing (required for interpolation)
     wavelengths = np.asarray(wavelengths)
@@ -159,10 +161,10 @@ def make_psf_payload(
 
     # Setup default spatial grid
     if spatial_grid is None:
-        # 10×10 grid across full detector range (1 to 4088)
-        # STPSF handles edge extrapolation for corner positions
-        x_grid = np.linspace(1, 4088, 10)
-        y_grid = np.linspace(1, 4088, 10)
+        # 4×4 grid across full detector range (1 to 4088)
+        # 4×4 is sufficient for PSF core accuracy; STPSF handles edge extrapolation
+        x_grid = np.linspace(1, 4088, 4)
+        y_grid = np.linspace(1, 4088, 4)
         spatial_grid = {'x': x_grid, 'y': y_grid}
 
     # Validate spatial grids are strictly increasing
@@ -180,7 +182,7 @@ def make_psf_payload(
         print(f"  Wavelengths: {len(wavelengths)} samples ({wavelengths[0]*1e6:.2f}-{wavelengths[-1]*1e6:.2f} μm)")
         print(f"  Total PSFs: {len(spatial_grid['x']) * len(spatial_grid['y']) * len(wavelengths)}")
         print(f"  FOV: {fov_arcsec:.1f} arcsec, Oversample: {oversample}×")
-        print(f"  This may take 30-60 minutes...")
+        print(f"  This may take 5-6 minutes for default grid...")
 
     psf_grid, timing = _compute_psf_grid_with_timing(
         detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, verbose
