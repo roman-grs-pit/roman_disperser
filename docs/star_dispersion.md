@@ -12,7 +12,7 @@ Disperse a set of stars throughout the grism.
 
 # Design Phases
 
-## Phase 1 : Build data model for PSF intepolation
+## Phase 1 : Build data model for PSF interpolation ✅ COMPLETE
 
 - Explore the enclosed energy and determine how many pixels we will need.
 - Oversampling of ~4 (parameter, but pick a good default)
@@ -20,6 +20,14 @@ Disperse a set of stars throughout the grism.
 - Determine the PSF interpolation method (I think we want trilinear) and implement it efficiently for GPU execution.
 - what spatial and wavelength grid do we need here? Define some validation tests.
 - write functions to build grids for different grism orders/detectors and do the necessary interpolations.
+
+**Phase 1 Results (2026-01-25):**
+- Optimal grid: **4×4 spatial + 0.02 μm wavelength** (896 PSFs, 121 MB, ~5.5 min)
+- Accuracy: **<0.002% max flux error** (500× better than 1% target)
+- Fractional error: **<1% at all radii** (core and wings)
+- Implementation: `psf_model.py` with trilinear interpolation, JIT-compatible
+- Validation: `notebooks/psf/psf_interpolation_validation.ipynb`
+- See `docs/psf_phase1_plan.md` for detailed findings
 
 ## Phase 2 : Single star
 

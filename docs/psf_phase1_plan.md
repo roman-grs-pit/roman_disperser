@@ -70,29 +70,29 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 ### Success Criteria
 
 **Core Functionality:**
-- [ ] Coordinate conversion hardcoded and JIT-compatible (open question tracked)
-- [ ] Coordinate functions compile under @jax.jit
-- [ ] Round-trip conversion exact (no rounding errors)
-- [ ] PSF payload generated for WFI05, 10×10 spatial grid, 15 wavelengths
-- [ ] **OVERDIST extension used** (4× oversampling + detector effects)
-- [ ] **Timing benchmarks** completed for PSF grid generation
-- [ ] Caching implemented **only if** generation time >10 minutes
-- [ ] Trilinear interpolation with **edge extrapolation** implemented and JIT-compilable
+- [x] Coordinate conversion hardcoded and JIT-compatible (open question tracked)
+- [x] Coordinate functions compile under @jax.jit
+- [x] Round-trip conversion exact (no rounding errors)
+- [x] PSF payload generated (optimized: 4×4 spatial grid, 56 wavelengths at 0.02 μm)
+- [x] **OVERDIST extension used** (4× oversampling + detector effects)
+- [x] **Timing benchmarks** completed for PSF grid generation (~5.5 min for default)
+- [ ] Caching implemented **only if** generation time >10 minutes (not needed - 5.5 min is fast enough)
+- [x] Trilinear interpolation with **edge extrapolation** implemented and JIT-compilable
 
 **Accuracy Validation:**
-- [ ] PSF interpolation achieves <1% flux error vs direct STPSF
-- [ ] Enclosed energy >95% in all PSFs (5" FOV captures 96-98%)
-- [ ] Interpolation errors documented across grid
-- [ ] Edge cases handled gracefully (warnings, not crashes)
+- [x] PSF interpolation achieves <1% flux error vs direct STPSF (**achieved <0.002%**)
+- [x] Enclosed energy >95% in all PSFs (5" FOV captures 96-98%)
+- [x] Interpolation errors documented across grid (see validation notebook)
+- [x] Edge cases handled gracefully (warnings, not crashes)
 
 **Performance:**
-- [ ] PSF grid generation timing measured and documented
-- [ ] JIT compilation works with PSF payload (closure pattern)
-- [ ] JIT compilation works with coordinate conversion functions
-- [ ] PSF grid fits in GPU memory (~188 MB for 10×10×15 grid, 5" FOV, 4× oversampled)
-- [ ] Interpolation runs efficiently on GPU
-- [ ] Edge extrapolation handles off-grid positions correctly
-- [ ] Caching added if needed based on performance data (optional for Phase 1)
+- [x] PSF grid generation timing measured and documented (~5.5 min for 4×4×56)
+- [x] JIT compilation works with PSF payload (closure pattern)
+- [x] JIT compilation works with coordinate conversion functions
+- [x] PSF grid fits in GPU memory (~121 MB for 4×4×56 grid, 5" FOV, 4× oversampled)
+- [x] Interpolation runs efficiently on GPU (~5-6 ms per interpolation)
+- [x] Edge extrapolation handles off-grid positions correctly
+- [ ] Caching added if needed based on performance data (not needed for Phase 1)
 
 **Integration:**
 - [ ] `disperse_star_psf()` function working for single star
@@ -100,11 +100,11 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 - [ ] Wavelength-dependent PSF changes visible in output
 
 **Documentation:**
-- [ ] Four notebooks created demonstrating each phase
-- [ ] Coordinate assumptions clearly documented with warnings
-- [ ] Usage examples provided in documentation
-- [ ] Known limitations listed for future work
-- [ ] All notebooks run successfully and produce expected visualizations
+- [ ] Four notebooks created demonstrating each phase (1 of 4 complete)
+- [x] Coordinate assumptions clearly documented with warnings
+- [x] Usage examples provided in documentation
+- [x] Known limitations listed for future work
+- [x] Validation notebook runs successfully and produces expected visualizations
 
 ---
 
@@ -118,10 +118,11 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 - Defer full resolution to future work if placeholder proves adequate
 
 ### 2. PSF Field Dependence: Full Field-Dependent
-**Decision:** Implement 10×10 spatial grid across single SCA
-- Captures field-dependent aberrations realistically
+**Decision:** Implement 4×4 spatial grid across single SCA (updated from 10×10)
+- 4×4 is sufficient for PSF core accuracy; coarser (3×3) degrades core
+- Finer (5×5, 10×10) provides no additional benefit
+- Grid spans full detector range (1 to 4088); STPSF handles edge extrapolation
 - Focus on single SCA (WFI05 recommended - central detector)
-- Grid points: evenly spaced from pixel ~500 to ~3500 (avoiding edges)
 
 ### 3. Accuracy Target: <1% with Good Validation
 **Decision:** Science-ready quality
@@ -188,10 +189,48 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 
 ### Implications for Implementation
 
-- **Spatial Grid:** 10×10 grid spans full detector range; STPSF handles edge cases
+- **Spatial Grid:** 4×4 grid spans full detector range; STPSF handles edge cases
+- **Wavelength Grid:** 0.02 μm spacing (56 wavelengths) for wing accuracy
 - **Order Grid:** Maintain separate grids for each order (PSF shapes may differ even if EE is similar)
-- **Caching:** Recommended given ~10+ minute generation time for full grid
+- **Caching:** Not needed - 5.5 min generation time is acceptable
 - **FOV:** 5" provides good margin for EE95 at all wavelengths
+
+---
+
+## Interpolation Validation Results
+
+> **Source:** `notebooks/psf/psf_interpolation_validation.ipynb` - comprehensive validation notebook
+
+### Grid Configuration Comparison (128 Sobol test points, WFI02)
+
+| Configuration | Grid Shape | Memory | Gen Time | Max Flux Error |
+|---------------|------------|--------|----------|----------------|
+| 5×5, 0.1 μm   | (12, 5, 5) | 41 MB | 1.8 min | 0.0122% |
+| 5×5, 0.05 μm  | (23, 5, 5) | 78 MB | 3.5 min | 0.0042% |
+| 10×10, 0.1 μm | (12, 10, 10) | 163 MB | 7.3 min | 0.0122% |
+| 3×3, 0.02 μm  | (56, 3, 3) | 68 MB | 3.1 min | 0.0013% |
+| **4×4, 0.02 μm** | **(56, 4, 4)** | **121 MB** | **5.5 min** | **0.0013%** |
+
+### Key Findings
+
+1. **Wavelength sampling dominates total flux accuracy**
+   - 5×5 vs 10×10 spatial gives identical flux errors (0.0122% max)
+   - Finer wavelength (0.02 μm) reduces errors 10× vs coarser (0.1 μm)
+
+2. **Spatial sampling matters for PSF core**
+   - 3×3 spatial: excellent total flux but >1% fractional error at small radii
+   - 4×4 spatial: maintains <1% fractional error at all radii
+   - 5×5 and 10×10: no additional benefit over 4×4
+
+3. **Recommended Configuration: 4×4 spatial + 0.02 μm wavelength**
+   - Best balance of core and wing accuracy
+   - <0.002% max flux error (500× better than 1% target)
+   - <1% fractional error at all radii
+   - 896 PSFs, 121 MB memory, ~5.5 min generation
+
+4. **All-SCA timing estimate**
+   - 18 SCAs × 6.3 min/SCA = ~1.9 hours total
+   - Validation time: ~50 sec per SCA (128 test points)
 
 ---
 
@@ -269,15 +308,14 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 | File | Action | Purpose |
 |------|--------|---------|
 | `src/roman_disperser/psf_utils.py` | ✅ **Done** | Coordinate conversion utilities |
-| `src/roman_disperser/psf_model.py` | ✅ **Done** | PSF payload, interpolation, caching |
+| `src/roman_disperser/psf_model.py` | ✅ **Done** | PSF payload, interpolation (defaults: 4×4, 0.02μm) |
 | `src/roman_disperser/disperser.py` | **Modify** | Add `disperse_star_psf()` |
-| `tests/test_psf_model.py` | **Create** | PSF validation tests |
+| `tests/test_psf_model.py` | ✅ **Done** | PSF validation tests (21 tests) |
 | `docs/psf_integration.md` | **Create** | Coordinate systems and usage |
 | `notebooks/psf/psf_analysis.ipynb` | ✅ **Done** | PSF characterization and EE analysis |
-| `notebooks/01_psf_generation.ipynb` | **Create** | Generate and visualize PSF grids |
-| `notebooks/02_psf_interpolation.ipynb` | **Create** | Test interpolation accuracy |
+| `notebooks/psf/psf_interpolation_validation.ipynb` | ✅ **Done** | Grid optimization and accuracy validation |
 | `notebooks/03_single_star_demo.ipynb` | **Create** | Single star dispersion |
-| `notebooks/04_validation_suite.ipynb` | **Create** | Comprehensive validation |
+| `notebooks/04_validation_suite.ipynb` | **Create** | Comprehensive validation (all SCAs) |
 
 ---
 
