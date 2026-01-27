@@ -76,12 +76,13 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 - [x] PSF payload generated (optimized: 4×4 spatial grid, 56 wavelengths at 0.02 μm)
 - [x] **OVERDIST extension used** (4× oversampling + detector effects)
 - [x] **Timing benchmarks** completed for PSF grid generation (~5.5 min for default)
-- [ ] Caching implemented **only if** generation time >10 minutes (not needed - 5.5 min is fast enough)
+- [x] Caching implemented (`save_psf_payload`, `load_psf_payload`, `get_or_make_psf_payload`)
 - [x] Trilinear interpolation with **edge extrapolation** implemented and JIT-compilable
 
 **Accuracy Validation:**
-- [x] PSF interpolation achieves <1% flux error vs direct STPSF (**achieved <0.002%**)
+- [x] PSF interpolation achieves <1% flux error vs direct STPSF (**achieved <0.03% across all SCAs**)
 - [x] Enclosed energy >95% in all PSFs (5" FOV captures 96-98%)
+- [x] Radial fractional error <10% at all radii (**achieved <5%**)
 - [x] Interpolation errors documented across grid (see validation notebook)
 - [x] Edge cases handled gracefully (warnings, not crashes)
 
@@ -92,7 +93,6 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 - [x] PSF grid fits in GPU memory (~121 MB for 4×4×56 grid, 5" FOV, 4× oversampled)
 - [x] Interpolation runs efficiently on GPU (~5-6 ms per interpolation)
 - [x] Edge extrapolation handles off-grid positions correctly
-- [x] Caching implemented (`save_psf_payload`, `load_psf_payload`, `get_or_make_psf_payload`)
 
 **Integration:**
 - [ ] `disperse_star_psf()` function working for single star
@@ -100,7 +100,9 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 - [ ] Wavelength-dependent PSF changes visible in output
 
 **Documentation:**
-- [ ] Four notebooks created demonstrating each phase (1 of 4 complete)
+- [x] PSF analysis notebook (`notebooks/psf/psf_analysis.ipynb`)
+- [x] PSF interpolation validation notebook (`notebooks/psf/psf_interpolation_validation.ipynb`)
+- [x] All-SCA validation notebook (`notebooks/psf/psf_allsca_validation.ipynb`)
 - [x] Coordinate assumptions clearly documented with warnings
 - [x] Usage examples provided in documentation
 - [x] Known limitations listed for future work
@@ -237,9 +239,12 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
    - <1% fractional error at all radii
    - 896 PSFs, 121 MB memory, ~5.5 min generation
 
-4. **All-SCA timing estimate**
-   - 18 SCAs × 6.3 min/SCA = ~1.9 hours total
-   - Validation time: ~50 sec per SCA (128 test points)
+4. **All-SCA validation complete (2026-01-25)**
+   - 18 SCAs × 2 orders = 36 combinations validated
+   - Max flux error: 0.03% (target <1%)
+   - Radial fractional error: <5% at all radii (target <10%)
+   - Interpolation speedup: ~90× vs direct STPSF
+   - Cache generation: ~2 hours with 2 workers
 
 ---
 
@@ -318,13 +323,12 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 |------|--------|---------|
 | `src/roman_disperser/psf_utils.py` | ✅ **Done** | Coordinate conversion utilities |
 | `src/roman_disperser/psf_model.py` | ✅ **Done** | PSF payload, interpolation, caching (defaults: 4×4, 0.02μm) |
-| `src/roman_disperser/disperser.py` | **Modify** | Add `disperse_star_psf()` |
+| `src/roman_disperser/disperser.py` | **Modify** | Add `disperse_star_psf()` (Phase 2) |
 | `tests/test_psf_model.py` | ✅ **Done** | PSF validation tests (29 tests, includes caching) |
-| `docs/psf_integration.md` | **Create** | Coordinate systems and usage |
+| `scripts/generate_psf_caches.py` | ✅ **Done** | CLI script for batch cache generation |
 | `notebooks/psf/psf_analysis.ipynb` | ✅ **Done** | PSF characterization and EE analysis |
 | `notebooks/psf/psf_interpolation_validation.ipynb` | ✅ **Done** | Grid optimization and accuracy validation |
-| `notebooks/03_single_star_demo.ipynb` | **Create** | Single star dispersion |
-| `notebooks/04_validation_suite.ipynb` | **Create** | Comprehensive validation (all SCAs) |
+| `notebooks/psf/psf_allsca_validation.ipynb` | ✅ **Done** | All 18 SCAs × 2 orders validation |
 
 ---
 

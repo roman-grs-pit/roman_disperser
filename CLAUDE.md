@@ -4,16 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy. Three main components:
+JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy. Four main components:
 - **Class-based** (`optical_model.py`): Reference implementation using NumPy
 - **JAX functional** (`optical_model_jax.py`): JIT-compilable, vectorized implementation
 - **Disperser** (`disperser.py`): 2D spatial + 1D spectral → detector simulation
+- **PSF model** (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation for star dispersion
 
 ## Design Documents
 
  - @docs/optical_model.md : JAX optical model API reference and usage examples.
  - @docs/disperser_design.md : Design document for the disperser module, including bilinear scatter-add and 2D→1D dispersion.
  - @docs/jit_compilation.md : JIT compilation strategy for the disperser (closure pattern for non-traceable payload).
+ - @docs/stpsf.md : STPSF reference for Roman WFI grism mode, including coordinate system details.
+ - @docs/star_dispersion.md : Star dispersion design phases and PSF interpolation approach.
+ - @docs/psf_phase1_plan.md : PSF data model implementation plan with validation results.
 
 ## Commands
 
@@ -24,7 +28,11 @@ pixi install                    # Install dependencies
 pixi run pytest -q tests        # Run all tests
 pixi run pytest -v tests/test_optical_model_jax.py::TestTraceBeam  # Test class
 pixi run pytest -v tests/test_optical_model_jax.py::TestTraceBeam::test_order_1_vs_class  # Single test
+pixi run pytest -m "not slow"   # Skip slow tests (STPSF generation)
 pixi run check-jax              # Check JAX backend/device
+
+# PSF cache generation (run once, takes ~2 hours with -j 2)
+pixi run python scripts/generate_psf_caches.py --workers 2
 ```
 
 ## Architecture
@@ -59,6 +67,26 @@ def disperse_jit(image, x0, y0, dx, dy, spec, lam0, dlam, output):
 ```
 
 See @docs/jit_compilation.md for full details.
+
+### PSF Model
+
+The PSF model uses STPSF to generate wavelength- and position-dependent PSF grids, then provides fast trilinear interpolation:
+
+```python
+from roman_disperser import psf_model
+
+# Load or generate PSF payload (cached to data/psf_cache/)
+payload = psf_model.get_or_make_psf_payload(
+    detector='WFI05', order='1', cache_dir='data/psf_cache'
+)
+
+# Interpolate PSF at any position and wavelength
+psf = psf_model.interpolate_psf(payload, xsca=2000.0, ysca=2000.0, wavelength=1.5e-6)
+```
+
+Key functions: `make_psf_payload`, `interpolate_psf`, `interpolate_psf_spatial`, `get_or_make_psf_payload`, `save_psf_payload`, `load_psf_payload`
+
+Default grid: 4×4 spatial × 56 wavelengths (0.9-2.0 μm), validated to <0.03% flux error across all 18 SCAs.
 
 ## Coding Guidelines
 

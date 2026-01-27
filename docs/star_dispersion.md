@@ -52,11 +52,12 @@ so the difference may be small in practice.
 - write functions to build grids for different grism orders/detectors and do the necessary interpolations.
 
 **Phase 1 Results (2026-01-25):**
-- Optimal grid: **4×4 spatial + 0.02 μm wavelength** (896 PSFs, 121 MB, ~5.5 min)
-- Accuracy: **<0.002% max flux error** (500× better than 1% target)
-- Fractional error: **<1% at all radii** (core and wings)
+- Optimal grid: **4×4 spatial + 0.02 μm wavelength** (896 PSFs, 121 MB, ~5.5 min per SCA)
+- Accuracy: **<0.03% max flux error** across all 18 SCAs × 2 orders
+- Radial error: **<5% at all radii** (target <10%)
 - Implementation: `psf_model.py` with trilinear interpolation, JIT-compatible
-- Validation: `notebooks/psf/psf_interpolation_validation.ipynb`
+- Caching: `scripts/generate_psf_caches.py` for batch generation (~2 hours with 2 workers)
+- Validation: `notebooks/psf/psf_allsca_validation.ipynb` (all 36 detector/order combinations)
 - See `docs/psf_phase1_plan.md` for detailed findings
 
 ## Phase 2 : Single star
