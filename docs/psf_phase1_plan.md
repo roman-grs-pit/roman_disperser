@@ -19,7 +19,7 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 
 1. **STPSF Integration (Complete)**
    - Package: `stpsf >= 2.1.0` installed
-   - Documentation: `docs/stpsf.md` (1976 lines, comprehensive)
+   - Documentation: `docs/stpsf.md` (quick reference) + `docs/stpsf_full.md` (comprehensive)
    - API: `calc_datacube()` for multi-wavelength PSF generation
    - Grism support: GRISM0 (zeroth order), GRISM1 (first order)
    - Wavelength range: 1.0-1.93 μm
@@ -335,7 +335,7 @@ Phase 1 creates a GPU-friendly PSF data model that enables efficient interpolati
 ## References
 
 - @docs/star_dispersion.md - Original Phase 1 requirements
-- @docs/stpsf.md - STPSF integration guide (Section 18 on coordinates!)
+- @docs/stpsf.md - STPSF quick reference (see @docs/stpsf_full.md Section 18 for coordinates)
 - @docs/optical_model.md - JAX optical model API
 - @docs/disperser_design.md - Disperser architecture
 - @docs/jit_compilation.md - JIT patterns for payloads

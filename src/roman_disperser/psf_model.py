@@ -34,7 +34,7 @@ Usage:
 Note: All wavelength parameters are in **microns** (consistent with optical model).
 
 See Also:
-    docs/stpsf.md : STPSF integration reference
+    docs/stpsf.md : STPSF quick reference (see docs/stpsf_full.md for comprehensive details)
     docs/star_dispersion.md : Design requirements
 """
 
