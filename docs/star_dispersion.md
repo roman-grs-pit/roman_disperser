@@ -86,4 +86,4 @@ Implement the proposed algorithm
 
 @docs/disperser_design.md
 @docs/optical_model.md
-@docs/stpsf.md (quick reference; see @docs/stpsf_full.md for full details)
+@docs/stpsf.md (quick reference; see @docs/reference/stpsf_full.md for full details)

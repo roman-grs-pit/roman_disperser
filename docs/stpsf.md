@@ -11,7 +11,7 @@
 - Documentation: https://stpsf.readthedocs.io
 - Repository: https://github.com/spacetelescope/stpsf
 
-**For full documentation:** See `docs/stpsf_full.md`
+**For full documentation:** See `docs/reference/stpsf_full.md`
 
 ---
 
@@ -311,7 +311,7 @@ for x, y in positions:
 
 ## References
 
-- **Full STPSF Reference:** `docs/stpsf_full.md` (comprehensive, 2000+ lines)
+- **Full STPSF Reference:** `docs/reference/stpsf_full.md` (comprehensive, 2000+ lines)
 - **PSF Model Implementation:** `src/roman_disperser/psf_model.py`
 - **Coordinate Utilities:** `src/roman_disperser/psf_utils.py`
 - **Phase 1 Plan:** `docs/psf_phase1_plan.md`

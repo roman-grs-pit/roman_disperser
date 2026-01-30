@@ -16,7 +16,7 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
  - @docs/optical_model.md : JAX optical model API reference and usage examples.
  - @docs/disperser_design.md : Design document for the disperser module, including bilinear scatter-add and 2D→1D dispersion.
  - @docs/jit_compilation.md : JIT compilation strategy for the disperser (closure pattern for non-traceable payload).
- - @docs/stpsf.md : STPSF quick reference for Roman WFI grism mode (see @docs/stpsf_full.md for comprehensive details).
+ - @docs/stpsf.md : STPSF quick reference for Roman WFI grism mode.
  - @docs/star_dispersion.md : Star dispersion design phases and PSF interpolation approach.
  - @docs/psf_phase1_plan.md : PSF data model implementation plan with validation results.
 

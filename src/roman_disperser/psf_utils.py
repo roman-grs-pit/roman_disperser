@@ -30,7 +30,7 @@ If this assumption is wrong, the coordinate conversion functions below will
 produce systematic offsets in PSF positioning, leading to incorrect dispersed
 spectra. The error will be a fixed offset (likely 4-8 pixels) in x and/or y.
 
-See docs/stpsf.md Section 6 and docs/stpsf_full.md Section 18 for detailed discussion.
+See docs/stpsf.md Section 6 and docs/reference/stpsf_full.md Section 18 for detailed discussion.
 """
 
 import jax.numpy as jnp
