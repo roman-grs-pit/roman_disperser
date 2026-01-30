@@ -135,6 +135,45 @@ def deposit_psf(output, xsca, ysca, psf, rel_x, rel_y):
     return output
 
 
+def _compute_dispersed_positions(optical_payload, xsca_star, ysca_star, wavelengths):
+    """
+    Compute dispersed SCA positions for all wavelengths.
+
+    This is a helper function extracted for clarity. It converts the star
+    position to FPA coordinates, traces the beam through the optical model,
+    and converts back to SCA coordinates.
+
+    Parameters
+    ----------
+    optical_payload : dict
+        Optical model payload from optical_model_jax.make_sca_payload()
+    xsca_star, ysca_star : float
+        Star position in SCA coordinates (1-indexed FITS)
+    wavelengths : jnp.ndarray
+        [N_wl] wavelengths in **microns**
+
+    Returns
+    -------
+    xsca_disp, ysca_disp : jnp.ndarray
+        [N_wl] dispersed positions in SCA coordinates
+    """
+    # Convert star position to FPA (optical model functions expect arrays)
+    xsca_arr = jnp.atleast_1d(xsca_star)
+    ysca_arr = jnp.atleast_1d(ysca_star)
+    xfpa, yfpa = omj.sca_to_fpa(optical_payload, xsca_arr, ysca_arr)
+
+    # Trace beam at all wavelengths (wavelengths already in microns)
+    xmpa, ympa = omj.trace_beam(optical_payload, xfpa, yfpa, wavelengths)
+
+    # Convert back to SCA
+    xsca_disp, ysca_disp = omj.mpa_to_sca(optical_payload, xmpa, ympa)
+    # Shapes: [1, N_wl] each - flatten to [N_wl]
+    xsca_disp = xsca_disp.reshape(-1)
+    ysca_disp = ysca_disp.reshape(-1)
+
+    return xsca_disp, ysca_disp
+
+
 def disperse_star_psf(
     psf_payload,
     optical_payload,
@@ -145,12 +184,17 @@ def disperse_star_psf(
     output,
     rel_x=None,
     rel_y=None,
+    chunk_size=1000,
 ):
     """
     Disperse a single star through the Roman grism using wavelength-dependent PSFs.
 
     This function deposits PSFs along the spectral trace for each wavelength,
     simulating how a point source appears after grism dispersion.
+
+    **Memory-efficient implementation:** Uses wavelength chunking with jax.lax.scan
+    to avoid materializing all interpolated PSFs at once. Memory usage is
+    independent of total wavelength count - only depends on chunk_size.
 
     Parameters
     ----------
@@ -173,6 +217,11 @@ def disperse_star_psf(
         If None, computed internally (less efficient for repeated calls)
     rel_y : jnp.ndarray, optional
         Pre-computed relative y-offsets from make_psf_pixel_grid()
+    chunk_size : int, optional
+        Number of wavelengths to process per chunk (default: 1000).
+        Larger chunks use more memory but may be faster due to better
+        GPU utilization. Memory per chunk is approximately:
+        chunk_size × PSF_y × PSF_x × 4 bytes × 4 (for indices and values)
 
     Returns
     -------
@@ -181,12 +230,24 @@ def disperse_star_psf(
 
     Notes
     -----
-    Algorithm:
-    1. Get spatially-interpolated PSFs at undispersed position
-    2. Interpolate PSFs to user wavelengths
-    3. Compute all dispersed positions via optical model (vectorized)
-    4. Scale PSFs by flux
-    5. Deposit each PSF along the trace
+    **Algorithm (memory-efficient chunked approach):**
+
+    1. Spatial interpolation (once): Get PSFs at undispersed position for all
+       grid wavelengths. This produces a small array [N_grid, PSF_y, PSF_x].
+
+    2. Compute all dispersed positions (vectorized, cheap): Get detector
+       positions for all wavelengths in one vectorized operation.
+
+    3. Process wavelengths in chunks using lax.scan:
+       a. Interpolate PSFs for this chunk from the grid
+       b. Scale by flux
+       c. Build scatter indices for all PSF pixels × wavelengths
+       d. Batched scatter-add to output
+
+    **Memory usage:**
+    - PSF grid after spatial interpolation: ~8 MB (kept in memory)
+    - Per chunk: ~136 MB for PSFs + ~271 MB for indices = ~540 MB total
+    - Peak memory: ~620 MB (vs ~1.4 GB for non-chunked approach)
 
     The undispersed position is used for PSF lookup (per STPSF requirements).
     Efficiency curves should be applied to star_flux before calling this function.
@@ -199,9 +260,9 @@ def disperse_star_psf(
     ... )
     >>> optical_payload = omj.make_sca_payload(model, sca=5, order='1')
     >>>
-    >>> # Disperse a star
-    >>> wavelengths = jnp.linspace(1.0, 1.8, 100)  # microns
-    >>> star_flux = jnp.ones(100)  # Flat spectrum
+    >>> # Disperse a star with fine wavelength sampling
+    >>> wavelengths = jnp.linspace(0.9, 2.0, 5000)  # microns
+    >>> star_flux = jnp.ones(5000)  # Flat spectrum
     >>> output = jnp.zeros((4088, 4088), dtype=jnp.float32)
     >>> output = disperse_star_psf(
     ...     psf_payload, optical_payload,
@@ -220,55 +281,96 @@ def disperse_star_psf(
         psf_shape = psf_payload['psf_grid'].shape[-2:]
         rel_y, rel_x = make_psf_pixel_grid(psf_shape, psf_payload['oversample'])
 
-    # Step 1: Get PSFs at undispersed position for all grid wavelengths
+    # Step 1: Spatial interpolation (once, small)
+    # Get PSFs at undispersed position for all grid wavelengths
     psfs_grid = psf_model.interpolate_psf_spatial(
         psf_payload, xsca_star, ysca_star
     )  # [N_wl_grid, PSF_y, PSF_x]
 
-    # Step 2: Interpolate PSFs to user wavelengths
-    psfs = psf_model.interpolate_psf_wavelength(
-        psfs_grid, psf_payload['wavelengths'], wavelengths
-    )  # [N_wl, PSF_y, PSF_x]
+    # Step 2: Compute ALL dispersed positions (cheap, vectorized)
+    xsca_disp, ysca_disp = _compute_dispersed_positions(
+        optical_payload, xsca_star, ysca_star, wavelengths
+    )  # [N_wl] each
 
-    # Step 3: Compute dispersed positions for all wavelengths (vectorized)
-    # Convert star position to FPA (optical model functions expect arrays)
-    xsca_arr = jnp.atleast_1d(xsca_star)
-    ysca_arr = jnp.atleast_1d(ysca_star)
-    xfpa, yfpa = omj.sca_to_fpa(optical_payload, xsca_arr, ysca_arr)
+    # Get grid wavelengths for interpolation
+    grid_wl = psf_payload['wavelengths']
 
-    # Trace beam at all wavelengths (wavelengths already in microns)
-    xmpa, ympa = omj.trace_beam(optical_payload, xfpa, yfpa, wavelengths)
-
-    # Convert back to SCA
-    xsca_disp, ysca_disp = omj.mpa_to_sca(optical_payload, xmpa, ympa)
-    # Shapes: [1, N_wl] each - squeeze out the single spatial dimension
-    # but keep the wavelength dimension (use squeeze with axis to preserve 1D)
-    xsca_disp = xsca_disp.reshape(-1)  # Flatten to [N_wl]
-    ysca_disp = ysca_disp.reshape(-1)  # Flatten to [N_wl]
-
-    # Step 4: Scale PSFs by flux
-    scaled_psfs = psfs * star_flux[:, jnp.newaxis, jnp.newaxis]
-    # Shape: [N_wl, PSF_y, PSF_x]
-
-    # Step 5: Deposit all PSFs using fori_loop for JIT compatibility
+    # Step 3: Pad inputs to multiple of chunk_size (for static shapes in lax.scan)
+    # Padded entries have zero flux, so they don't contribute to output
     n_wl = len(wavelengths)
+    n_padded = ((n_wl + chunk_size - 1) // chunk_size) * chunk_size
+    pad_size = n_padded - n_wl
+    n_chunks = n_padded // chunk_size
 
-    def deposit_one_wavelength(i, output):
-        return deposit_psf(
-            output,
-            xsca_disp[i],
-            ysca_disp[i],
-            scaled_psfs[i],
-            rel_x,
-            rel_y,
+    # Pad arrays - zero flux for padded entries means they contribute nothing
+    wavelengths_padded = jnp.pad(
+        wavelengths, (0, pad_size), constant_values=wavelengths[-1]
+    )
+    star_flux_padded = jnp.pad(
+        star_flux, (0, pad_size), constant_values=0.0
+    )  # Zero flux!
+    xsca_disp_padded = jnp.pad(
+        xsca_disp, (0, pad_size), constant_values=xsca_disp[-1]
+    )
+    ysca_disp_padded = jnp.pad(
+        ysca_disp, (0, pad_size), constant_values=ysca_disp[-1]
+    )
+
+    # Flatten relative grids for scatter-add
+    rel_x_flat = rel_x.ravel()
+    rel_y_flat = rel_y.ravel()
+    n_psf_pixels = len(rel_x_flat)
+
+    def process_chunk(output, chunk_idx):
+        """Process a single wavelength chunk."""
+        start = chunk_idx * chunk_size
+
+        # Slice padded arrays (always exactly chunk_size elements)
+        wl_chunk = jax.lax.dynamic_slice(
+            wavelengths_padded, [start], [chunk_size]
+        )
+        flux_chunk = jax.lax.dynamic_slice(
+            star_flux_padded, [start], [chunk_size]
+        )
+        x_chunk = jax.lax.dynamic_slice(
+            xsca_disp_padded, [start], [chunk_size]
+        )
+        y_chunk = jax.lax.dynamic_slice(
+            ysca_disp_padded, [start], [chunk_size]
         )
 
-    output = jax.lax.fori_loop(0, n_wl, deposit_one_wavelength, output)
+        # On-the-fly wavelength interpolation (vectorized over chunk)
+        psfs_chunk = psf_model.interp_wavelength_chunk(psfs_grid, grid_wl, wl_chunk)
+        # Shape: [chunk_size, PSF_y, PSF_x]
+
+        # Scale by flux
+        psfs_chunk = psfs_chunk * flux_chunk[:, None, None]
+
+        # Build scatter arrays (vectorized)
+        # For each wavelength i, PSF pixel j lands at:
+        #   det_x = x_chunk[i] + rel_x_flat[j]
+        #   det_y = y_chunk[i] + rel_y_flat[j]
+        det_x = x_chunk[:, None] + rel_x_flat[None, :]  # [chunk, n_psf_pixels]
+        det_y = y_chunk[:, None] + rel_y_flat[None, :]
+
+        # Convert FITS 1-indexed to 0-indexed array indices
+        idx_x = jnp.floor(det_x - 0.5).astype(jnp.int32).ravel()
+        idx_y = jnp.floor(det_y - 0.5).astype(jnp.int32).ravel()
+        values = psfs_chunk.ravel()
+
+        # Batched scatter-add (GPU parallel atomics)
+        output = output.at[idx_y, idx_x].add(
+            values, mode="drop", wrap_negative_indices=False
+        )
+        return output, None
+
+    # Use lax.scan for JIT-compatible loop over chunks
+    output, _ = jax.lax.scan(process_chunk, output, jnp.arange(n_chunks))
 
     return output
 
 
-def make_star_disperser(psf_payload, optical_payload):
+def make_star_disperser(psf_payload, optical_payload, chunk_size=1000):
     """
     Create a JIT-compiled star disperser for a specific detector/order.
 
@@ -283,6 +385,11 @@ def make_star_disperser(psf_payload, optical_payload):
         Must use even oversampling (e.g., 4×)
     optical_payload : dict
         Optical model payload from optical_model_jax.make_sca_payload()
+    chunk_size : int, optional
+        Number of wavelengths to process per chunk (default: 1000).
+        Larger chunks use more memory but may be faster. Memory per chunk
+        is approximately: chunk_size × PSF_y × PSF_x × 4 bytes × 4.
+        For 5000 wavelengths with chunk_size=1000, peak memory is ~620 MB.
 
     Returns
     -------
@@ -307,8 +414,8 @@ def make_star_disperser(psf_payload, optical_payload):
     >>> # Create JIT-compiled disperser
     >>> disperser = make_star_disperser(psf_payload, optical_payload)
     >>>
-    >>> # Disperse many stars efficiently
-    >>> wavelengths = jnp.linspace(1.0, 1.8, 100)  # microns
+    >>> # Disperse many stars efficiently (even with many wavelengths)
+    >>> wavelengths = jnp.linspace(0.9, 2.0, 5000)  # microns
     >>> output = jnp.zeros((4088, 4088), dtype=jnp.float32)
     >>> for star in star_catalog:
     ...     output = disperser(star.x, star.y, wavelengths, star.flux, output)
@@ -319,6 +426,8 @@ def make_star_disperser(psf_payload, optical_payload):
     - First call compiles the function (may take a few seconds)
     - Subsequent calls use the cached compiled function
     - Relative coordinate grid is pre-computed once
+    - Memory usage is controlled by chunk_size and is independent of
+      total wavelength count, enabling fine wavelength sampling (e.g., 1Å)
     """
     # Validate even oversampling
     oversample = psf_payload['oversample']
@@ -364,6 +473,7 @@ def make_star_disperser(psf_payload, optical_payload):
             output,
             rel_x,
             rel_y,
+            chunk_size,
         )
 
     return disperse_star

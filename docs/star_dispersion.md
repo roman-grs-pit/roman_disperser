@@ -60,10 +60,34 @@ so the difference may be small in practice.
 - Validation: `notebooks/psf/psf_allsca_validation.ipynb` (all 36 detector/order combinations)
 - See `docs/psf_phase1_plan.md` for detailed findings
 
-## Phase 2 : Single star
+## Phase 2 : Single star ✅ COMPLETE
 
 Implement the proposed algorithm
 - For now, use GRISM0 for zeroth order, GRISM1 for all others (1,2)
+
+**Phase 2 Results (2026-01-30):**
+- Implementation: `star_disperser.py` with `disperse_star_psf()` and `make_star_disperser()` factory
+- Uses **undispersed position** for PSF lookup (Option A above)
+- Memory-efficient chunked approach using `jax.lax.scan`:
+  - Processes wavelengths in configurable chunks (default 1000)
+  - Peak memory ~620 MB vs ~1.4 GB for non-chunked approach
+  - Memory independent of total wavelength count
+- JIT-compatible with closure pattern for payloads
+- New vectorized helper: `psf_model.interp_wavelength_chunk()` for batch wavelength interpolation
+- Tests: 24 tests in `tests/test_star_disperser.py` including chunk invariance
+- Demo: `notebooks/psf/single_star_demo.ipynb`
+
+**Memory budget (8GB target):**
+- PSF grid after spatial interpolation: ~8 MB
+- Per-chunk with `chunk_size=1000`: ~543 MB
+- Output image: ~67 MB
+- Peak memory: ~620 MB
+
+**Wavelength scaling:**
+- 2Å spacing (5,500 wavelengths): 6 chunks
+- 1Å spacing (11,000 wavelengths): 11 chunks
+- 0.5Å spacing (22,000 wavelengths): 22 chunks
+- All use same ~620 MB peak memory
 
 ## Phase 3 : Scaling tests
 

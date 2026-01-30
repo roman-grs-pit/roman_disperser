@@ -364,3 +364,233 @@ class TestMakeStarDisperser:
 
         # Total should be 2× single star flux
         assert jnp.isclose(flux2, 2 * flux1, rtol=RTOL)
+
+
+class TestChunkedDispersion:
+    """Test the chunked (memory-efficient) dispersion implementation."""
+
+    @pytest.fixture
+    def mock_psf_payload(self):
+        """Create a mock PSF payload for testing.
+
+        Note: wavelengths are in microns (not meters).
+        """
+        n_y, n_x, n_wl = 4, 4, 10
+        psf_size = 20
+        oversample = 4
+
+        psf_grid = jnp.zeros((n_y, n_x, n_wl, psf_size, psf_size), dtype=jnp.float32)
+        center = psf_size // 2
+        for iy in range(n_y):
+            for ix in range(n_x):
+                for iw in range(n_wl):
+                    psf_grid = psf_grid.at[iy, ix, iw, center, center].set(1.0)
+
+        return {
+            'psf_grid': psf_grid,
+            'wavelengths': jnp.linspace(1.0, 1.8, n_wl),  # microns
+            'wl_grid': jnp.linspace(1.0, 1.8, n_wl),      # microns
+            'spatial_x': jnp.linspace(1, 4088, n_x),
+            'spatial_y': jnp.linspace(1, 4088, n_y),
+            'oversample': oversample,
+            'detector': 'WFI05',
+            'order': '1',
+        }
+
+    def test_chunk_size_invariance(self, payload, mock_psf_payload):
+        """Result should be same regardless of chunk_size."""
+        wavelengths = jnp.linspace(1.1, 1.7, 25)  # 25 wavelengths
+        star_flux = jnp.ones(25)
+        xsca, ysca = 2000.0, 2000.0
+
+        # Run with different chunk sizes
+        results = []
+        for chunk_size in [5, 10, 25, 100]:
+            output = jnp.zeros((4088, 4088), dtype=jnp.float32)
+            result = disperse_star_psf(
+                mock_psf_payload,
+                payload,
+                xsca_star=xsca,
+                ysca_star=ysca,
+                wavelengths=wavelengths,
+                star_flux=star_flux,
+                output=output,
+                chunk_size=chunk_size,
+            )
+            results.append(result)
+
+        # All results should be identical
+        for i in range(1, len(results)):
+            np.testing.assert_allclose(
+                results[0], results[i],
+                rtol=1e-5, atol=1e-6,
+                err_msg=f"Chunk size {[5, 10, 25, 100][i]} differs from chunk size 5"
+            )
+
+    def test_chunk_size_with_padding(self, payload, mock_psf_payload):
+        """Test chunking with wavelength counts that don't divide evenly."""
+        # 17 wavelengths doesn't divide evenly by common chunk sizes
+        wavelengths = jnp.linspace(1.1, 1.7, 17)
+        star_flux = jnp.ones(17)
+
+        # Run with chunk_size=5 (17 / 5 = 3.4, needs padding)
+        output_5 = jnp.zeros((4088, 4088), dtype=jnp.float32)
+        result_5 = disperse_star_psf(
+            mock_psf_payload,
+            payload,
+            xsca_star=2000.0,
+            ysca_star=2000.0,
+            wavelengths=wavelengths,
+            star_flux=star_flux,
+            output=output_5,
+            chunk_size=5,
+        )
+
+        # Run with chunk_size=20 (larger than n_wl)
+        output_20 = jnp.zeros((4088, 4088), dtype=jnp.float32)
+        result_20 = disperse_star_psf(
+            mock_psf_payload,
+            payload,
+            xsca_star=2000.0,
+            ysca_star=2000.0,
+            wavelengths=wavelengths,
+            star_flux=star_flux,
+            output=output_20,
+            chunk_size=20,
+        )
+
+        # Results should be identical
+        np.testing.assert_allclose(result_5, result_20, rtol=1e-5, atol=1e-6)
+
+    def test_many_wavelengths(self, payload, mock_psf_payload):
+        """Test dispersion with many wavelengths (memory stress test)."""
+        # 500 wavelengths - should work fine with chunking
+        wavelengths = jnp.linspace(1.0, 1.8, 500)
+        star_flux = jnp.ones(500)
+        output = jnp.zeros((4088, 4088), dtype=jnp.float32)
+
+        result = disperse_star_psf(
+            mock_psf_payload,
+            payload,
+            xsca_star=2000.0,
+            ysca_star=2000.0,
+            wavelengths=wavelengths,
+            star_flux=star_flux,
+            output=output,
+            chunk_size=100,
+        )
+
+        # Should have non-zero flux
+        assert result.sum() > 0
+
+        # Total flux should equal sum of star_flux (each PSF sums to 1.0)
+        expected_flux = float(star_flux.sum())
+        assert jnp.isclose(result.sum(), expected_flux, rtol=0.001)
+
+    def test_factory_with_chunk_size(self, payload, mock_psf_payload):
+        """Factory function should respect chunk_size parameter."""
+        wavelengths = jnp.linspace(1.1, 1.7, 15)
+        star_flux = jnp.ones(15)
+
+        # Create dispersers with different chunk sizes
+        disperser_10 = make_star_disperser(mock_psf_payload, payload, chunk_size=10)
+        disperser_5 = make_star_disperser(mock_psf_payload, payload, chunk_size=5)
+
+        output_10 = jnp.zeros((4088, 4088), dtype=jnp.float32)
+        output_5 = jnp.zeros((4088, 4088), dtype=jnp.float32)
+
+        result_10 = disperser_10(2000.0, 2000.0, wavelengths, star_flux, output_10)
+        result_5 = disperser_5(2000.0, 2000.0, wavelengths, star_flux, output_5)
+
+        # Results should be identical
+        np.testing.assert_allclose(result_10, result_5, rtol=1e-5, atol=1e-6)
+
+
+class TestInterpWavelengthChunk:
+    """Test the vectorized wavelength interpolation function."""
+
+    def test_grid_points_exact(self):
+        """Interpolation at grid points should return exact values."""
+        from roman_disperser.psf_model import interp_wavelength_chunk
+
+        # Create simple PSF grid
+        n_wl = 5
+        psf_size = 10
+        psfs_grid = jnp.arange(n_wl * psf_size * psf_size, dtype=jnp.float32).reshape(
+            n_wl, psf_size, psf_size
+        )
+        grid_wl = jnp.linspace(1.0, 1.8, n_wl)
+
+        # Interpolate at grid points
+        target_wl = grid_wl
+        result = interp_wavelength_chunk(psfs_grid, grid_wl, target_wl)
+
+        np.testing.assert_allclose(result, psfs_grid, rtol=1e-5)
+
+    def test_midpoint_interpolation(self):
+        """Midpoint should be average of neighbors."""
+        from roman_disperser.psf_model import interp_wavelength_chunk
+
+        # Create simple PSF grid with known values
+        n_wl = 3
+        psf_size = 4
+        psfs_grid = jnp.zeros((n_wl, psf_size, psf_size), dtype=jnp.float32)
+        psfs_grid = psfs_grid.at[0].set(0.0)
+        psfs_grid = psfs_grid.at[1].set(2.0)
+        psfs_grid = psfs_grid.at[2].set(4.0)
+        grid_wl = jnp.array([1.0, 1.5, 2.0])
+
+        # Interpolate at midpoints
+        target_wl = jnp.array([1.25, 1.75])
+        result = interp_wavelength_chunk(psfs_grid, grid_wl, target_wl)
+
+        # At 1.25: (1.25 - 1.0) / (1.5 - 1.0) = 0.5, so 0.5 * 0 + 0.5 * 2 = 1.0
+        expected_125 = 1.0
+        # At 1.75: (1.75 - 1.5) / (2.0 - 1.5) = 0.5, so 0.5 * 2 + 0.5 * 4 = 3.0
+        expected_175 = 3.0
+
+        np.testing.assert_allclose(result[0], jnp.full((psf_size, psf_size), expected_125), rtol=1e-5)
+        np.testing.assert_allclose(result[1], jnp.full((psf_size, psf_size), expected_175), rtol=1e-5)
+
+    def test_edge_extrapolation(self):
+        """Wavelengths outside grid should clamp to edge values."""
+        from roman_disperser.psf_model import interp_wavelength_chunk
+
+        # Create simple PSF grid
+        n_wl = 3
+        psf_size = 4
+        psfs_grid = jnp.zeros((n_wl, psf_size, psf_size), dtype=jnp.float32)
+        psfs_grid = psfs_grid.at[0].set(1.0)
+        psfs_grid = psfs_grid.at[1].set(2.0)
+        psfs_grid = psfs_grid.at[2].set(3.0)
+        grid_wl = jnp.array([1.0, 1.5, 2.0])
+
+        # Interpolate outside grid bounds
+        target_wl = jnp.array([0.5, 2.5])  # Below and above grid
+        result = interp_wavelength_chunk(psfs_grid, grid_wl, target_wl)
+
+        # Should clamp to edge values (not extrapolate)
+        # For 0.5: below grid, should use first PSF
+        # For 2.5: above grid, should use last PSF
+        np.testing.assert_allclose(result[0], jnp.full((psf_size, psf_size), 1.0), rtol=1e-5)
+        np.testing.assert_allclose(result[1], jnp.full((psf_size, psf_size), 3.0), rtol=1e-5)
+
+    def test_matches_interpolate_psf_wavelength(self):
+        """Should match the existing interpolate_psf_wavelength function."""
+        from roman_disperser.psf_model import interp_wavelength_chunk, interpolate_psf_wavelength
+
+        # Create a realistic-ish PSF grid
+        n_wl = 10
+        psf_size = 20
+        psfs_grid = jnp.arange(n_wl * psf_size * psf_size, dtype=jnp.float32).reshape(
+            n_wl, psf_size, psf_size
+        )
+        grid_wl = jnp.linspace(1.0, 1.8, n_wl)
+
+        # Test on various target wavelengths
+        target_wl = jnp.array([1.1, 1.35, 1.5, 1.65, 1.75])
+
+        result_new = interp_wavelength_chunk(psfs_grid, grid_wl, target_wl)
+        result_old = interpolate_psf_wavelength(psfs_grid, grid_wl, target_wl)
+
+        np.testing.assert_allclose(result_new, result_old, rtol=1e-5)

@@ -1324,6 +1324,75 @@ def interpolate_psf_wavelength(psfs, wl_grid, wavelengths):
     return psfs_interp
 
 
+def interp_wavelength_chunk(psfs_grid, grid_wl, target_wl):
+    """
+    Interpolate PSFs to target wavelengths (vectorized).
+
+    This function is optimized for batch processing of many wavelengths
+    at once, used internally by the chunked star dispersion algorithm.
+
+    Uses edge extrapolation: wavelengths outside the grid use the nearest
+    edge PSF (i.e., clamped to grid bounds).
+
+    This function is JAX-compatible and JIT-compilable.
+
+    Parameters
+    ----------
+    psfs_grid : jnp.ndarray
+        PSF array at grid wavelengths, shape [N_grid, PSF_y, PSF_x]
+    grid_wl : jnp.ndarray
+        Wavelengths in the grid (**microns**), shape [N_grid]
+        Must be strictly increasing
+    target_wl : jnp.ndarray
+        Target wavelengths (**microns**), shape [N_target]
+
+    Returns
+    -------
+    psfs : jnp.ndarray
+        Interpolated PSFs at target wavelengths
+        Shape: [N_target, PSF_y, PSF_x]
+
+    Examples
+    --------
+    >>> # Get PSFs at grid wavelengths via spatial interpolation
+    >>> psfs_grid = interpolate_psf_spatial(payload, xsca=2000.0, ysca=2000.0)
+    >>> # Interpolate to many target wavelengths (microns)
+    >>> target_wl = jnp.linspace(1.0, 1.8, 1000)  # microns
+    >>> psfs = interp_wavelength_chunk(psfs_grid, payload['wavelengths'], target_wl)
+    >>> psfs.shape
+    (1000, 182, 182)
+
+    Notes
+    -----
+    - This function is semantically equivalent to interpolate_psf_wavelength()
+      but may be slightly faster for large batches due to explicit vectorization
+    - Linear interpolation along wavelength dimension
+    - Edge extrapolation: uses nearest grid PSF for out-of-bounds wavelengths
+
+    See Also
+    --------
+    interpolate_psf_wavelength : Similar functionality with different signature
+    interpolate_psf_spatial : Get PSFs at grid wavelengths for a spatial position
+    """
+    # Find bracketing indices
+    idx = jnp.searchsorted(grid_wl, target_wl) - 1
+    idx = jnp.clip(idx, 0, len(grid_wl) - 2)
+
+    # Get bracketing wavelengths
+    wl_lo = grid_wl[idx]
+    wl_hi = grid_wl[idx + 1]
+
+    # Interpolation weights
+    t = (target_wl - wl_lo) / (wl_hi - wl_lo)
+    t = jnp.clip(t, 0.0, 1.0)  # Clamp for edge cases
+
+    # Gather and interpolate
+    psf_lo = psfs_grid[idx]      # [N_target, PSF_y, PSF_x]
+    psf_hi = psfs_grid[idx + 1]  # [N_target, PSF_y, PSF_x]
+
+    return psf_lo + t[:, None, None] * (psf_hi - psf_lo)
+
+
 def interpolate_psf_spatial(payload, xsca, ysca):
     """
     Interpolate PSF at (x, y) for ALL wavelengths using bilinear interpolation.
