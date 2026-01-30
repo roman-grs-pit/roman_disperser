@@ -7,6 +7,8 @@ Tests cover:
 - Trilinear interpolation
 - JIT compilation
 - Enclosed energy validation
+
+Note: All wavelength parameters are in **microns** (not meters).
 """
 
 import pytest
@@ -117,8 +119,8 @@ class TestPSFPayload:
     @pytest.mark.slow
     def test_minimal_payload_generation(self):
         """Generate minimal PSF payload for quick validation."""
-        # Minimal configuration: 2×2 spatial, 3 wavelengths
-        wavelengths = np.linspace(0.9e-6, 2.0e-6, 3)
+        # Minimal configuration: 2×2 spatial, 3 wavelengths (in microns)
+        wavelengths = np.linspace(0.9, 2.0, 3)
         spatial_grid = {
             'x': np.array([1000.0, 3000.0]),
             'y': np.array([1000.0, 3000.0])
@@ -163,7 +165,7 @@ class TestPSFPayload:
     @pytest.mark.slow
     def test_payload_timing_reported(self):
         """Check that timing information is captured."""
-        wavelengths = np.linspace(0.9e-6, 2.0e-6, 2)
+        wavelengths = np.linspace(0.9, 2.0, 2)  # microns
         spatial_grid = {
             'x': np.array([2000.0]),
             'y': np.array([2000.0])
@@ -187,7 +189,7 @@ class TestPSFPayload:
     @pytest.mark.slow
     def test_zeroth_order_psf_generation(self):
         """Test that zeroth order PSFs can be generated."""
-        wavelengths = np.linspace(0.9e-6, 2.0e-6, 2)
+        wavelengths = np.linspace(0.9, 2.0, 2)  # microns
         spatial_grid = {
             'x': np.array([2000.0]),
             'y': np.array([2000.0])
@@ -215,7 +217,7 @@ class TestPSFPayload:
         with pytest.raises(ValueError, match="Invalid order"):
             psf_model.make_psf_payload(
                 order='99',  # Invalid
-                wavelengths=np.array([1.5e-6]),
+                wavelengths=np.array([1.5]),  # microns
                 spatial_grid={'x': np.array([2000.0]), 'y': np.array([2000.0])},
                 verbose=False
             )
@@ -226,7 +228,7 @@ class TestPSFPayload:
         with pytest.raises(ValueError, match="strictly increasing"):
             psf_model.make_psf_payload(
                 order='1',
-                wavelengths=np.array([1.0e-6, 1.5e-6, 1.5e-6, 2.0e-6]),  # Duplicate
+                wavelengths=np.array([1.0, 1.5, 1.5, 2.0]),  # Duplicate (microns)
                 spatial_grid={'x': np.array([2000.0]), 'y': np.array([2000.0])},
                 verbose=False
             )
@@ -235,7 +237,7 @@ class TestPSFPayload:
         with pytest.raises(ValueError, match="strictly increasing"):
             psf_model.make_psf_payload(
                 order='1',
-                wavelengths=np.array([2.0e-6, 1.5e-6, 1.0e-6]),  # Decreasing
+                wavelengths=np.array([2.0, 1.5, 1.0]),  # Decreasing (microns)
                 spatial_grid={'x': np.array([2000.0]), 'y': np.array([2000.0])},
                 verbose=False
             )
@@ -246,7 +248,7 @@ class TestPSFPayload:
         with pytest.raises(ValueError, match="Spatial x grid"):
             psf_model.make_psf_payload(
                 order='1',
-                wavelengths=np.array([1.5e-6]),
+                wavelengths=np.array([1.5]),  # microns
                 spatial_grid={'x': np.array([1000.0, 2000.0, 2000.0]), 'y': np.array([2000.0])},
                 verbose=False
             )
@@ -255,7 +257,7 @@ class TestPSFPayload:
         with pytest.raises(ValueError, match="Spatial y grid"):
             psf_model.make_psf_payload(
                 order='1',
-                wavelengths=np.array([1.5e-6]),
+                wavelengths=np.array([1.5]),  # microns
                 spatial_grid={'x': np.array([2000.0]), 'y': np.array([1000.0, 2000.0, 2000.0])},
                 verbose=False
             )
@@ -264,7 +266,7 @@ class TestPSFPayload:
     def test_corner_detector_generation(self):
         """Test PSF generation works for corner detector (not just central WFI05)."""
         # Use WFI01 (corner detector) to test edge handling
-        wavelengths = np.linspace(0.9e-6, 2.0e-6, 2)
+        wavelengths = np.linspace(0.9, 2.0, 2)  # microns
         spatial_grid = {
             'x': np.array([2000.0]),
             'y': np.array([2000.0])
@@ -303,7 +305,8 @@ class TestPSFInterpolation:
     def simple_payload(self):
         """Create a simple test payload with analytical PSFs."""
         # Create a minimal payload with known PSF values for testing
-        wavelengths = np.array([1.0e-6, 1.5e-6, 1.9e-6])
+        # Wavelengths in microns
+        wavelengths = np.array([1.0, 1.5, 1.9])
         spatial_x = np.array([1000.0, 2000.0, 3000.0])
         spatial_y = np.array([1000.0, 2000.0, 3000.0])
 
@@ -336,9 +339,9 @@ class TestPSFInterpolation:
 
     def test_interpolation_at_grid_points(self, simple_payload):
         """Interpolation at exact grid points should match grid values."""
-        # Test at grid point: (2000.0, 2000.0, 1.5e-6)
+        # Test at grid point: (2000.0, 2000.0, 1.5)
         # This is index [1, 1, 1] in the grid
-        xsca, ysca, wavelength = 2000.0, 2000.0, 1.5e-6
+        xsca, ysca, wavelength = 2000.0, 2000.0, 1.5  # microns
 
         psf = psf_model.interpolate_psf(simple_payload, xsca, ysca, wavelength)
 
@@ -350,7 +353,7 @@ class TestPSFInterpolation:
 
     def test_interpolation_shape(self, simple_payload):
         """Interpolated PSF should have correct shape."""
-        xsca, ysca, wavelength = 2000.0, 2000.0, 1.5e-6
+        xsca, ysca, wavelength = 2000.0, 2000.0, 1.5  # microns
 
         psf = psf_model.interpolate_psf(simple_payload, xsca, ysca, wavelength)
 
@@ -366,21 +369,21 @@ class TestPSFInterpolation:
             return psf_model.interpolate_psf(payload, xsca, ysca, wl)
 
         # First call (compile + run)
-        psf1 = interp_jit(2000.0, 2000.0, 1.5e-6)
+        psf1 = interp_jit(2000.0, 2000.0, 1.5)  # microns
 
         # Second call (cached)
-        psf2 = interp_jit(2100.0, 2100.0, 1.6e-6)
+        psf2 = interp_jit(2100.0, 2100.0, 1.6)  # microns
 
         # Both should have same shape
         assert psf1.shape == psf2.shape
 
     def test_edge_extrapolation(self, simple_payload):
         """Interpolation should use edge values for out-of-bounds positions (not linear extrapolation)."""
-        # simple_payload has grid: x=[1000, 2000, 3000], y=[1000, 2000, 3000], wl=[1.0e-6, 1.5e-6, 1.9e-6]
+        # simple_payload has grid: x=[1000, 2000, 3000], y=[1000, 2000, 3000], wl=[1.0, 1.5, 1.9] microns
         # PSF values: value = iwl + iy + ix
 
         # Test position outside grid (x < x_min, but y and wl on grid)
-        xsca, ysca, wavelength = 500.0, 2000.0, 1.5e-6  # x off-grid low
+        xsca, ysca, wavelength = 500.0, 2000.0, 1.5  # x off-grid low, wl in microns
 
         # Should use edge PSF: x_idx=[0,1], y_idx=[1,1], wl_idx=[1,1]
         # With x_frac clamped to 0, should get psf[wl=1, y=1, x=0] = 1+1+0 = 2.0
@@ -397,7 +400,7 @@ class TestPSFInterpolation:
         assert jnp.allclose(psf_high, 4.0, rtol=1e-6)
 
         # Test wavelength off-grid low
-        wavelength_low = 0.5e-6  # Below wl_grid[0] = 1.0e-6
+        wavelength_low = 0.5  # Below wl_grid[0] = 1.0 microns
         # Should use edge PSF: wl_idx=[0,1], x_idx=[1,1], y_idx=[1,1]
         # With wl_frac clamped to 0, should get psf[wl=0, y=1, x=1] = 0+1+1 = 2.0
         psf_wl_low = psf_model.interpolate_psf(simple_payload, 2000.0, 2000.0, wavelength_low)
@@ -405,10 +408,10 @@ class TestPSFInterpolation:
 
     def test_vectorized_interpolation(self, simple_payload):
         """Interpolation should work with array inputs via vmap."""
-        # Create arrays of positions
+        # Create arrays of positions (wavelengths in microns)
         xsca = jnp.array([1000.0, 2000.0, 3000.0])
         ysca = jnp.array([1000.0, 2000.0, 3000.0])
-        wavelength = jnp.array([1.0e-6, 1.5e-6, 1.9e-6])
+        wavelength = jnp.array([1.0, 1.5, 1.9])  # microns
 
         # Vectorize interpolation
         interp_vmap = jax.vmap(
@@ -423,10 +426,10 @@ class TestPSFInterpolation:
     def test_interpolation_flux_conservation(self, simple_payload):
         """Interpolated PSFs should produce values between grid corners."""
         # Interpolate at midpoint between grid positions
-        # Grid: x=[1000, 2000, 3000], y=[1000, 2000, 3000], wl=[1.0e-6, 1.5e-6, 1.9e-6]
+        # Grid: x=[1000, 2000, 3000], y=[1000, 2000, 3000], wl=[1.0, 1.5, 1.9] microns
         xsca_mid = 1500.0  # Between 1000 and 2000
         ysca_mid = 1500.0
-        wavelength_mid = 1.25e-6  # Between 1.0e-6 and 1.5e-6
+        wavelength_mid = 1.25  # Between 1.0 and 1.5 microns
 
         psf = psf_model.interpolate_psf(simple_payload, xsca_mid, ysca_mid, wavelength_mid)
 
@@ -452,7 +455,8 @@ class TestPSFSpatialInterpolation:
     def simple_payload(self):
         """Create a simple test payload with analytical PSFs."""
         # Same as TestPSFInterpolation fixture
-        wavelengths = np.array([1.0e-6, 1.5e-6, 1.9e-6])
+        # Wavelengths in microns
+        wavelengths = np.array([1.0, 1.5, 1.9])
         spatial_x = np.array([1000.0, 2000.0, 3000.0])
         spatial_y = np.array([1000.0, 2000.0, 3000.0])
 
@@ -554,6 +558,101 @@ class TestPSFSpatialInterpolation:
 
 
 # ============================================================================
+# WAVELENGTH INTERPOLATION TESTS (interpolate_psf_wavelength)
+# ============================================================================
+
+
+class TestPSFWavelengthInterpolation:
+    """Test wavelength interpolation of PSFs from spatial interpolation."""
+
+    @pytest.fixture
+    def simple_psf_stack(self):
+        """Create a simple PSF stack at grid wavelengths."""
+        # 5 wavelengths (in microns), 10x10 PSFs
+        wl_grid = np.array([1.0, 1.2, 1.4, 1.6, 1.8])
+        psfs = np.zeros((5, 10, 10), dtype=np.float32)
+
+        # PSF value equals wavelength index (0, 1, 2, 3, 4)
+        for i in range(5):
+            psfs[i, :, :] = float(i)
+
+        return jnp.array(psfs), jnp.array(wl_grid)
+
+    def test_wavelength_interpolation_shape(self, simple_psf_stack):
+        """Output should match number of target wavelengths."""
+        psfs_grid, wl_grid = simple_psf_stack
+        wavelengths = jnp.array([1.1, 1.3, 1.5])  # microns
+
+        result = psf_model.interpolate_psf_wavelength(psfs_grid, wl_grid, wavelengths)
+
+        assert result.shape == (3, 10, 10)
+
+    def test_wavelength_interpolation_at_grid_points(self, simple_psf_stack):
+        """Interpolation at grid wavelengths should return exact PSFs."""
+        psfs_grid, wl_grid = simple_psf_stack
+
+        # Interpolate at exact grid wavelengths
+        result = psf_model.interpolate_psf_wavelength(psfs_grid, wl_grid, wl_grid)
+
+        # Should match exactly
+        for i in range(5):
+            assert jnp.allclose(result[i], psfs_grid[i], rtol=1e-6)
+
+    def test_wavelength_interpolation_midpoint(self, simple_psf_stack):
+        """Midpoint between two wavelengths should give average PSF."""
+        psfs_grid, wl_grid = simple_psf_stack
+
+        # Wavelength exactly between grid points 0 and 1 (1.0 and 1.2 μm)
+        midpoint = jnp.array([1.1])  # microns
+
+        result = psf_model.interpolate_psf_wavelength(psfs_grid, wl_grid, midpoint)
+
+        # Should be average of PSF 0 (value 0) and PSF 1 (value 1) = 0.5
+        assert jnp.allclose(result[0], 0.5, rtol=1e-6)
+
+    def test_wavelength_interpolation_edge_extrapolation(self, simple_psf_stack):
+        """Out-of-range wavelengths should clamp to edge values."""
+        psfs_grid, wl_grid = simple_psf_stack
+
+        # Below minimum wavelength
+        below = jnp.array([0.8])  # microns
+        result_below = psf_model.interpolate_psf_wavelength(psfs_grid, wl_grid, below)
+        assert jnp.allclose(result_below[0], 0.0, rtol=1e-6)  # Clamped to first PSF
+
+        # Above maximum wavelength
+        above = jnp.array([2.0])  # microns
+        result_above = psf_model.interpolate_psf_wavelength(psfs_grid, wl_grid, above)
+        assert jnp.allclose(result_above[0], 4.0, rtol=1e-6)  # Clamped to last PSF
+
+    def test_wavelength_interpolation_jit_compilation(self, simple_psf_stack):
+        """Function should be JIT-compilable."""
+        psfs_grid, wl_grid = simple_psf_stack
+        wavelengths = jnp.array([1.1, 1.5])  # microns
+
+        @jax.jit
+        def interp_jit(psfs, wl_grid, wavelengths):
+            return psf_model.interpolate_psf_wavelength(psfs, wl_grid, wavelengths)
+
+        # First call compiles
+        result1 = interp_jit(psfs_grid, wl_grid, wavelengths)
+
+        # Second call uses cached
+        result2 = interp_jit(psfs_grid, wl_grid, wavelengths)
+
+        assert jnp.allclose(result1, result2)
+
+    def test_wavelength_interpolation_single_wavelength(self, simple_psf_stack):
+        """Single wavelength should work correctly."""
+        psfs_grid, wl_grid = simple_psf_stack
+        wavelength = jnp.array([1.4])  # Grid point 2 (microns)
+
+        result = psf_model.interpolate_psf_wavelength(psfs_grid, wl_grid, wavelength)
+
+        assert result.shape == (1, 10, 10)
+        assert jnp.allclose(result[0], 2.0, rtol=1e-6)
+
+
+# ============================================================================
 # INTEGRATION TESTS (SLOW - require STPSF)
 # ============================================================================
 
@@ -571,8 +670,8 @@ class TestPSFIntegration:
         pytest.importorskip("stpsf")  # Skip if STPSF not available
 
         # Generate coarse payload
-        # Use wavelengths within STPSF aberration reference range [1.0e-6, 1.9e-6]
-        wavelengths = np.array([1.0e-6, 1.5e-6, 1.9e-6])
+        # Use wavelengths within STPSF aberration reference range [1.0, 1.9] microns
+        wavelengths = np.array([1.0, 1.5, 1.9])  # microns
         spatial_grid = {
             'x': np.array([1500.0, 2500.0]),
             'y': np.array([1500.0, 2500.0])
@@ -589,7 +688,7 @@ class TestPSFIntegration:
         # Test interpolation at mid-point between grid points
         xsca_test = 2000.0  # Midway between 1500 and 2500
         ysca_test = 2000.0
-        wavelength_test = 1.5e-6  # Exact grid wavelength
+        wavelength_test = 1.5  # Exact grid wavelength (microns)
 
         # Get interpolated PSF
         psf_interp = psf_model.interpolate_psf(
@@ -606,8 +705,9 @@ class TestPSFIntegration:
         x_stpsf, y_stpsf = psf_utils.sca_to_stpsf_position(xsca_test, ysca_test)
         wfi.detector_position = (float(x_stpsf), float(y_stpsf))
 
+        # STPSF expects wavelength in meters
         datacube = wfi.calc_datacube(
-            np.array([wavelength_test]), fov_arcsec=5.0, oversample=4
+            np.array([wavelength_test * 1e-6]), fov_arcsec=5.0, oversample=4
         )
         psf_direct = datacube['OVERDIST'].data[0]  # First wavelength
 
@@ -626,8 +726,8 @@ class TestPSFIntegration:
         """Validate enclosed energy for all PSFs in grid."""
         pytest.importorskip("stpsf")
 
-        # Generate minimal payload
-        wavelengths = np.linspace(0.9e-6, 2.0e-6, 3)
+        # Generate minimal payload (wavelengths in microns)
+        wavelengths = np.linspace(0.9, 2.0, 3)
         spatial_grid = {
             'x': np.array([2000.0]),
             'y': np.array([2000.0])
@@ -665,8 +765,8 @@ class TestPSFIntegration:
 
         # Generate payload with 2x2 spatial grid
         # Need at least 2 wavelengths for interpolation to work
-        # Use wavelengths within STPSF aberration reference range [1.0e-6, 1.9e-6]
-        wavelengths = np.array([1.4e-6, 1.6e-6])
+        # Use wavelengths within STPSF aberration reference range [1.0, 1.9] microns
+        wavelengths = np.array([1.4, 1.6])  # microns
         spatial_grid = {
             'x': np.array([1500.0, 2500.0]),
             'y': np.array([1500.0, 2500.0])
@@ -684,7 +784,7 @@ class TestPSFIntegration:
         # Test at exact center (midpoint of all 8 corners)
         xsca_test = 2000.0  # Midway between 1500 and 2500
         ysca_test = 2000.0
-        wavelength_test = 1.5e-6  # Midway between 1.4 and 1.6e-6
+        wavelength_test = 1.5  # Midway between 1.4 and 1.6 microns
 
         # Get interpolated PSF
         psf_interp = psf_model.interpolate_psf(
@@ -699,8 +799,9 @@ class TestPSFIntegration:
         x_stpsf, y_stpsf = psf_utils.sca_to_stpsf_position(xsca_test, ysca_test)
         wfi.detector_position = (float(x_stpsf), float(y_stpsf))
 
+        # STPSF expects wavelength in meters
         datacube = wfi.calc_datacube(
-            np.array([wavelength_test]), fov_arcsec=5.0, oversample=4
+            np.array([wavelength_test * 1e-6]), fov_arcsec=5.0, oversample=4
         )
         psf_direct = datacube['OVERDIST'].data[0]
 
@@ -726,7 +827,8 @@ class TestPSFCaching:
     def simple_payload(self):
         """Create a simple test payload with analytical PSFs."""
         # Same as TestPSFInterpolation fixture
-        wavelengths = np.array([1.0e-6, 1.5e-6, 1.9e-6])
+        # Wavelengths in microns
+        wavelengths = np.array([1.0, 1.5, 1.9])
         spatial_x = np.array([1000.0, 2000.0, 3000.0])
         spatial_y = np.array([1000.0, 2000.0, 3000.0])
 
@@ -757,7 +859,8 @@ class TestPSFCaching:
 
     def test_get_cache_filename(self):
         """Test cache filename generation."""
-        wavelengths = np.arange(0.9e-6, 2.01e-6, 0.02e-6)
+        # Wavelengths in microns
+        wavelengths = np.arange(0.9, 2.01, 0.02)
         spatial_grid = {
             'x': np.linspace(1, 4088, 4),
             'y': np.linspace(1, 4088, 4)
@@ -782,7 +885,8 @@ class TestPSFCaching:
 
     def test_get_cache_filename_different_orders(self):
         """Test that different orders produce different filenames."""
-        wavelengths = np.array([1.0e-6, 1.5e-6])
+        # Wavelengths in microns
+        wavelengths = np.array([1.0, 1.5])
         spatial_grid = {'x': np.array([1000.0, 3000.0]), 'y': np.array([1000.0, 3000.0])}
 
         filename_0 = psf_model.get_cache_filename(
@@ -829,8 +933,8 @@ class TestPSFCaching:
         psf_model.save_psf_payload(simple_payload, cache_file, verbose=False)
         loaded = psf_model.load_psf_payload(cache_file, verbose=False)
 
-        # Interpolate with loaded payload
-        psf = psf_model.interpolate_psf(loaded, 2000.0, 2000.0, 1.5e-6)
+        # Interpolate with loaded payload (wavelength in microns)
+        psf = psf_model.interpolate_psf(loaded, 2000.0, 2000.0, 1.5)
 
         # Should match expected value (same as test_interpolation_at_grid_points)
         expected_value = 3.0  # iwl=1, iy=1, ix=1
@@ -936,7 +1040,8 @@ class TestPSFCaching:
 
         # Generate minimal real STPSF payload
         # Note: need at least 2 points per dimension for interpolation to work
-        wavelengths = np.array([1.4e-6, 1.6e-6])
+        # Wavelengths in microns
+        wavelengths = np.array([1.4, 1.6])
         spatial_grid = {
             'x': np.array([1500.0, 2500.0]),
             'y': np.array([1500.0, 2500.0])
@@ -970,8 +1075,8 @@ class TestPSFCaching:
         assert jnp.allclose(loaded['spatial_y'], original['spatial_y'])
         assert jnp.allclose(loaded['psf_grid'], original['psf_grid'])
 
-        # Verify interpolation works and produces same results
-        test_wl = 1.5e-6
+        # Verify interpolation works and produces same results (wavelength in microns)
+        test_wl = 1.5
         psf_original = psf_model.interpolate_psf(original, 2000.0, 2000.0, test_wl)
         psf_loaded = psf_model.interpolate_psf(loaded, 2000.0, 2000.0, test_wl)
 

@@ -4,11 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy. Four main components:
+JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy. Five main components:
 - **Class-based** (`optical_model.py`): Reference implementation using NumPy
 - **JAX functional** (`optical_model_jax.py`): JIT-compilable, vectorized implementation
-- **Disperser** (`disperser.py`): 2D spatial + 1D spectral → detector simulation
-- **PSF model** (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation for star dispersion
+- **Disperser** (`disperser.py`): 2D spatial + 1D spectral → detector simulation (galaxies)
+- **Star disperser** (`star_disperser.py`): Point source dispersion with wavelength-dependent PSFs
+- **PSF model** (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation
 
 ## Design Documents
 
@@ -76,17 +77,37 @@ The PSF model uses STPSF to generate wavelength- and position-dependent PSF grid
 from roman_disperser import psf_model
 
 # Load or generate PSF payload (cached to data/psf_cache/)
-payload = psf_model.get_or_make_psf_payload(
+psf_payload = psf_model.get_or_make_psf_payload(
     detector='WFI05', order='1', cache_dir='data/psf_cache'
 )
 
-# Interpolate PSF at any position and wavelength
-psf = psf_model.interpolate_psf(payload, xsca=2000.0, ysca=2000.0, wavelength=1.5e-6)
+# Interpolate PSF at any position and wavelength (wavelength in microns)
+psf = psf_model.interpolate_psf(psf_payload, xsca=2000.0, ysca=2000.0, wavelength=1.5)
 ```
 
 Key functions: `make_psf_payload`, `interpolate_psf`, `interpolate_psf_spatial`, `get_or_make_psf_payload`, `save_psf_payload`, `load_psf_payload`
 
 Default grid: 4×4 spatial × 56 wavelengths (0.9-2.0 μm), validated to <0.03% flux error across all 18 SCAs.
+
+**Note:** All wavelength parameters in `psf_model` are in **microns** (not meters).
+
+### Star Disperser
+
+The star disperser module provides functions for dispersing point sources with wavelength-dependent PSFs:
+
+```python
+from roman_disperser import star_disperser
+
+# Create a JIT-compiled star disperser
+disperser = star_disperser.make_star_disperser(psf_payload, optical_payload)
+
+# Disperse a star (wavelengths in microns)
+output = disperser(xsca_star=2000.0, ysca_star=2000.0, wavelengths=wl_array, star_flux=flux_array, output=output)
+```
+
+Key functions: `make_psf_pixel_grid`, `deposit_psf`, `disperse_star_psf`, `make_star_disperser`
+
+**Note:** All wavelength parameters in `star_disperser` are in **microns** (consistent with optical model).
 
 ## Coding Guidelines
 

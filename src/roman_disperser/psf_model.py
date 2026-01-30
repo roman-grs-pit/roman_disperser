@@ -24,12 +24,14 @@ Usage:
     >>> payload = psf_model.make_psf_payload(detector='WFI05', order='1')
     >>> # Interpolate PSF at arbitrary position
     >>> psf = psf_model.interpolate_psf(payload, xsca=2000.0, ysca=2000.0,
-    ...                                  wavelength=1.5e-6)
+    ...                                  wavelength=1.5)  # microns
     >>>
     >>> # With caching (recommended for repeated use):
     >>> payload = psf_model.get_or_make_psf_payload(
     ...     detector='WFI05', order='1', cache_dir='data/psf_cache'
     ... )
+
+Note: All wavelength parameters are in **microns** (consistent with optical model).
 
 See Also:
     docs/stpsf.md : STPSF integration reference
@@ -87,7 +89,7 @@ def get_cache_filename(
 
     Examples
     --------
-    >>> wavelengths = np.arange(0.9e-6, 2.01e-6, 0.02e-6)
+    >>> wavelengths = np.arange(0.9, 2.01, 0.02)  # microns
     >>> spatial_grid = {'x': np.linspace(1, 4088, 4), 'y': np.linspace(1, 4088, 4)}
     >>> get_cache_filename('WFI05', '1', wavelengths, spatial_grid, 5.0, 4)
     'psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4.npz'
@@ -105,9 +107,9 @@ def get_cache_filename(
     n_x = len(x_grid)
     n_wl = len(wavelengths)
 
-    # Wavelength bounds in microns
-    wl_min = wavelengths.min() * 1e6
-    wl_max = wavelengths.max() * 1e6
+    # Wavelength bounds in microns (wavelengths already in microns)
+    wl_min = wavelengths.min()
+    wl_max = wavelengths.max()
 
     filename = (
         f"psf_{detector}_{filter_name}_{n_y}x{n_x}x{n_wl}_"
@@ -368,6 +370,9 @@ def _make_psf_payload_with_progress(
     x_grid = np.asarray(spatial_grid['x'])
     y_grid = np.asarray(spatial_grid['y'])
 
+    # Convert wavelengths from microns to meters for STPSF
+    wavelengths_m = wavelengths * 1e-6
+
     psf_grid = []
     positions = [(ysca, xsca) for ysca in y_grid for xsca in x_grid]
 
@@ -376,7 +381,7 @@ def _make_psf_payload_with_progress(
         wfi.detector_position = (float(x_stpsf), float(y_stpsf))
 
         datacube = wfi.calc_datacube(
-            wavelengths, fov_arcsec=fov_arcsec, oversample=oversample
+            wavelengths_m, fov_arcsec=fov_arcsec, oversample=oversample
         )
         psf_cube = datacube['OVERDIST'].data
         psf_grid.append(psf_cube)
@@ -435,7 +440,7 @@ def generate_all_psf_caches(
     detectors : list, optional
         List of detector names (default: all 18 WFI detectors)
     wavelengths : array_like, optional
-        Wavelengths in meters (default: 0.9-2.0 μm at 0.02 μm spacing)
+        Wavelengths in **microns** (default: 0.9-2.0 μm at 0.02 μm spacing)
     spatial_grid : dict, optional
         {'x': x_array, 'y': y_array} (default: 4×4 grid)
     fov_arcsec : float, optional
@@ -481,9 +486,9 @@ def generate_all_psf_caches(
     if detectors is None:
         detectors = [f'WFI{i:02d}' for i in range(1, 19)]
 
-    # Setup defaults
+    # Setup defaults (wavelengths in microns)
     if wavelengths is None:
-        wavelengths = np.arange(0.9e-6, 2.01e-6, 0.02e-6)
+        wavelengths = np.arange(0.9, 2.01, 0.02)
     wavelengths = np.asarray(wavelengths)
 
     if spatial_grid is None:
@@ -687,7 +692,7 @@ def get_or_make_psf_payload(
     order : str, optional
         Spectral order (default: '1')
     wavelengths : array_like, optional
-        Wavelengths in meters (default: 0.9-2.0 μm at 0.02 μm spacing)
+        Wavelengths in **microns** (default: 0.9-2.0 μm at 0.02 μm spacing)
     spatial_grid : dict, optional
         {'x': x_array, 'y': y_array} in SCA coordinates (default: 4×4 grid)
     fov_arcsec : float, optional
@@ -724,9 +729,9 @@ def get_or_make_psf_payload(
     load_psf_payload : Load from specific file
     save_psf_payload : Save to specific file
     """
-    # Setup defaults (same as make_psf_payload)
+    # Setup defaults (same as make_psf_payload) - wavelengths in microns
     if wavelengths is None:
-        wavelengths = np.arange(0.9e-6, 2.01e-6, 0.02e-6)
+        wavelengths = np.arange(0.9, 2.01, 0.02)
     wavelengths = np.asarray(wavelengths)
 
     if spatial_grid is None:
@@ -827,7 +832,7 @@ def make_psf_payload(
         Maps to STPSF filters: '0' -> 'GRISM0', '1' -> 'GRISM1'
 
     wavelengths : array_like, optional
-        Wavelengths in meters for PSF calculations
+        Wavelengths in **microns** for PSF calculations
         Default: 56 wavelengths from 0.9 to 2.0 μm at 0.02 μm spacing
         Finer wavelength sampling reduces interpolation errors in PSF wings
 
@@ -855,7 +860,7 @@ def make_psf_payload(
     payload : dict
         PSF payload with keys:
         - 'detector': str, detector name
-        - 'wavelengths': jnp.ndarray [N_wl], wavelengths in meters
+        - 'wavelengths': jnp.ndarray [N_wl], wavelengths in **microns**
         - 'wl_grid': jnp.ndarray [N_wl], same as wavelengths (for consistency)
         - 'spatial_x': jnp.ndarray [N_x], SCA x-coordinates
         - 'spatial_y': jnp.ndarray [N_y], SCA y-coordinates
@@ -900,11 +905,11 @@ def make_psf_payload(
     save_psf_payload : Save payload to disk (caching) - NOT YET IMPLEMENTED
     load_psf_payload : Load payload from disk - NOT YET IMPLEMENTED
     """
-    # Setup default wavelengths
+    # Setup default wavelengths (in microns)
     if wavelengths is None:
         # 56 wavelengths across full grism range (0.9 - 2.0 μm) at 0.02 μm spacing
         # Finer wavelength sampling reduces interpolation errors in PSF wings
-        wavelengths = np.arange(0.9e-6, 2.01e-6, 0.02e-6)
+        wavelengths = np.arange(0.9, 2.01, 0.02)
 
     # Validate wavelengths are strictly increasing (required for interpolation)
     wavelengths = np.asarray(wavelengths)
@@ -1051,6 +1056,9 @@ def _compute_psf_grid_with_timing(
             leave=False  # Don't leave the bar after completion
         )
 
+    # Convert wavelengths from microns to meters for STPSF
+    wavelengths_m = wavelengths * 1e-6
+
     for ysca, xsca in positions:
         # Convert SCA to STPSF position
         x_stpsf, y_stpsf = sca_to_stpsf_position(float(xsca), float(ysca))
@@ -1062,7 +1070,7 @@ def _compute_psf_grid_with_timing(
         # CRITICAL: Use OVERDIST extension for sub-pixel accuracy + detector effects
         # Note: add_distortion is no longer needed - all WFI PSFs natively include distortion
         datacube = wfi.calc_datacube(
-            wavelengths, fov_arcsec=fov_arcsec, oversample=oversample
+            wavelengths_m, fov_arcsec=fov_arcsec, oversample=oversample
         )
         # Use OVERDIST: oversampled + detector effects (distortion, diffusion)
         psf_cube = datacube['OVERDIST'].data  # [N_wl, PSF_y, PSF_x]
@@ -1120,7 +1128,7 @@ def interpolate_psf(payload, xsca, ysca, wavelength):
         SCA coordinates (1-indexed FITS, range 1-4088)
         Can be scalar or array for vectorized operation
     wavelength : float or jnp.ndarray
-        Wavelength in meters (range 1.0e-6 to 1.93e-6 for grism)
+        Wavelength in **microns** (range 1.0 to 1.93 for grism)
         Can be scalar or array (must match shape of xsca/ysca if arrays)
 
     Returns
@@ -1134,7 +1142,7 @@ def interpolate_psf(payload, xsca, ysca, wavelength):
     --------
     >>> # Single PSF at detector center, mid-wavelength
     >>> psf = interpolate_psf(payload, xsca=2044.0, ysca=2044.0,
-    ...                        wavelength=1.5e-6)
+    ...                        wavelength=1.5)  # microns
     >>> psf.shape
     (108, 108)  # For 3" FOV at 4× oversample
 
@@ -1142,7 +1150,7 @@ def interpolate_psf(payload, xsca, ysca, wavelength):
     >>> import jax.numpy as jnp
     >>> xsca = jnp.array([1000.0, 2000.0, 3000.0])
     >>> ysca = jnp.array([1000.0, 2000.0, 3000.0])
-    >>> wavelength = jnp.array([1.0e-6, 1.5e-6, 1.9e-6])
+    >>> wavelength = jnp.array([1.0, 1.5, 1.9])  # microns
     >>> psfs = interpolate_psf(payload, xsca, ysca, wavelength)
     >>> psfs.shape
     (3, 108, 108)
@@ -1234,6 +1242,86 @@ def interpolate_psf(payload, xsca, ysca, wavelength):
     psf = (1 - y_frac) * psf_0 + y_frac * psf_1
 
     return psf
+
+
+def interpolate_psf_wavelength(psfs, wl_grid, wavelengths):
+    """
+    Interpolate PSFs to user-specified wavelengths using linear interpolation.
+
+    This function takes PSFs at grid wavelengths (e.g., from interpolate_psf_spatial)
+    and interpolates them to arbitrary user-specified wavelengths.
+
+    Uses edge extrapolation: wavelengths outside the grid use the nearest edge PSF
+    (i.e., clamped to grid bounds).
+
+    This function is JAX-compatible and JIT-compilable.
+
+    Parameters
+    ----------
+    psfs : jnp.ndarray
+        PSF array at grid wavelengths
+        Shape: [N_wl_grid, PSF_y, PSF_x]
+    wl_grid : jnp.ndarray
+        Wavelengths in the grid (**microns**), shape [N_wl_grid]
+        Must be strictly increasing
+    wavelengths : jnp.ndarray
+        Target wavelengths (**microns**), shape [N_wl_user]
+        Can be any order, but should be within or near grid bounds
+
+    Returns
+    -------
+    psfs_interp : jnp.ndarray
+        Interpolated PSFs at target wavelengths
+        Shape: [N_wl_user, PSF_y, PSF_x]
+
+    Examples
+    --------
+    >>> # Get PSFs at grid wavelengths
+    >>> psfs_grid = interpolate_psf_spatial(payload, xsca=2000.0, ysca=2000.0)
+    >>> # Interpolate to specific wavelengths (microns)
+    >>> wavelengths = jnp.array([1.0, 1.25, 1.5, 1.75])  # microns
+    >>> psfs_user = interpolate_psf_wavelength(psfs_grid, payload['wavelengths'], wavelengths)
+    >>> psfs_user.shape
+    (4, 182, 182)
+
+    Notes
+    -----
+    - Linear interpolation along wavelength dimension
+    - Edge extrapolation: uses nearest grid PSF for out-of-bounds wavelengths
+    - For single wavelength, consider using interpolate_psf() directly
+    - Designed for use in star dispersion where PSFs are needed at many wavelengths
+
+    See Also
+    --------
+    interpolate_psf_spatial : Get PSFs at grid wavelengths for a spatial position
+    interpolate_psf : Trilinear interpolation at arbitrary (x, y, λ)
+    """
+    # Find wavelength brackets
+    wl_idx = jnp.searchsorted(wl_grid, wavelengths)  # Index of next wavelength
+    wl_idx = jnp.clip(wl_idx, 1, len(wl_grid) - 1)  # Ensure in bounds
+
+    wl_idx_lo = wl_idx - 1
+    wl_idx_hi = wl_idx
+
+    wl_lo = wl_grid[wl_idx_lo]
+    wl_hi = wl_grid[wl_idx_hi]
+
+    # Interpolation fraction
+    wl_frac = (wavelengths - wl_lo) / (wl_hi - wl_lo)
+    # Clamp to [0, 1] for edge extrapolation
+    wl_frac = jnp.clip(wl_frac, 0.0, 1.0)
+
+    # Get PSFs at bracketing wavelengths
+    # psfs shape: [N_wl_grid, PSF_y, PSF_x]
+    psfs_lo = psfs[wl_idx_lo]  # [N_wl_user, PSF_y, PSF_x]
+    psfs_hi = psfs[wl_idx_hi]  # [N_wl_user, PSF_y, PSF_x]
+
+    # Linear interpolation
+    # wl_frac has shape [N_wl_user], need to broadcast to [N_wl_user, 1, 1]
+    wl_frac = wl_frac[:, jnp.newaxis, jnp.newaxis]
+    psfs_interp = (1 - wl_frac) * psfs_lo + wl_frac * psfs_hi
+
+    return psfs_interp
 
 
 def interpolate_psf_spatial(payload, xsca, ysca):

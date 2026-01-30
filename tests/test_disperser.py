@@ -6,6 +6,8 @@ These tests verify:
 2. Bilinear interpolation conserves flux
 3. JIT compilation works correctly
 4. Wavelength chunking produces consistent results
+
+Note: Star dispersion tests are in test_star_disperser.py
 """
 
 import os
@@ -18,7 +20,6 @@ import numpy as np
 import pytest
 
 import roman_disperser.optical_model_jax as omj
-from roman_disperser.optical_model import RomanOpticalModel
 from roman_disperser.disperser import (
     bilinear_scatter_add,
     disperse_2d1d_sca,
@@ -27,20 +28,6 @@ from roman_disperser.disperser import (
 # Tolerances for float32 precision
 RTOL = 1e-4
 ATOL = 1e-4
-
-
-@pytest.fixture(scope="module")
-def optical_model():
-    """Load optical model once for all tests."""
-    pixi_root_path = os.environ.get("PIXI_PROJECT_ROOT", ".")
-    fn = os.path.join(pixi_root_path, "data/Roman_grism_OpticalModel_v0.8.yaml")
-    return RomanOpticalModel(fn)
-
-
-@pytest.fixture(scope="module")
-def payload(optical_model):
-    """Create payload for SCA 5, order 1."""
-    return omj.make_sca_payload(optical_model, sca=5, order="1")
 
 
 class TestBilinearScatterAdd:
