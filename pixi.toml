@@ -26,10 +26,13 @@ ipykernel = "*"  # Required for VS Code to run notebooks
 jupyterlab = "*" # Good for Quarto and debugging
 pandas = ">=2.3.3,<3"
 pytest = ">=9.0.2,<10"
+astropy = ">=7.2.0,<8"
 
 [pypi-dependencies]
 roman_disperser = { path = ".", editable = true }
 stpsf = ">=2.1.0, <3"
+synphot = ">=1.6.1, <2"
+stsynphot = ">=1.5.0, <2"
 
 # --- ENVIRONMENTS ---
 [environments]
