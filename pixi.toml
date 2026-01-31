@@ -11,6 +11,7 @@ check-jax = "python -c 'import jax; print(f\"Backend: {jax.default_backend()}\")
 
 [activation.env]
 STPSF_PATH = "$HOME/data/Roman/stpsf-data"
+PYSYN_CDBS = "$HOME/data/synphot/grp/redcat/trds"
 
 # --- GLOBAL DEPENDENCIES (Available everywhere) ---
 [dependencies]
