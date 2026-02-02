@@ -936,7 +936,7 @@ def make_psf_payload(
     if verbose:
         print(f"Generating PSF grid for {detector}, order {order}...")
         print(f"  Spatial grid: {len(spatial_grid['x'])}×{len(spatial_grid['y'])} positions")
-        print(f"  Wavelengths: {len(wavelengths)} samples ({wavelengths[0]*1e6:.2f}-{wavelengths[-1]*1e6:.2f} μm)")
+        print(f"  Wavelengths: {len(wavelengths)} samples ({wavelengths[0]:.2f}-{wavelengths[-1]:.2f} μm)")
         print(f"  Total PSFs: {len(spatial_grid['x']) * len(spatial_grid['y']) * len(wavelengths)}")
         print(f"  FOV: {fov_arcsec:.1f} arcsec, Oversample: {oversample}×")
         print(f"  This may take 5-6 minutes for default grid...")
