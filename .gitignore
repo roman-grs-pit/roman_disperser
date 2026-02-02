@@ -1,6 +1,7 @@
 # pixi environments
-.pixi/*
-!.pixi/config.toml
+.pixi
+.pixi-backup
+#!.pixi/config.toml
 
 # Python ignores
 *.pyc
