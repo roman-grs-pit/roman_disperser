@@ -259,10 +259,10 @@ For a typical galaxy (150×150 pixels, 4× oversampled):
 - Input galaxy: 150 × 150 × 4 bytes = 90 KB
 - PSF grid (spatial interpolated): 56 × 182 × 182 × 4 bytes ≈ 7.4 MB
 - Convolved images (mode='full'): 56 × 331 × 331 × 4 bytes ≈ 24.5 MB
-- Per wavelength chunk (1000 wavelengths): ~44 MB for interpolated 331×331 images
+- Per wavelength chunk (1000 wavelengths): ~440 MB for interpolated 331×331 images
 - Output detector: 4088 × 4088 × 4 bytes ≈ 67 MB
 
-**Total peak memory:** ~150 MB per galaxy - still manageable
+**Total peak memory:** ~550 MB per galaxy - still manageable
 
 ---
 
