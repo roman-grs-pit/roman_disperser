@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- PSF model (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation, caching
+- Star disperser (`star_disperser.py`): wavelength-dependent PSF deposition with memory-efficient chunking
+- PSF coordinate utilities (`psf_utils.py`)
+- PSF cache generation script (`scripts/generate_psf_caches.py`)
+- PSF cache migration script (`scripts/migrate_psf_caches.py`)
+- Star dispersion design docs (`docs/star_dispersion.md`, `docs/psf_phase1_plan.md`, `docs/phase2_star_dispersion_plan.md`)
+- Galaxy dispersion design doc (`docs/galaxy_dispersion_plan.md`)
+- PSF notebooks: analysis, interpolation validation, all-SCA validation
+- Star notebooks: single star demo, multi star demo, GPU run
+- Grism sensitivity and G0V star spectrum notebooks
+
 ## [0.3.1] - 2026-01-11
 
 ### Fixed

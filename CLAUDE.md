@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy. Five main components:
 - **Class-based** (`optical_model.py`): Reference implementation using NumPy
 - **JAX functional** (`optical_model_jax.py`): JIT-compilable, vectorized implementation
-- **Disperser** (`disperser.py`): 2D spatial + 1D spectral → detector simulation (galaxies)
+- **Disperser** (`disperser.py`): Legacy 2D+1D galaxy disperser (to be replaced by `galaxy_disperser.py`)
 - **Star disperser** (`star_disperser.py`): Point source dispersion with wavelength-dependent PSFs
 - **PSF model** (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation
 
@@ -19,6 +19,7 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
  - @docs/stpsf.md : STPSF quick reference for Roman WFI grism mode.
  - @docs/star_dispersion.md : Star dispersion design phases and PSF interpolation approach.
  - @docs/psf_phase1_plan.md : PSF data model implementation plan with validation results.
+ - @docs/galaxy_dispersion_plan.md : Design for the new galaxy disperser using Jacobian-based shape warping + PSF convolution.
 
 ## Commands
 
@@ -122,5 +123,6 @@ Key functions: `make_psf_pixel_grid`, `deposit_psf`, `disperse_star_psf`, `make_
 - Spectral orders are strings: "1", "0", "2", "m1"
 - Model config: `data/Roman_grism_OpticalModel_v0.8.yaml`
 - `demo_utils.py` provides helpers for generating synthetic galaxy profiles and spectra
+- PSF caches stored in `data/psf_cache/`; generate with `scripts/generate_psf_caches.py`
 
 
