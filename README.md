@@ -137,9 +137,16 @@ roman_disperser/
 ├── data/
 │   ├── Roman_grism_OpticalModel_v0.8.yaml
 │   └── psf_cache/                   # Generated PSF grids (36 files)
+├── workbench/                         # Cross-code comparisons & experiments
 ├── pixi.toml
 └── pyproject.toml
 ```
+
+## Data Management
+
+Large data files (PSF caches, workbench datasets) are git-ignored and not stored in the repository. Plan is to host them in a public Backblaze B2 bucket (e.g., `roman-disperser-data`), downloadable via plain HTTPS — no credentials or special tools needed for users.
+
+PSF caches can also be regenerated locally (~2 hours): `pixi run python scripts/generate_psf_caches.py --workers 2`
 
 ## References
 
