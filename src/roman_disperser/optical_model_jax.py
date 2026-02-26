@@ -257,8 +257,8 @@ def get_mpa_coords(payload, xfpa, yfpa):
     Y_ij = payload["poly"]["Y_ij"]
     
     # Evaluate 2D polynomials using einsum (more efficient than matmul + diagonal)
-    xmpa = jnp.einsum('ni,ij,nj->n', x_powers, X_ij, y_powers)
-    ympa = jnp.einsum('ni,ij,nj->n', x_powers, Y_ij, y_powers)
+    xmpa = jnp.einsum('ni,ij,nj->n', x_powers, X_ij, y_powers, precision='highest')
+    ympa = jnp.einsum('ni,ij,nj->n', x_powers, Y_ij, y_powers, precision='highest')
     
     return xmpa, ympa
 
@@ -286,7 +286,7 @@ def get_trace_coeffs(payload, xfpa, yfpa):
     # Compute crv[i, n] using einsum: sum over j,k for each i,n
     # Original: x @ C_ijk @ y.T -> [n,i,n], then diagonal(axis1=1,axis2=2) -> [n,i], then transpose -> [i,n]
     # Einsum: directly compute shape [i, n]
-    crv = jnp.einsum('nj,ijk,nk->in', x_powers_crv, C_ijk, y_powers_crv)
+    crv = jnp.einsum('nj,ijk,nk->in', x_powers_crv, C_ijk, y_powers_crv, precision='highest')
     
     # Inverse dispersion coefficients (D_ijk)
     ids_j = payload["poly"]["ids_j"]
@@ -297,7 +297,7 @@ def get_trace_coeffs(payload, xfpa, yfpa):
     D_ijk = payload["poly"]["D_ijk"]  # [i, j, k]
     
     # Compute ids[i, n] using einsum
-    ids = jnp.einsum('nj,ijk,nk->in', x_powers_ids, D_ijk, y_powers_ids)
+    ids = jnp.einsum('nj,ijk,nk->in', x_powers_ids, D_ijk, y_powers_ids, precision='highest')
     
     return crv, ids
 
@@ -338,11 +338,11 @@ def trace_beam(payload, xfpa, yfpa, wavelength):
     # Compute dely: sum over i of ids[i] * wl^i
     ids_i = payload["poly"]["ids_i"]
     wl_powers = wl[:, jnp.newaxis] ** jnp.arange(ids_i)  # [n, i]
-    dely = jnp.einsum('ni,in->n', wl_powers, ids)
-    
+    dely = jnp.einsum('ni,in->n', wl_powers, ids, precision='highest')
+
     # Compute delx: sum over i of crv[i] * dely^i
     crv_i = payload["poly"]["crv_i"]
     dely_powers = dely[:, jnp.newaxis] ** jnp.arange(crv_i)  # [n, i]
-    delx = jnp.einsum('ni,in->n', dely_powers, crv)
+    delx = jnp.einsum('ni,in->n', dely_powers, crv, precision='highest')
     
     return xmpa_ref + delx, ympa_ref + dely

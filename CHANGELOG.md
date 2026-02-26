@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Galaxy disperser (`galaxy_disperser.py`): extended source dispersion with Jacobian-based shape warping + PSF convolution
 - PSF model (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation, caching
 - Star disperser (`star_disperser.py`): wavelength-dependent PSF deposition with memory-efficient chunking
 - PSF coordinate utilities (`psf_utils.py`)
@@ -17,7 +18,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Galaxy dispersion design doc (`docs/galaxy_dispersion_plan.md`)
 - PSF notebooks: analysis, interpolation validation, all-SCA validation
 - Star notebooks: single star demo, multi star demo, GPU run
+- Galaxy notebooks: Jacobian exploration
 - Grism sensitivity and G0V star spectrum notebooks
+
+## [0.3.3] - 2026-01-12
+
+### Added
+- GPU scaling benchmark script (`scripts/benchmark_gpu_scaling.py`) testing performance across:
+  - Galaxy counts: 100, 250, 500, 1000
+  - Spectral orders: +1, 0, +2
+  - Wavelength chunk sizes: 50, 100, 200
+- GPU scaling analysis notebook (`notebooks/demos/gpu_scaling_analysis.ipynb`) with presentation-quality visualizations
+- Order efficiency scaling factors: Order +1 (100%), Order 0 (2%), Order +2 (1%) for realistic flux ratios
+- Benchmark results committed to repo (`scripts/output/`) including combined detector PNG
+
+### Performance
+- 1000 galaxies across 3 orders: ~19s total on NVIDIA RTX A5000
+- Per-galaxy throughput: ~52 galaxies/second (all orders)
+- Peak memory: ~418 MB (well under GPU capacity)
+
+## [0.3.2] - 2026-01-12
+
+### Fixed
+- Added `precision='highest'` to all einsum calls for GPU/CPU numerical consistency
+- Removed hardcoded `JAX_PLATFORMS="cpu"` from test files to allow GPU testing
+
+### Added
+- GPU consistency tests (`test_disperser_gpu.py`) comparing CPU vs GPU results
+- GPU verification checklist documentation (`docs/guides/2026-01-11-gpu-verification-checklist.md`)
+- GPU support section in README
+
+### Performance
+- Verified ~50x speedup on NVIDIA RTX A5000 vs CPU for multi-galaxy dispersion
+- JIT compilation provides additional 4-10x speedup on GPU (first vs cached calls)
 
 ## [0.3.1] - 2026-01-11
 

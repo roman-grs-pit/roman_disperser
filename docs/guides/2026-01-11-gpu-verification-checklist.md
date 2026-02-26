@@ -4,35 +4,35 @@ This checklist documents the steps to verify that the JAX-based disperser code r
 
 ## 1. Setup & Installation
 
-- [ ] Clone/sync repo to `/workspace` (persists across container restarts)
-- [ ] Install pixi:
+- [x] Clone/sync repo to `/workspace` (persists across container restarts)
+- [x] Install pixi:
   ```bash
   curl -fsSL https://pixi.sh/install.sh | bash
   ```
-- [ ] Add pixi to PATH (add to `/workspace/.bashrc` for persistence):
+- [x] Add pixi to PATH (add to `/workspace/.bashrc` for persistence):
   ```bash
   export PATH="$HOME/.pixi/bin:$PATH"
   ```
-- [ ] Run `pixi install` in the repo directory
-- [ ] Activate CUDA environment: `pixi shell cuda` (or use `pixi run -e cuda <command>`)
+- [x] Run `pixi install` in the repo directory
+- [x] Activate CUDA environment: `pixi shell cuda` (or use `pixi run -e cuda <command>`)
 
 ## 2. GPU Verification
 
 Run these checks before running any tests or notebooks.
 
-- [ ] Verify JAX sees the GPU:
+- [x] Verify JAX sees the GPU:
   ```bash
   pixi run -e cuda check-jax
   ```
   Expected output: `Backend: gpu` and `GpuDevice(id=0)`
 
-- [ ] Verify CUDA version compatibility:
+- [x] Verify CUDA version compatibility:
   ```bash
   nvidia-smi
   ```
   Should show CUDA 12.x (matches `pixi.toml` requirement)
 
-- [ ] Quick Python sanity check:
+- [x] Quick Python sanity check:
   ```python
   import jax
   import jax.numpy as jnp
@@ -44,27 +44,27 @@ Run these checks before running any tests or notebooks.
 
 ## 3. Run Tests
 
-- [ ] Run full test suite:
+- [x] Run full test suite:
   ```bash
   pixi run -e cuda pytest -q tests
   ```
-- [ ] All tests should pass
-- [ ] Compare results to CPU runs (should be identical within tolerances)
-- [ ] Note any numerical differences (float32 GPU vs CPU can differ slightly)
+- [x] All tests should pass
+- [x] Compare results to CPU runs (should be identical within tolerances)
+- [x] Note any numerical differences (float32 GPU vs CPU can differ slightly)
 
 ## 4. Notebook Verification
 
-- [ ] Copy notebook for GPU testing:
+- [x] Copy notebook for GPU testing:
   ```bash
   cp notebooks/demos/multi_galaxy_demo.ipynb notebooks/demos/multi_galaxy_demo_gpu.ipynb
   ```
 
-- [ ] Launch Jupyter:
+- [x] Launch Jupyter:
   ```bash
   pixi run -e cuda jupyter lab --ip=0.0.0.0 --port=8888
   ```
 
-- [ ] Add GPU verification cell at the top of the notebook:
+- [x] Add GPU verification cell at the top of the notebook:
   ```python
   import jax
   print(f"Backend: {jax.default_backend()}")
@@ -72,9 +72,9 @@ Run these checks before running any tests or notebooks.
   assert jax.default_backend() == 'gpu', "Not using GPU!"
   ```
 
-- [ ] Run notebook with default `N_GALAXIES=15`
-- [ ] Compare timing to CPU runs (expect 5-10x speedup)
-- [ ] Verify flux conservation metrics match CPU results
+- [x] Run notebook with default `N_GALAXIES=15`
+- [x] Compare timing to CPU runs (expect 5-10x speedup)
+- [x] Verify flux conservation metrics match CPU results
 
 ## 5. Scale-Up Testing
 
@@ -85,7 +85,6 @@ Run these checks before running any tests or notebooks.
   ```
 - [ ] Track timing per galaxy as you scale
 - [ ] Note if any OOM errors occur and at what scale
-- [ ] Consider removing diagnostic zoom plots for large runs (reduces memory/time)
 
 ## 6. Additional Verification
 
@@ -97,9 +96,9 @@ Run these checks before running any tests or notebooks.
 
 ### JIT Compilation Verification
 
-- [ ] First run includes compilation overhead
-- [ ] Second run should be noticeably faster
-- [ ] Use proper timing with synchronization:
+- [x] First run includes compilation overhead
+- [x] Second run should be noticeably faster
+- [x] Use proper timing with synchronization:
   ```python
   import time
   output.block_until_ready()  # Force sync before timing
@@ -117,24 +116,41 @@ Run these checks before running any tests or notebooks.
 
 ## 7. Results Log
 
+**Test Environment:** NVIDIA RTX A5000, CUDA 12.4, Driver 550.127.05
+
 | Test | Status | Notes |
 |------|--------|-------|
-| `check-jax` shows GPU | | |
-| All pytest tests pass | | |
-| Single galaxy notebook runs | | |
-| Multi-galaxy (N=15) runs | | |
-| Multi-galaxy (N=100) runs | | |
-| Multi-galaxy (N=500) runs | | |
-| Multi-galaxy (N=1000) runs | | |
+| `check-jax` shows GPU | ✅ | Backend: gpu, CudaDevice(id=0) |
+| All pytest tests pass | ✅ | 134 passed in 24s |
+| Single galaxy notebook runs | ✅ | |
+| Multi-galaxy (N=15) runs | ✅ | 0.286s total (3 orders, cached) |
+| Multi-galaxy (N=100) runs | — | Not tested |
+| Multi-galaxy (N=500) runs | — | Not tested |
+| Multi-galaxy (N=1000) runs | — | Not tested |
 
 ### Timing Comparison
 
-| Configuration | CPU (Mac) | GPU (Runpod) | Speedup |
-|---------------|-----------|--------------|---------|
-| Single galaxy, 1 order | | | |
-| 15 galaxies, 3 orders | | | |
-| 100 galaxies, 1 order | | | |
-| 1000 galaxies, 1 order | | | |
+**Configuration:** 15 galaxies, 150×150 images (3× oversampled), 1000 wavelengths, 3 orders
+
+| Configuration | CPU | GPU (RTX A5000) | Speedup |
+|---------------|-----|-----------------|---------|
+| 15 galaxies, 3 orders (cached) | 14.58s | 0.29s | **51x** |
+| Per galaxy average | 0.324s | 0.006s | **54x** |
+
+### JIT Compilation Speedup (GPU)
+
+| Order | First Call | Cached Call | JIT Speedup |
+|-------|------------|-------------|-------------|
+| Order 1 | 0.691s | 0.064s | 10.8x |
+| Order 0 | 0.654s | 0.171s | 3.8x |
+| Order 2 | 0.534s | 0.052s | 10.3x |
+
+### Flux Conservation
+
+All orders show identical flux conservation between CPU and GPU (within float32 precision):
+- Order 1: 99.99% conservation
+- Order 0: 66.33% conservation (spectra extend off detector)
+- Order 2: 72.79% conservation (spectra extend off detector)
 
 ---
 

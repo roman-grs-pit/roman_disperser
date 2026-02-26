@@ -12,8 +12,6 @@ Note: Star dispersion tests are in test_star_disperser.py
 
 import os
 
-os.environ["JAX_PLATFORMS"] = "cpu"
-
 import jax
 import jax.numpy as jnp
 import numpy as np

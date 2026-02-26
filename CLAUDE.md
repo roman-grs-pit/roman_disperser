@@ -150,5 +150,7 @@ Key functions: `trace_beam_sca`, `trace_beam_sca_with_jacobian`, `disperse_galax
 - Model config: `data/Roman_grism_OpticalModel_v0.8.yaml`
 - `demo_utils.py` provides helpers for generating synthetic galaxy profiles and spectra
 - PSF caches stored in `data/psf_cache/`; generate with `scripts/generate_psf_caches.py`
+- All `jnp.einsum` calls use `precision='highest'` for CPU/GPU numerical consistency
+- GPU tests in `test_disperser_gpu.py` verify CPU vs GPU results match
 
 

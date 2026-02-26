@@ -60,6 +60,17 @@ output = disperse(xsca_star=2000.0, ysca_star=2000.0,
 # TODO: add galaxy dispersion example
 ```
 
+### GPU Support
+
+For NVIDIA GPU acceleration, use the `cuda` environment:
+
+```bash
+pixi run -e cuda pytest -q tests    # Run tests on GPU
+pixi run -e cuda check-jax          # Verify GPU is detected
+```
+
+The GPU provides ~50x speedup for multi-galaxy dispersion (see `docs/guides/2026-01-11-gpu-verification-checklist.md`).
+
 ## Running Tests
 
 ```bash
@@ -70,13 +81,17 @@ pixi run pytest -v tests/test_galaxy_disperser.py    # Galaxy disperser tests
 pixi run pytest -v tests/test_psf_model.py           # PSF model tests
 ```
 
-Test files:
-- `test_optical_model_jax.py` — coordinate transforms, polynomial mappings, spectral traces
-- `test_disperser.py` — bilinear interpolation, flux conservation, boundary handling
-- `test_psf_model.py` — PSF interpolation, caching, trilinear accuracy
-- `test_star_disperser.py` — PSF deposition, chunk invariance, flux conservation
-- `test_galaxy_disperser.py` — Jacobian warping, PSF convolution, delta-vs-star comparison
-- `test_demo_utils.py` — synthetic data generation helpers
+### Test Coverage
+
+The test suite includes:
+
+- **Optical model tests** (`test_optical_model_jax.py`): SCA/FPA/MPA coordinate transformations, polynomial mappings, trace coefficients, and spectral traces
+- **Disperser tests** (`test_disperser.py`): Bilinear interpolation, flux conservation, boundary handling, multi-galaxy batching
+- **PSF model tests** (`test_psf_model.py`): PSF interpolation, caching, trilinear accuracy
+- **Star disperser tests** (`test_star_disperser.py`): PSF deposition, chunk invariance, flux conservation
+- **Galaxy disperser tests** (`test_galaxy_disperser.py`): Jacobian warping, PSF convolution, delta-vs-star comparison
+- **GPU tests** (`test_disperser_gpu.py`): CPU vs GPU consistency verification (skipped if no GPU available)
+- **Demo utils tests** (`test_demo_utils.py`): Synthetic data generation helpers
 
 ## Documentation
 
@@ -128,6 +143,7 @@ roman_disperser/
 │   ├── conftest.py
 │   ├── test_optical_model_jax.py
 │   ├── test_disperser.py
+│   ├── test_disperser_gpu.py
 │   ├── test_psf_model.py
 │   ├── test_star_disperser.py
 │   ├── test_galaxy_disperser.py
