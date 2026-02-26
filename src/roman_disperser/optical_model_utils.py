@@ -95,10 +95,44 @@ class RomanDetectorCoordinates:
             )
         return sca_polygons
 
-    def calculate_fpa_pos(self, ra, dec, pointing):
+    def calculate_fpa_pos(
+        self, ra, dec, pointing_ra, pointing_dec, pointing_pa
+    ):  # pylint: disable=too-many-positional-arguments
+        """
+        Returns the FPA (x,y) position for given ra, dec and pointing
+        The pointing_pa is defined as the orientation angle of the L2 image
+        relative to the on-sky north-up, east-left WCS
+        Units are in 'deg'
+        """
+        ra, dec = np.atleast_1d(ra), np.atleast_1d(dec)
 
-        raise NotImplementedError
+        dx = (ra - pointing_ra) * np.cos(np.deg2rad(dec))
+        dy = dec - pointing_dec
+        xy = np.vstack([dx, dy])
 
+        rot_matrix = self.get_pa_rotation(pa=pointing_pa)
+        xy = rot_matrix @ xy
+
+        xfpa = -xy[0, :]
+        yfpa = -xy[1, :]
+
+        return xfpa, yfpa
+    
+    def get_pa_rotation(self, pa):
+        """
+        Returns the rotation matrix for given rotation pa
+        Units are in 'deg'
+        """
+        theta = np.deg2rad(
+            pa + 180 - 60
+        )  # on-sky PA to focal plane coordinate system
+        return np.array(
+            [
+                [np.cos(theta), -np.sin(theta)],
+                [np.sin(theta), np.cos(theta)],
+            ]
+        )
+    
     def match_pos_to_sca(self, xmpa, ympa):
         """
         Returns matching SCA in which the given point(s) lie
