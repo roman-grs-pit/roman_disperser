@@ -4,11 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy. Five main components:
+JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy. Six main components:
 - **Class-based** (`optical_model.py`): Reference implementation using NumPy
 - **JAX functional** (`optical_model_jax.py`): JIT-compilable, vectorized implementation
-- **Disperser** (`disperser.py`): Legacy 2D+1D galaxy disperser (to be replaced by `galaxy_disperser.py`)
+- **Disperser** (`disperser.py`): Legacy 2D+1D galaxy disperser (replaced by `galaxy_disperser.py`)
 - **Star disperser** (`star_disperser.py`): Point source dispersion with wavelength-dependent PSFs
+- **Galaxy disperser** (`galaxy_disperser.py`): Extended source dispersion with Jacobian-based shape warping + PSF convolution
 - **PSF model** (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation
 
 ## Design Documents
@@ -109,6 +110,31 @@ output = disperser(xsca_star=2000.0, ysca_star=2000.0, wavelengths=wl_array, sta
 Key functions: `make_psf_pixel_grid`, `deposit_psf`, `disperse_star_psf`, `make_star_disperser`
 
 **Note:** All wavelength parameters in `star_disperser` are in **microns** (consistent with optical model).
+
+### Galaxy Disperser
+
+The galaxy disperser extends the star disperser to handle extended sources. It warps the galaxy morphology through the dispersion Jacobian, convolves with the PSF, and deposits onto the detector:
+
+```python
+from roman_disperser import galaxy_disperser
+
+# Create a JIT-compiled galaxy disperser
+disperse = galaxy_disperser.make_galaxy_disperser(psf_payload, optical_payload)
+
+# Disperse a galaxy (image at oversample× resolution, wavelengths in microns)
+output = disperse(image=galaxy_image, x0=2000.0, y0=2000.0,
+                  spectrum=flux_array, wavelengths=wl_array, output=output)
+```
+
+Key functions: `trace_beam_sca`, `trace_beam_sca_with_jacobian`, `disperse_galaxy_shape`, `prepare_galaxy_images`, `disperse_galaxy`, `make_galaxy_disperser`
+
+**Algorithm:**
+1. Compute Jacobian of the SCA→SCA dispersion map at the galaxy center (per wavelength)
+2. Warp galaxy morphology through the Jacobian (forward scatter, flux-conserving)
+3. Convolve warped images with wavelength-dependent PSFs (FFT)
+4. Interpolate convolved images to fine wavelength grid; deposit onto detector with exact positions
+
+**Note:** Galaxy images must be at `psf_payload['oversample']`× resolution (typically 4×). Pixel spacing is derived automatically from the PSF payload.
 
 ## Coding Guidelines
 

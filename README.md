@@ -10,7 +10,8 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
 | **Optical Model** (JAX) | `optical_model_jax.py` | Complete |
 | **PSF Model** | `psf_model.py` | Complete — STPSF grids with trilinear interpolation |
 | **Star Disperser** | `star_disperser.py` | Complete — point sources with wavelength-dependent PSFs |
-| **Galaxy Disperser** (legacy) | `disperser.py` | To be replaced by `galaxy_disperser.py` ([design](docs/galaxy_dispersion_plan.md)) |
+| **Galaxy Disperser** | `galaxy_disperser.py` | Complete — extended sources with Jacobian warping + PSF convolution |
+| **Galaxy Disperser** (legacy) | `disperser.py` | Replaced by `galaxy_disperser.py` |
 
 ## Installation
 
@@ -53,13 +54,20 @@ output = disperse(xsca_star=2000.0, ysca_star=2000.0,
                   wavelengths=wavelengths, star_flux=flux, output=output)
 ```
 
+### Galaxy Dispersion
+
+```python
+# TODO: add galaxy dispersion example
+```
+
 ## Running Tests
 
 ```bash
 pixi run pytest -q tests              # All tests
 pixi run pytest -m "not slow" tests   # Skip slow tests (STPSF generation)
-pixi run pytest -v tests/test_star_disperser.py   # Star disperser tests
-pixi run pytest -v tests/test_psf_model.py        # PSF model tests
+pixi run pytest -v tests/test_star_disperser.py      # Star disperser tests
+pixi run pytest -v tests/test_galaxy_disperser.py    # Galaxy disperser tests
+pixi run pytest -v tests/test_psf_model.py           # PSF model tests
 ```
 
 Test files:
@@ -67,6 +75,7 @@ Test files:
 - `test_disperser.py` — bilinear interpolation, flux conservation, boundary handling
 - `test_psf_model.py` — PSF interpolation, caching, trilinear accuracy
 - `test_star_disperser.py` — PSF deposition, chunk invariance, flux conservation
+- `test_galaxy_disperser.py` — Jacobian warping, PSF convolution, delta-vs-star comparison
 - `test_demo_utils.py` — synthetic data generation helpers
 
 ## Documentation
@@ -93,7 +102,10 @@ Test files:
 - `g0v-star.ipynb` — G0V star spectrum example
 - `sensitivities.ipynb` — Sensitivity analysis
 
-**Galaxy dispersion** (`notebooks/demos/`):
+**Galaxy dispersion** (`notebooks/galaxy/`):
+- `jacobian_exploration.ipynb` — Jacobian characterization for galaxy disperser design
+
+**Galaxy dispersion — legacy** (`notebooks/demos/`):
 - `single_galaxy_demo.ipynb` — Single galaxy dispersion (legacy disperser)
 - `multi_galaxy_demo.ipynb` — Multi-galaxy batch dispersion (legacy disperser)
 
@@ -108,6 +120,7 @@ roman_disperser/
 │   ├── optical_model_utils.py     # Coordinate system utilities
 │   ├── disperser.py               # Legacy 2D+1D galaxy disperser
 │   ├── star_disperser.py          # Star disperser with PSF deposition
+│   ├── galaxy_disperser.py        # Galaxy disperser (Jacobian warp + PSF convolution)
 │   ├── psf_model.py               # PSF grids and trilinear interpolation
 │   ├── psf_utils.py               # STPSF ↔ disperser coordinate conversion
 │   └── demo_utils.py              # Synthetic galaxy/spectrum helpers
@@ -117,11 +130,13 @@ roman_disperser/
 │   ├── test_disperser.py
 │   ├── test_psf_model.py
 │   ├── test_star_disperser.py
+│   ├── test_galaxy_disperser.py
 │   └── test_demo_utils.py
 ├── notebooks/
 │   ├── psf/                         # PSF and star notebooks
-│   ├── demos/                       # Galaxy demo notebooks
-│   └── archive/                     # Legacy notebooks
+│   ├── galaxy/                       # Galaxy disperser notebooks
+│   ├── demos/                        # Legacy galaxy demo notebooks
+│   └── archive/                      # Legacy notebooks
 ├── docs/
 │   ├── optical_model.md
 │   ├── disperser_design.md

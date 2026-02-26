@@ -4,6 +4,7 @@ from .optical_model import RomanOpticalModel
 from . import optical_model_jax
 from . import disperser
 from . import star_disperser
+from . import galaxy_disperser
 from . import demo_utils
 from . import psf_utils
 from . import psf_model
@@ -13,6 +14,7 @@ __all__ = [
     "optical_model_jax",
     "disperser",
     "star_disperser",
+    "galaxy_disperser",
     "demo_utils",
     "psf_utils",
     "psf_model",
