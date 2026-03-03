@@ -4,8 +4,6 @@ Shared pytest fixtures for roman_disperser tests.
 
 import os
 
-os.environ["JAX_PLATFORMS"] = "cpu"
-
 import pytest
 
 import roman_disperser.optical_model_jax as omj
