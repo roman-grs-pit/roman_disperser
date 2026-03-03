@@ -11,6 +11,7 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
 | **PSF Model** | `psf_model.py` | Complete — STPSF grids with trilinear interpolation |
 | **Star Disperser** | `star_disperser.py` | Complete — point sources with wavelength-dependent PSFs |
 | **Galaxy Disperser** | `galaxy_disperser.py` | Complete — extended sources with Jacobian warping + PSF convolution |
+| **Catalog Pipeline** | `catalog.py` | In progress — source selection and detector assignment |
 | **Galaxy Disperser** (legacy) | `disperser.py` | Replaced by `galaxy_disperser.py` |
 
 ## Installation

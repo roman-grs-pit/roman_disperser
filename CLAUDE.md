@@ -164,6 +164,14 @@ Key functions: `trace_beam_sca`, `trace_beam_sca_with_jacobian`, `disperse_galax
 
 **Note:** Galaxy images must be at `psf_payload['oversample']`× resolution (typically 4×). Pixel spacing is derived automatically from the PSF payload.
 
+### Catalog Pipeline
+
+The `catalog` module provides utilities for assigning sources to detectors:
+
+- **`select_sources(payload, xfpa, yfpa, ...)`**: Returns boolean mask of sources whose dispersed trace overlaps the padded detector region. JIT-compilable. Traces at multiple wavelengths to capture curvature.
+
+**TODO:** Expand catalog module documentation as more functions are added.
+
 ## Coding Guidelines
 
 - Significant changes should ALWAYS be done on a new branch. Create a descriptive branch name for the feature or bug fix.
