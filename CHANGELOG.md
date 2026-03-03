@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-03
+
 ### Added
 - Galaxy disperser (`galaxy_disperser.py`): extended source dispersion with Jacobian-based shape warping + PSF convolution
 - PSF model (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation, caching
@@ -14,12 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PSF coordinate utilities (`psf_utils.py`)
 - PSF cache generation script (`scripts/generate_psf_caches.py`)
 - PSF cache migration script (`scripts/migrate_psf_caches.py`)
+- Stars + galaxies GPU demo notebook (`notebooks/galaxy/stars_and_galaxies_gpu_demo.ipynb`)
+- Disperser performance profiling notebook (`notebooks/galaxy/profile_dispersers.ipynb`)
 - Star dispersion design docs (`docs/star_dispersion.md`, `docs/psf_phase1_plan.md`, `docs/phase2_star_dispersion_plan.md`)
 - Galaxy dispersion design doc (`docs/galaxy_dispersion_plan.md`)
+- Multi-source `fori_loop` JIT pattern: dynamic `n_sources` argument avoids recompilation
 - PSF notebooks: analysis, interpolation validation, all-SCA validation
 - Star notebooks: single star demo, multi star demo, GPU run
 - Galaxy notebooks: Jacobian exploration
 - Grism sensitivity and G0V star spectrum notebooks
+
+### Performance
+- Star dispersion: ~3 ms/star/order on RTX 4090 (5501 wavelengths, 2A spacing)
+- Galaxy dispersion: ~7 ms/galaxy/order on RTX 4090 (120x120 image, 5501 wavelengths)
+- 10K sources x 3 orders: ~5 minutes total execution (excluding one-time ~30s JIT compilation)
 
 ## [0.3.3] - 2026-01-12
 
