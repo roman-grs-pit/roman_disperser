@@ -57,7 +57,17 @@ output = disperse(xsca_star=2000.0, ysca_star=2000.0,
 ### Galaxy Dispersion
 
 ```python
-# TODO: add galaxy dispersion example
+from roman_disperser import galaxy_disperser
+
+# Create a JIT-compiled galaxy disperser
+disperse = galaxy_disperser.make_galaxy_disperser(psf_payload, optical_payload)
+
+# Galaxy image at 4× oversampling (must match PSF payload)
+galaxy_image = jnp.ones((120, 120), dtype=jnp.float32)  # 30×30 native × 4
+
+# Disperse a galaxy (wavelengths in microns)
+output = disperse(image=galaxy_image, x0=2000.0, y0=2000.0,
+                  spectrum=flux, wavelengths=wavelengths, output=output)
 ```
 
 ### GPU Support
@@ -69,7 +79,8 @@ pixi run -e cuda pytest -q tests    # Run tests on GPU
 pixi run -e cuda check-jax          # Verify GPU is detected
 ```
 
-The GPU provides ~50x speedup for multi-galaxy dispersion (see `docs/guides/2026-01-11-gpu-verification-checklist.md`).
+Typical GPU throughput (RTX 4090): ~3 ms/star/order, ~7 ms/galaxy/order.
+10K sources × 3 orders takes ~5 minutes (see `notebooks/galaxy/profile_dispersers.ipynb`).
 
 ## Running Tests
 
@@ -118,6 +129,8 @@ The test suite includes:
 - `sensitivities.ipynb` — Sensitivity analysis
 
 **Galaxy dispersion** (`notebooks/galaxy/`):
+- `stars_and_galaxies_gpu_demo.ipynb` — Full field simulation: 100 stars + 100 galaxies × 3 orders
+- `profile_dispersers.ipynb` — Performance profiling: per-operation timing breakdown
 - `jacobian_exploration.ipynb` — Jacobian characterization for galaxy disperser design
 
 **Galaxy dispersion — legacy** (`notebooks/demos/`):

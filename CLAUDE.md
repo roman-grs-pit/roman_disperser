@@ -71,6 +71,32 @@ def disperse_jit(image, x0, y0, dx, dy, spec, lam0, dlam, output):
 
 See @docs/jit_compilation.md for full details.
 
+### Multi-Source fori_loop Pattern
+
+When looping over many sources with `jax.lax.fori_loop`, wrap the loop in `@jax.jit` with the source count as a **dynamic** argument. This compiles once and reuses for any count:
+
+```python
+def make_star_fori(order):
+    sens = sensitivities[order]
+    disperser = star_dispersers[order]
+
+    @jax.jit
+    def run(n_sources, output):
+        def body_fn(i, output):
+            counts = spectra[i] * sens * dlam
+            return disperser(x[i], y[i], wavelengths, counts, output)
+        return jax.lax.fori_loop(0, n_sources, body_fn, output)
+
+    return run
+
+# Compile once with n=1, reuse for any count
+star_fori = make_star_fori('1')
+_ = star_fori(1, output)          # ~5s compilation
+output = star_fori(1000, output)   # no recompilation
+```
+
+Without this pattern, calling `fori_loop` outside JIT recompiles every invocation (~5s), which dominates execution for small source counts.
+
 ### PSF Model
 
 The PSF model uses STPSF to generate wavelength- and position-dependent PSF grids, then provides fast trilinear interpolation:
