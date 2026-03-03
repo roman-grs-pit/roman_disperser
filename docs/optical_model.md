@@ -11,6 +11,13 @@ This document describes the JAX functional implementation of the Roman Space Tel
 - **`fpa_to_mpa(payload, xfpa, yfpa)`**: FPA degrees → MPA (mm)
 - **`mpa_to_fpa(payload, xmpa, ympa)`**: MPA → FPA degrees
 
+### Sky-to-FPA Coordinate Transforms
+
+These are standalone functions (no payload needed) for converting between sky coordinates and FPA:
+
+- **`get_pa_rotation(pa)`**: Return 2×2 rotation matrix for a given position angle (degrees). Converts on-sky PA to focal plane coordinate system.
+- **`get_fpa_pos(ra, dec, pointing_ra, pointing_dec, pointing_pa)`**: Convert sky coordinates (RA, Dec) to FPA position (degrees) given telescope pointing and PA. Inputs are 1D arrays for (ra, dec) and scalars for pointing parameters.
+
 ### Optical Model Functions
 
 - **`get_mpa_coords(payload, xfpa, yfpa)`**: FPA → MPA polynomial mapping (wavelength-independent, reference wavelength)

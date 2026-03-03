@@ -96,7 +96,7 @@ pixi run pytest -v tests/test_psf_model.py           # PSF model tests
 
 The test suite includes:
 
-- **Optical model tests** (`test_optical_model_jax.py`): SCA/FPA/MPA coordinate transformations, polynomial mappings, trace coefficients, and spectral traces
+- **Optical model tests** (`test_optical_model_jax.py`): SCA/FPA/MPA coordinate transformations, sky-to-FPA transforms, polynomial mappings, trace coefficients, and spectral traces
 - **Disperser tests** (`test_disperser.py`): Bilinear interpolation, flux conservation, boundary handling, multi-galaxy batching
 - **PSF model tests** (`test_psf_model.py`): PSF interpolation, caching, trilinear accuracy
 - **Star disperser tests** (`test_star_disperser.py`): PSF deposition, chunk invariance, flux conservation

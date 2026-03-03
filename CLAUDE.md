@@ -55,7 +55,9 @@ payload = omj.make_sca_payload(model, sca=1, order="1")
 xmpa, ympa = omj.trace_beam(payload, xfpa, yfpa, wavelength)
 ```
 
-Key functions: `sca_to_mpa`, `mpa_to_sca`, `sca_to_fpa`, `fpa_to_sca`, `get_mpa_coords`, `get_trace_coeffs`, `trace_beam`
+Key functions: `sca_to_mpa`, `mpa_to_sca`, `sca_to_fpa`, `fpa_to_sca`, `get_mpa_coords`, `get_trace_coeffs`, `trace_beam`, `get_pa_rotation`, `get_fpa_pos`
+
+Sky-to-FPA functions (`get_pa_rotation`, `get_fpa_pos`) are standalone — no payload needed. They convert (RA, Dec) to FPA coordinates given telescope pointing parameters. The class-based equivalents live in `RomanDetectorCoordinates` in `optical_model_utils.py`.
 
 All use `jnp.einsum` for polynomial evaluation.
 
