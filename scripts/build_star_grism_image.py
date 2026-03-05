@@ -1,25 +1,28 @@
 #!/usr/bin/env python
 """
-Build a simulated Roman grism image from a stellar catalog.
+Build simulated Roman grism images from a stellar catalog.
 
-This script reads a stellar catalog, selects sources visible on a given detector,
-loads spectral templates, normalizes them to catalog magnitudes, and disperses
-all sources through the grism optical model to produce a FITS image and PNG
-quicklook.
+Supports two modes:
 
-Can be used as a CLI script or imported as a module:
+1. **Quick mode** — single pointing, single SCA:
 
-    # CLI usage
-    pixi run python scripts/build_star_grism_image.py \
+    pixi run -e cuda python scripts/build_star_grism_image.py \
         --pointing-ra 9.5 --pointing-dec 0.95 --pointing-pa 0.0 \
         --sca 5 --output my_field.fits
 
-    # Module usage
-    from scripts.build_star_grism_image import build_star_grism_image
-    build_star_grism_image(
-        pointing_ra=9.5, pointing_dec=0.95, pointing_pa=0.0,
-        sca=5, output_file="my_field.fits",
-    )
+2. **Batch mode** — multiple pointings, multiple SCAs via YAML config:
+
+    pixi run -e cuda python scripts/build_star_grism_image.py \
+        --config my_config.yaml
+
+The batch mode reads a YAML config file specifying pointings and SCAs,
+pre-compiles all JIT functions once, then processes each pointing
+efficiently.  See the --generate-config flag to create a documented
+template config file.  Existing output files are overwritten.
+
+Can also be imported as a module:
+
+    from scripts.build_star_grism_image import setup_pipeline, process_pointing
 """
 
 import argparse
@@ -143,36 +146,54 @@ def load_templates_as_synphot(catalog_dir, template_files, unique_indices):
     return templates
 
 
-def generate_spectra(
-    templates_synphot, template_indices, magnitudes,
-    wavelengths_angstrom, f158_band,
-):
-    """Generate normalized spectra for all sources.
-
-    Each source's template is normalized to its catalog F158 magnitude,
-    then sampled onto the output wavelength grid.
+def precompute_template_grid(templates_synphot, f158_band, wavelengths_angstrom):
+    """Normalize all templates to 0 ABmag in F158 and sample onto wavelength grid.
 
     Parameters
     ----------
     templates_synphot : dict mapping int -> synphot.SourceSpectrum
+    f158_band : synphot.SpectralElement
+    wavelengths_angstrom : ndarray [N_wl] in Angstroms
+
+    Returns
+    -------
+    template_grid : dict mapping int -> ndarray [N_wl] in FLAM at 0 ABmag
+    """
+    wl_qty = wavelengths_angstrom * u.AA
+    template_grid = {}
+    for idx, sp in templates_synphot.items():
+        norm_sp = sp.normalize(0.0 * u.ABmag, band=f158_band)
+        template_grid[idx] = norm_sp(wl_qty, flux_unit=syn.units.FLAM).value.astype(
+            np.float32
+        )
+    return template_grid
+
+
+def generate_spectra(template_grid, template_indices, magnitudes):
+    """Generate normalized spectra for all sources.
+
+    Uses pre-normalized templates (at 0 ABmag) and scales by magnitude.
+
+    Parameters
+    ----------
+    template_grid : dict mapping int -> ndarray [N_wl] (from precompute_template_grid)
     template_indices : ndarray [N] of int
     magnitudes : ndarray [N] of float
-    wavelengths_angstrom : ndarray [N_wl] in Angstroms
-    f158_band : synphot.SpectralElement
 
     Returns
     -------
     spectra_flam : ndarray [N, N_wl] in FLAM units
     """
     n_sources = len(magnitudes)
-    n_wl = len(wavelengths_angstrom)
+    first_key = next(iter(template_grid))
+    n_wl = len(template_grid[first_key])
     spectra = np.zeros((n_sources, n_wl), dtype=np.float32)
-    wl_qty = wavelengths_angstrom * u.AA
+
+    # Scale factor: template is at 0 ABmag, so scale by 10^(-0.4 * mag)
+    scale = 10.0 ** (-0.4 * magnitudes)
 
     for i in range(n_sources):
-        sp = templates_synphot[int(template_indices[i])]
-        norm_sp = sp.normalize(magnitudes[i] * u.ABmag, band=f158_band)
-        spectra[i] = norm_sp(wl_qty, flux_unit=syn.units.FLAM).value
+        spectra[i] = template_grid[int(template_indices[i])] * scale[i]
 
     return spectra
 
@@ -266,40 +287,83 @@ def select_sources_per_order(
 
 
 # ---------------------------------------------------------------------------
-# Dispersion
+# Batched dispersion
 # ---------------------------------------------------------------------------
 
-def make_fori_dispatcher(disperser_fn, sensitivities_order, wavelengths_jax,
-                         dlam_angstroms, spectra_jax, xsca_jax, ysca_jax):
-    """Build a JIT-compiled fori_loop dispatcher for one order.
+def make_batched_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
+    """Build a JIT-compiled fori_loop that processes a fixed-size batch.
 
-    The source count n_sources is a dynamic argument so JAX compiles
-    the loop body once and reuses it for any count.
+    The compiled function takes padded arrays of shape [batch_size, ...]
+    and a dynamic n_sources argument controlling how many are actually
+    processed. JAX traces the array shapes at the first call and reuses
+    the compiled code for all subsequent calls with the same shapes.
 
     Parameters
     ----------
     disperser_fn : callable from make_star_disperser
-    sensitivities_order : jnp.ndarray [N_wl]
+    sens : jnp.ndarray [N_wl]
     wavelengths_jax : jnp.ndarray [N_wl]
     dlam_angstroms : float
-    spectra_jax : jnp.ndarray [N_sources, N_wl] in FLAM
-    xsca_jax, ysca_jax : jnp.ndarray [N_sources]
 
     Returns
     -------
-    run : callable(n_sources, output) -> output
+    run : callable(n_sources, spectra, xsca, ysca, output) -> output
+        spectra: [batch_size, N_wl], xsca/ysca: [batch_size]
     """
-    sens = sensitivities_order
-
     @jax.jit
-    def run(n_sources, output):
+    def run(n_sources, spectra, xsca, ysca, output):
         def body_fn(i, output):
-            counts = spectra_jax[i] * sens * dlam_angstroms
-            return disperser_fn(xsca_jax[i], ysca_jax[i],
+            counts = spectra[i] * sens * dlam_angstroms
+            return disperser_fn(xsca[i], ysca[i],
                                 wavelengths_jax, counts, output)
         return jax.lax.fori_loop(0, n_sources, body_fn, output)
 
     return run
+
+
+def disperse_batched(fori_fn, spectra, xsca, ysca, output, batch_size):
+    """Disperse sources in fixed-size batches, reusing compiled code.
+
+    Parameters
+    ----------
+    fori_fn : compiled fori_loop from make_batched_fori
+    spectra : ndarray [N, N_wl]
+    xsca, ysca : ndarray [N]
+    output : jnp.ndarray [4088, 4088]
+    batch_size : int
+    log : callable for progress messages
+
+    Returns
+    -------
+    output : jnp.ndarray [4088, 4088]
+    """
+    n_sources = len(xsca)
+    n_wl = spectra.shape[1]
+    n_batches = (n_sources + batch_size - 1) // batch_size
+
+    for b in range(n_batches):
+        start = b * batch_size
+        end = min(start + batch_size, n_sources)
+        n_actual = end - start
+
+        # Pad to batch_size with zeros
+        spec_batch = np.zeros((batch_size, n_wl), dtype=np.float32)
+        x_batch = np.zeros(batch_size, dtype=np.float32)
+        y_batch = np.zeros(batch_size, dtype=np.float32)
+        spec_batch[:n_actual] = spectra[start:end]
+        x_batch[:n_actual] = xsca[start:end]
+        y_batch[:n_actual] = ysca[start:end]
+
+        output = fori_fn(
+            n_actual,
+            jnp.array(spec_batch),
+            jnp.array(x_batch),
+            jnp.array(y_batch),
+            output,
+        )
+
+    output.block_until_ready()
+    return output
 
 
 # ---------------------------------------------------------------------------
@@ -328,12 +392,24 @@ def write_fits(output_array, output_file, pointing_ra, pointing_dec,
 def write_png(output_array, png_file, linear_width=0.01):
     """Write an asinh-stretched quicklook PNG."""
     output_np = np.array(output_array)
+    # Downsample for quicklook: 4088 -> 1022 pixels (4× block-average).
+    # At dpi=150 with figsize=10 the output is ~1500px, so 1022 is plenty.
+    bf = 4
+    ny, nx = output_np.shape
+    ny_trim = (ny // bf) * bf
+    nx_trim = (nx // bf) * bf
+    output_np = output_np[:ny_trim, :nx_trim].reshape(
+        ny_trim // bf, bf, nx_trim // bf, bf
+    ).mean(axis=(1, 3))
     fig, ax = plt.subplots(figsize=(10, 10))
-    norm = AsinhNorm(linear_width=linear_width, vmin=0, vmax=output_np.max())
+    vmax = output_np.max()
+    if vmax == 0:
+        vmax = 1.0
+    norm = AsinhNorm(linear_width=linear_width, vmin=0, vmax=vmax)
     ax.imshow(output_np, origin="lower", cmap="inferno", norm=norm)
     ax.set_xlabel("X (SCA pixels)")
     ax.set_ylabel("Y (SCA pixels)")
-    ax.set_title(f"Grism Image (asinh stretch)")
+    ax.set_title("Grism Image (asinh stretch)")
     plt.colorbar(
         ax.images[0], ax=ax, label="Counts (asinh stretch)", shrink=0.8,
     )
@@ -342,8 +418,542 @@ def write_png(output_array, png_file, linear_width=0.01):
     plt.close(fig)
 
 
+def write_mosaic_png(sca_images, sca_list, model, png_file,
+                     linear_width=0.01):
+    """Write a mosaic PNG showing all SCAs in their WFI focal plane layout.
+
+    Parameters
+    ----------
+    sca_images : dict mapping sca (int) -> ndarray [4088, 4088]
+    sca_list : list of int
+    model : RomanOpticalModel
+    png_file : str
+    linear_width : float
+    """
+    # Get FPA center for each SCA
+    sca_centers = {}
+    for sca_num in sca_list:
+        payload = omj.make_sca_payload(model, sca=sca_num, order="1")
+        xfpa, yfpa = omj.sca_to_fpa(payload, 2044.5, 2044.5)
+        sca_centers[sca_num] = (float(xfpa), float(yfpa))
+
+    # Compute layout: map FPA degrees to figure coordinates
+    all_x = [c[0] for c in sca_centers.values()]
+    all_y = [c[1] for c in sca_centers.values()]
+    x_range = max(all_x) - min(all_x)
+    y_range = max(all_y) - min(all_y)
+
+    # Each SCA thumbnail size relative to spacing
+    # FPA spacing between adjacent SCAs is ~0.135 deg, detector is ~0.125 deg
+    thumb_size = 0.12  # degrees, slightly smaller than actual for gaps
+
+    fig_width = 16
+    fig_height = fig_width * (y_range + 2 * thumb_size) / (x_range + 2 * thumb_size)
+    fig = plt.figure(figsize=(fig_width, fig_height))
+
+    # Global vmax across all images for consistent scaling
+    global_max = max(
+        (np.array(sca_images[s]).max() for s in sca_list if s in sca_images),
+        default=1.0,
+    )
+    if global_max == 0:
+        global_max = 1.0
+    norm = AsinhNorm(linear_width=linear_width, vmin=0, vmax=global_max)
+
+    x_min = min(all_x) - thumb_size
+    x_max = max(all_x) + thumb_size
+    y_min = min(all_y) - thumb_size
+    y_max = max(all_y) + thumb_size
+
+    for sca_num in sca_list:
+        cx, cy = sca_centers[sca_num]
+
+        # Convert FPA position to figure fraction (x-axis reversed per
+        # standard Roman convention: FPA x runs ~0.4 to -0.4 left-to-right)
+        left = (x_max - cx - thumb_size / 2) / (x_max - x_min)
+        bottom = (cy - thumb_size / 2 - y_min) / (y_max - y_min)
+        width = thumb_size / (x_max - x_min)
+        height = thumb_size / (y_max - y_min)
+
+        ax = fig.add_axes([left, bottom, width, height])
+
+        if sca_num in sca_images:
+            img = np.array(sca_images[sca_num])
+            # Downsample for thumbnails: each SCA is ~200px in the figure,
+            # so full 4088×4088 is wasteful.  Block-average by 8× -> 511×511.
+            bf = 8
+            ny, nx = img.shape
+            ny_trim = (ny // bf) * bf
+            nx_trim = (nx // bf) * bf
+            img = img[:ny_trim, :nx_trim].reshape(
+                ny_trim // bf, bf, nx_trim // bf, bf
+            ).mean(axis=(1, 3))
+            ax.imshow(img, origin="lower", cmap="inferno", norm=norm,
+                      aspect="equal")
+        else:
+            ax.set_facecolor("#eeeeee")
+
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title(f"SCA{sca_num}", fontsize=8, pad=2, color="black")
+
+    fig.suptitle("WFI Focal Plane Mosaic", fontsize=14, y=0.98, color="black")
+    fig.savefig(png_file, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def write_mosaic_from_directory(pointing_dir, optical_model_path=None,
+                                linear_width=0.01):
+    """Generate a focal-plane mosaic PNG from per-SCA FITS files in a directory.
+
+    Scans ``pointing_dir`` for files matching ``SCA*.fits`` and reads the
+    MODEL extension from each.  This can be run standalone after the main
+    pipeline without reprocessing any sources.
+
+    Parameters
+    ----------
+    pointing_dir : str or Path
+        Directory containing per-SCA FITS files (``SCA01.fits``, …).
+    optical_model_path : str or Path, optional
+        Path to the optical model YAML.  Defaults to the standard location.
+    linear_width : float
+        Asinh normalization parameter forwarded to ``write_mosaic_png``.
+    """
+    pointing_dir = Path(pointing_dir)
+    if optical_model_path is None:
+        project_root = Path(os.environ.get("PIXI_PROJECT_ROOT", "."))
+        optical_model_path = (
+            project_root / "data" / "Roman_grism_OpticalModel_v0.8.yaml"
+        )
+    model = RomanOpticalModel(str(optical_model_path))
+
+    # Discover SCA FITS files
+    sca_images = {}
+    sca_list = []
+    for fpath in sorted(pointing_dir.glob("SCA*.fits")):
+        # Extract SCA number from filename like SCA05.fits
+        stem = fpath.stem  # e.g. "SCA05"
+        try:
+            sca_num = int(stem[3:])
+        except ValueError:
+            continue
+        with fits.open(fpath) as hdul:
+            if "MODEL" in hdul:
+                sca_images[sca_num] = hdul["MODEL"].data.astype(np.float32)
+                sca_list.append(sca_num)
+
+    if not sca_list:
+        print(f"No SCA*.fits files with MODEL extension found in {pointing_dir}")
+        return
+
+    sca_list.sort()
+    png_file = str(pointing_dir / "mosaic.png")
+    write_mosaic_png(sca_images, sca_list, model, png_file,
+                     linear_width=linear_width)
+    print(f"Mosaic written to {png_file}")
+
+
+
 # ---------------------------------------------------------------------------
-# Main pipeline
+# Pipeline setup (shared across all pointings)
+# ---------------------------------------------------------------------------
+
+def resolve_paths(catalog_dir=None, sensitivity_dir=None,
+                  optical_model_path=None, psf_cache_dir=None):
+    """Resolve default paths relative to project root."""
+    project_root = Path(os.environ.get("PIXI_PROJECT_ROOT", "."))
+    if catalog_dir is None:
+        catalog_dir = project_root / "data" / "stars"
+    if sensitivity_dir is None:
+        sensitivity_dir = project_root / "data" / "sensitivities"
+    if optical_model_path is None:
+        optical_model_path = (
+            project_root / "data" / "Roman_grism_OpticalModel_v0.8.yaml"
+        )
+    if psf_cache_dir is None:
+        psf_cache_dir = project_root / "data" / "psf_cache"
+    return (Path(catalog_dir), Path(sensitivity_dir),
+            Path(optical_model_path), Path(psf_cache_dir))
+
+
+def setup_pipeline(
+    sca_list,
+    *,
+    catalog_dir=None,
+    sensitivity_dir=None,
+    optical_model_path=None,
+    psf_cache_dir=None,
+    dlam_angstroms=2.0,
+    batch_size=1000,
+    verbose=True,
+):
+    """One-time setup: load model, catalog, PSFs, compile dispersers.
+
+    This function performs all expensive initialization that can be shared
+    across multiple pointings.  The returned ``pipeline`` dict contains
+    everything needed by ``process_pointing``.
+
+    Parameters
+    ----------
+    sca_list : list of int
+        SCA numbers to prepare (1-18).
+    catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir : str, optional
+        Override default data paths.
+    dlam_angstroms : float
+        Wavelength spacing in Angstroms (default: 2.0).
+    batch_size : int
+        Number of sources per JIT batch (default: 1000).
+    verbose : bool
+        Print progress information.
+
+    Returns
+    -------
+    pipeline : dict
+        Contains all shared state for ``process_pointing``.
+    """
+    timings = {}
+    t_total = time.time()
+
+    def log(msg):
+        if verbose:
+            print(msg)
+
+    catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir = \
+        resolve_paths(catalog_dir, sensitivity_dir,
+                      optical_model_path, psf_cache_dir)
+
+    # -- Wavelength grid -----------------------------------------------------
+    dlam_um = dlam_angstroms / 1e4
+    n_wavelength = int((LAM_MAX - LAM_MIN) / dlam_um) + 1
+    wavelengths = np.linspace(LAM_MIN, LAM_MAX, n_wavelength, dtype=np.float32)
+    wavelengths_angstrom = wavelengths * 1e4
+    wavelengths_jax = jnp.array(wavelengths)
+
+    log(f"Wavelength grid: {LAM_MIN}-{LAM_MAX} um, "
+        f"{dlam_angstroms} A spacing, {n_wavelength} samples")
+
+    # -- Load catalog --------------------------------------------------------
+    log("Loading star catalog...")
+    t0 = time.time()
+    star_catalog, template_files = load_star_catalog(catalog_dir)
+    timings["load_catalog"] = time.time() - t0
+    log(f"  {len(star_catalog['ra'])} sources in {timings['load_catalog']:.2f}s")
+
+    # -- Load F158 bandpass --------------------------------------------------
+    f158_band = stsyn.band("roman, wfi, f158")
+
+    # -- Load all unique SED templates and precompute on wavelength grid -----
+    log("Loading spectral templates...")
+    t0 = time.time()
+    all_unique_templates = np.unique(star_catalog["temp_idx"])
+    templates_synphot = load_templates_as_synphot(
+        catalog_dir, template_files, all_unique_templates,
+    )
+    template_grid = precompute_template_grid(
+        templates_synphot, f158_band, wavelengths_angstrom,
+    )
+    timings["load_templates"] = time.time() - t0
+    log(f"  {len(all_unique_templates)} templates in "
+        f"{timings['load_templates']:.2f}s")
+
+    # -- Optical model -------------------------------------------------------
+    log("Loading optical model...")
+    model = RomanOpticalModel(config_file=str(optical_model_path))
+
+    # -- Per-SCA setup: payloads, PSFs, dispersers, sensitivity, JIT ---------
+    log(f"Setting up {len(sca_list)} SCAs...")
+    sca_data = {}  # sca -> {optical_payloads, sensitivities, fori_fns}
+
+    for sca_num in sca_list:
+        detector_name = f"WFI{sca_num:02d}"
+        log(f"\n  SCA {sca_num} ({detector_name}):")
+
+        # Optical payloads
+        optical_payloads = {
+            order: omj.make_sca_payload(model, sca=sca_num, order=order)
+            for order in ORDERS
+        }
+
+        # Sensitivity curves
+        sensitivities = load_sensitivities(
+            sensitivity_dir, sca_num, wavelengths,
+        )
+
+        # PSF payloads
+        psf_payloads = {}
+        for psf_order in ["0", "1"]:
+            psf_payloads[psf_order] = psf_model.get_or_make_psf_payload(
+                detector=detector_name, order=psf_order,
+                cache_dir=str(psf_cache_dir), verbose=False,
+            )
+        psf_payloads["2"] = psf_payloads["1"]
+        log(f"    PSF payloads loaded")
+
+        # Star dispersers
+        star_dispersers = {}
+        for order in ORDERS:
+            star_dispersers[order] = star_disperser.make_star_disperser(
+                psf_payloads[order], optical_payloads[order],
+            )
+
+        # Build batched fori_loops (fixed batch_size for reuse)
+        fori_fns = {}
+        for order in ORDERS:
+            fori_fns[order] = make_batched_fori(
+                star_dispersers[order], sensitivities[order],
+                wavelengths_jax, dlam_angstroms,
+            )
+
+        sca_data[sca_num] = {
+            "optical_payloads": optical_payloads,
+            "sensitivities": sensitivities,
+            "fori_fns": fori_fns,
+        }
+
+    # -- JIT warmup: compile once per SCA/order ------------------------------
+    log("\nJIT warmup (compiling all SCA/order dispersers)...")
+    t0 = time.time()
+    warmup_output = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32)
+    warmup_spec = jnp.zeros((batch_size, n_wavelength), dtype=jnp.float32)
+    warmup_x = jnp.zeros(batch_size, dtype=jnp.float32)
+    warmup_y = jnp.zeros(batch_size, dtype=jnp.float32)
+
+    for sca_num in sca_list:
+        for order in ORDERS:
+            t1 = time.time()
+            _ = sca_data[sca_num]["fori_fns"][order](
+                1, warmup_spec, warmup_x, warmup_y, warmup_output,
+            )
+            _.block_until_ready()
+            log(f"  SCA {sca_num} order {order}: {time.time() - t1:.1f}s")
+
+    timings["jit_warmup"] = time.time() - t0
+    log(f"  Total warmup: {timings['jit_warmup']:.1f}s")
+
+    timings["setup_total"] = time.time() - t_total
+    log(f"\nSetup complete in {timings['setup_total']:.1f}s")
+
+    return {
+        "model": model,
+        "star_catalog": star_catalog,
+        "template_files": template_files,
+        "template_grid": template_grid,
+        "wavelengths": wavelengths,
+        "wavelengths_angstrom": wavelengths_angstrom,
+        "wavelengths_jax": wavelengths_jax,
+        "dlam_angstroms": dlam_angstroms,
+        "sca_list": sca_list,
+        "sca_data": sca_data,
+        "batch_size": batch_size,
+        "timings": timings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Per-pointing processing
+# ---------------------------------------------------------------------------
+
+def process_pointing(
+    pipeline,
+    pointing_ra,
+    pointing_dec,
+    pointing_pa,
+    output_dir,
+    *,
+    cone_radius=0.6,
+    verbose=True,
+):
+    """Process a single pointing: select sources, generate spectra, disperse.
+
+    Parameters
+    ----------
+    pipeline : dict
+        From ``setup_pipeline``.
+    pointing_ra, pointing_dec, pointing_pa : float
+        Telescope pointing in degrees.
+    output_dir : str or Path
+        Output directory for this pointing.  Created if needed;
+        existing files are overwritten without warning.
+    cone_radius : float
+        Cone search radius in degrees (default: 0.6).
+    verbose : bool
+        Print progress information.
+
+    Returns
+    -------
+    sca_outputs : dict mapping sca (int) -> jnp.ndarray [4088, 4088]
+    """
+    timings = {}
+    t_total = time.time()
+
+    def log(msg):
+        if verbose:
+            print(msg)
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    star_catalog = pipeline["star_catalog"]
+    sca_list = pipeline["sca_list"]
+    batch_size = pipeline["batch_size"]
+
+    log(f"\nPointing: RA={pointing_ra}, Dec={pointing_dec}, PA={pointing_pa}")
+    log(f"Output:   {output_dir}")
+
+    # -- Step 1: Cone search -------------------------------------------------
+    log("  Cone search...")
+    t0 = time.time()
+    cone_mask = cone_search(
+        star_catalog["ra"], star_catalog["dec"],
+        pointing_ra, pointing_dec, cone_radius,
+    )
+    n_cone = int(cone_mask.sum())
+    timings["cone_search"] = time.time() - t0
+    log(f"    {n_cone} sources within {cone_radius} deg "
+        f"in {timings['cone_search']:.2f}s")
+
+    if n_cone == 0:
+        log("    WARNING: No sources in cone. Writing empty images.")
+        sca_outputs = {}
+        for sca_num in sca_list:
+            empty = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32)
+            sca_outputs[sca_num] = empty
+            write_fits(empty, str(output_dir / f"SCA{sca_num:02d}.fits"),
+                       pointing_ra, pointing_dec, pointing_pa, sca_num)
+            write_png(empty, str(output_dir / f"SCA{sca_num:02d}.png"))
+        return sca_outputs
+
+    ra_cone = star_catalog["ra"][cone_mask]
+    dec_cone = star_catalog["dec"][cone_mask]
+    mag_cone = star_catalog["mag"][cone_mask]
+    tidx_cone = star_catalog["temp_idx"][cone_mask]
+
+    # -- Step 2: Sky -> FPA --------------------------------------------------
+    log("  Sky -> FPA conversion...")
+    t0 = time.time()
+    xfpa, yfpa = omj.get_fpa_pos(
+        jnp.array(ra_cone), jnp.array(dec_cone),
+        pointing_ra, pointing_dec, pointing_pa,
+    )
+    timings["sky_to_fpa"] = time.time() - t0
+    log(f"    Done in {timings['sky_to_fpa']:.2f}s")
+
+    # -- Step 3: Process each SCA --------------------------------------------
+    sca_outputs = {}
+
+    for sca_num in sca_list:
+        log(f"\n  SCA {sca_num}:")
+        t_sca = time.time()
+        sd = pipeline["sca_data"][sca_num]
+
+        # Select sources for this SCA (per order)
+        order_masks, any_mask = select_sources_per_order(
+            sd["optical_payloads"], xfpa, yfpa,
+        )
+        n_any = int(any_mask.sum())
+
+        for order in ORDERS:
+            n_ord = int(order_masks[order].sum())
+            log(f"    Order {order}: {n_ord} sources")
+
+        if n_any == 0:
+            log(f"    No sources on detector, skipping.")
+            empty = jnp.zeros(
+                (DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32,
+            )
+            sca_outputs[sca_num] = empty
+            write_fits(empty, str(output_dir / f"SCA{sca_num:02d}.fits"),
+                       pointing_ra, pointing_dec, pointing_pa, sca_num)
+            write_png(empty, str(output_dir / f"SCA{sca_num:02d}.png"))
+            continue
+
+        # Generate spectra for sources on this SCA
+        mag_sel = mag_cone[any_mask]
+        tidx_sel = tidx_cone[any_mask]
+
+        t0 = time.time()
+        spectra_flam = generate_spectra(
+            pipeline["template_grid"], tidx_sel, mag_sel,
+        )
+        timings[f"spectra_sca{sca_num}"] = time.time() - t0
+        log(f"    Spectra: {n_any} sources in "
+            f"{timings[f'spectra_sca{sca_num}']:.2f}s")
+
+        # Get SCA coordinates (use order "1" payload for FPA->SCA)
+        xfpa_sel = xfpa[any_mask]
+        yfpa_sel = yfpa[any_mask]
+        xsca_all = np.asarray(omj.fpa_to_sca(
+            sd["optical_payloads"]["1"], xfpa_sel, yfpa_sel,
+        )[0])
+        ysca_all = np.asarray(omj.fpa_to_sca(
+            sd["optical_payloads"]["1"], xfpa_sel, yfpa_sel,
+        )[1])
+
+        # Disperse per order with batching
+        output = jnp.zeros(
+            (DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32,
+        )
+        order_masks_sel = {
+            order: order_masks[order][any_mask] for order in ORDERS
+        }
+
+        for order in ORDERS:
+            omask = order_masks_sel[order]
+            n_order = int(omask.sum())
+            if n_order == 0:
+                continue
+
+            x_ord = xsca_all[omask]
+            y_ord = ysca_all[omask]
+            spec_ord = spectra_flam[omask]
+
+            t_order = time.time()
+            output = disperse_batched(
+                sd["fori_fns"][order], spec_ord, x_ord, y_ord,
+                output, batch_size,
+            )
+            elapsed = time.time() - t_order
+            ms_per = elapsed / n_order * 1e3
+            log(f"    Order {order}: dispersed {n_order} in {elapsed:.2f}s "
+                f"({ms_per:.1f} ms/star)")
+
+        sca_outputs[sca_num] = output
+
+        # Write per-SCA outputs
+        fits_path = str(output_dir / f"SCA{sca_num:02d}.fits")
+        png_path = str(output_dir / f"SCA{sca_num:02d}.png")
+        t0 = time.time()
+        write_fits(output, fits_path, pointing_ra, pointing_dec,
+                   pointing_pa, sca_num)
+        t_fits = time.time() - t0
+        t0 = time.time()
+        write_png(output, png_path)
+        t_png = time.time() - t0
+
+        output_np = np.array(output)
+        elapsed_sca = time.time() - t_sca
+        log(f"    I/O: FITS {t_fits:.2f}s, PNG {t_png:.2f}s")
+        log(f"    Total: {elapsed_sca:.2f}s, flux={output_np.sum():.4e}, "
+            f"peak={output_np.max():.4e}")
+
+    # -- Mosaic PNG ----------------------------------------------------------
+    if len(sca_list) > 1:
+        log("\n  Writing mosaic PNG...")
+        mosaic_path = str(output_dir / "mosaic.png")
+        write_mosaic_png(
+            {s: np.array(sca_outputs[s]) for s in sca_list},
+            sca_list, pipeline["model"], mosaic_path,
+        )
+        log(f"    {mosaic_path}")
+
+    timings["pointing_total"] = time.time() - t_total
+    log(f"\n  Pointing complete in {timings['pointing_total']:.1f}s")
+
+    return sca_outputs
+
+
+# ---------------------------------------------------------------------------
+# Single-SCA convenience wrapper (backward-compatible)
 # ---------------------------------------------------------------------------
 
 def build_star_grism_image(
@@ -359,307 +969,204 @@ def build_star_grism_image(
     psf_cache_dir=None,
     cone_radius=0.6,
     dlam_angstroms=2.0,
+    batch_size=1000,
     verbose=True,
 ):
-    """Build a simulated grism image from a stellar catalog.
+    """Build a simulated grism image for a single SCA.
+
+    Convenience wrapper around setup_pipeline + process_pointing.
 
     Parameters
     ----------
-    pointing_ra : float
-        Telescope pointing RA in degrees.
-    pointing_dec : float
-        Telescope pointing Dec in degrees.
-    pointing_pa : float
-        Telescope position angle in degrees.
+    pointing_ra, pointing_dec, pointing_pa : float
+        Telescope pointing in degrees.
     sca : int
         SCA (detector) number, 1-18.
     output_file : str
-        Output FITS filename. A PNG with the same stem is also produced.
-    catalog_dir : str, optional
-        Path to star catalog directory (default: data/stars).
-    sensitivity_dir : str, optional
-        Path to sensitivity files (default: data/sensitivities).
-    optical_model_path : str, optional
-        Path to optical model YAML (default: data/Roman_grism_OpticalModel_v0.8.yaml).
-    psf_cache_dir : str, optional
-        Path to PSF cache directory (default: data/psf_cache).
+        Output FITS filename.  A PNG with the same stem is also produced.
+    catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir : str, optional
+        Override default data paths.
     cone_radius : float
-        Initial cone search radius in degrees (default: 0.6).
+        Cone search radius in degrees (default: 0.6).
     dlam_angstroms : float
         Wavelength spacing in Angstroms (default: 2.0).
+    batch_size : int
+        Sources per JIT batch (default: 1000).
     verbose : bool
         Print progress information (default: True).
 
     Returns
     -------
     output : jnp.ndarray [4088, 4088]
-        The accumulated counts image.
     """
-    timings = {}
-    t_total = time.time()
+    pipeline = setup_pipeline(
+        [sca],
+        catalog_dir=catalog_dir,
+        sensitivity_dir=sensitivity_dir,
+        optical_model_path=optical_model_path,
+        psf_cache_dir=psf_cache_dir,
+        dlam_angstroms=dlam_angstroms,
+        batch_size=batch_size,
+        verbose=verbose,
+    )
+
+    # Use a temp directory, then move the files to match the requested output
+    output_file = Path(output_file)
+    tmp_dir = output_file.parent / f".tmp_sca{sca}"
+    sca_outputs = process_pointing(
+        pipeline, pointing_ra, pointing_dec, pointing_pa,
+        str(tmp_dir), cone_radius=cone_radius, verbose=verbose,
+    )
+
+    # Move from tmp layout to single-file output
+    tmp_fits = tmp_dir / f"SCA{sca:02d}.fits"
+    tmp_png = tmp_dir / f"SCA{sca:02d}.png"
+    if tmp_fits.exists():
+        tmp_fits.rename(output_file)
+    if tmp_png.exists():
+        tmp_png.rename(output_file.with_suffix(".png"))
+
+    # Clean up temp dir
+    for f in tmp_dir.iterdir():
+        f.unlink()
+    tmp_dir.rmdir()
+
+    return sca_outputs[sca]
+
+
+# ---------------------------------------------------------------------------
+# Batch mode: YAML config
+# ---------------------------------------------------------------------------
+
+EXAMPLE_CONFIG = """\
+# Star grism image builder configuration
+#
+# This file defines one or more telescope pointings and the set of
+# SCAs (detectors) to simulate for each.
+#
+# Usage:
+#   pixi run -e cuda python scripts/build_star_grism_image.py --config this_file.yaml
+
+# ── Output ──────────────────────────────────────────────────────────────────
+# Top-level output directory.  Each pointing creates a subdirectory
+# containing per-SCA FITS/PNG files and a focal-plane mosaic PNG.
+output_dir: /workspace/scratch/roman-star-fields
+
+# ── Detectors ───────────────────────────────────────────────────────────────
+# Which SCAs to simulate.  Use "all" for 1-18, or list specific numbers.
+scas: all
+# scas: [1, 5, 12]
+
+# ── Pointings ──────────────────────────────────────────────────────────────
+# Each entry becomes a subdirectory under output_dir.
+pointings:
+  - name: ra10_dec0_pa0
+    ra: 10.0
+    dec: 0.0
+    pa: 0.0
+
+  - name: ra10_dec0_pa10
+    ra: 10.0
+    dec: 0.0
+    pa: 10.0
+
+# ── Wavelength grid ────────────────────────────────────────────────────────
+# Spacing in Angstroms.  2A gives ~5500 wavelength samples over 0.9-2.0 um.
+dlam_angstroms: 2.0
+
+# ── Source selection ───────────────────────────────────────────────────────
+# Initial cone search radius around the pointing center (degrees).
+# Sources outside this radius are excluded before per-SCA selection.
+# 0.6 deg is sufficient for the full WFI field of view.
+cone_radius: 0.6
+
+# ── Batching ───────────────────────────────────────────────────────────────
+# Number of sources processed per JIT-compiled batch.  The fori_loop is
+# compiled once for this batch size and reused for all pointings/SCAs.
+# Sources are processed in chunks of batch_size; the last chunk is
+# zero-padded to maintain the compiled shape.  Larger values use more
+# GPU memory (~22 KB per source); smaller values add loop overhead.
+#
+# Recommended: 1000 for stars, smaller for galaxies (larger per-source memory).
+batch_size: 1000
+
+# ── Data paths (optional, defaults shown) ──────────────────────────────────
+# Uncomment to override:
+# catalog_dir: data/stars
+# sensitivity_dir: data/sensitivities
+# optical_model: data/Roman_grism_OpticalModel_v0.8.yaml
+# psf_cache_dir: data/psf_cache
+"""
+
+
+def run_batch(config_path, verbose=True):
+    """Run the pipeline from a YAML configuration file.
+
+    Parameters
+    ----------
+    config_path : str
+        Path to YAML config file.
+    verbose : bool
+        Print progress.
+    """
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
 
     def log(msg):
         if verbose:
             print(msg)
 
-    # -- Resolve default paths relative to project root ----------------------
-    project_root = Path(os.environ.get("PIXI_PROJECT_ROOT", "."))
-    if catalog_dir is None:
-        catalog_dir = project_root / "data" / "stars"
-    if sensitivity_dir is None:
-        sensitivity_dir = project_root / "data" / "sensitivities"
-    if optical_model_path is None:
-        optical_model_path = (
-            project_root / "data" / "Roman_grism_OpticalModel_v0.8.yaml"
-        )
-    if psf_cache_dir is None:
-        psf_cache_dir = project_root / "data" / "psf_cache"
+    # Parse SCA list
+    scas = cfg.get("scas", "all")
+    if scas == "all":
+        sca_list = list(range(1, 19))
+    else:
+        sca_list = [int(s) for s in scas]
 
-    detector_name = f"WFI{sca:02d}"
+    log(f"Config: {config_path}")
+    log(f"SCAs: {sca_list}")
+    log(f"Pointings: {len(cfg['pointings'])}")
 
-    # -----------------------------------------------------------------------
-    # Step 1: Read the base star catalog
-    # -----------------------------------------------------------------------
-    log("Step 1: Loading star catalog...")
-    t0 = time.time()
-    star_catalog, template_files = load_star_catalog(catalog_dir)
-    n_total = len(star_catalog["ra"])
-    timings["load_catalog"] = time.time() - t0
-    log(f"  Loaded {n_total} stars in {timings['load_catalog']:.2f}s")
-
-    # -----------------------------------------------------------------------
-    # Step 2: Cone search to remove distant sources
-    # -----------------------------------------------------------------------
-    log(f"Step 2: Cone search (radius={cone_radius} deg)...")
-    t0 = time.time()
-    cone_mask = cone_search(
-        star_catalog["ra"], star_catalog["dec"],
-        pointing_ra, pointing_dec, cone_radius,
-    )
-    n_cone = int(cone_mask.sum())
-    timings["cone_search"] = time.time() - t0
-    log(f"  {n_cone} sources within {cone_radius} deg "
-        f"(removed {n_total - n_cone}) in {timings['cone_search']:.2f}s")
-
-    if n_cone == 0:
-        log("  WARNING: No sources found within cone radius. "
-            "Writing empty image.")
-        output = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32)
-        write_fits(output, output_file, pointing_ra, pointing_dec,
-                   pointing_pa, sca)
-        png_file = str(Path(output_file).with_suffix(".png"))
-        write_png(output, png_file)
-        return output
-
-    # Trim catalog to cone
-    ra_cone = star_catalog["ra"][cone_mask]
-    dec_cone = star_catalog["dec"][cone_mask]
-    mag_cone = star_catalog["mag"][cone_mask]
-    tidx_cone = star_catalog["temp_idx"][cone_mask]
-
-    # -----------------------------------------------------------------------
-    # Step 3: Convert sky positions to FPA coordinates
-    # -----------------------------------------------------------------------
-    log("Step 3: Converting to FPA coordinates...")
-    t0 = time.time()
-    xfpa, yfpa = omj.get_fpa_pos(
-        jnp.array(ra_cone), jnp.array(dec_cone),
-        pointing_ra, pointing_dec, pointing_pa,
-    )
-    timings["sky_to_fpa"] = time.time() - t0
-    log(f"  Done in {timings['sky_to_fpa']:.2f}s")
-
-    # -----------------------------------------------------------------------
-    # Step 4: Determine which objects land on the detector (per order)
-    # -----------------------------------------------------------------------
-    log("Step 4: Selecting sources per order...")
-    t0 = time.time()
-
-    model = RomanOpticalModel(config_file=str(optical_model_path))
-    optical_payloads = {
-        order: omj.make_sca_payload(model, sca=sca, order=order)
-        for order in ORDERS
-    }
-
-    order_masks, any_mask = select_sources_per_order(optical_payloads, xfpa, yfpa)
-    n_any = int(any_mask.sum())
-    for order in ORDERS:
-        log(f"  Order {order}: {int(order_masks[order].sum())} sources on detector")
-    log(f"  Total unique sources (any order): {n_any}")
-    timings["select_sources"] = time.time() - t0
-    log(f"  Done in {timings['select_sources']:.2f}s")
-
-    if n_any == 0:
-        log("  WARNING: No sources land on detector. Writing empty image.")
-        output = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32)
-        write_fits(output, output_file, pointing_ra, pointing_dec,
-                   pointing_pa, sca)
-        png_file = str(Path(output_file).with_suffix(".png"))
-        write_png(output, png_file)
-        return output
-
-    # Trim to sources on any order
-    mag_sel = mag_cone[any_mask]
-    tidx_sel = tidx_cone[any_mask]
-    xfpa_sel = xfpa[any_mask]
-    yfpa_sel = yfpa[any_mask]
-
-    # Per-order masks relative to the trimmed array
-    order_masks_sel = {}
-    for order in ORDERS:
-        order_masks_sel[order] = order_masks[order][any_mask]
-
-    # -----------------------------------------------------------------------
-    # Step 5: Generate spectra from templates
-    # -----------------------------------------------------------------------
-    log("Step 5: Generating spectra...")
-    t0 = time.time()
-
-    # Wavelength grid
-    dlam_um = dlam_angstroms / 1e4
-    n_wavelength = int((LAM_MAX - LAM_MIN) / dlam_um) + 1
-    wavelengths = np.linspace(LAM_MIN, LAM_MAX, n_wavelength, dtype=np.float32)
-    wavelengths_angstrom = wavelengths * 1e4
-    wavelengths_jax = jnp.array(wavelengths)
-
-    log(f"  Wavelength grid: {LAM_MIN}-{LAM_MAX} um, "
-        f"{dlam_angstroms} A spacing, {n_wavelength} samples")
-
-    # Load unique templates via synphot
-    unique_template_indices = np.unique(tidx_sel)
-    log(f"  Loading {len(unique_template_indices)} unique spectral templates...")
-    templates_synphot = load_templates_as_synphot(
-        catalog_dir, template_files, unique_template_indices,
+    # Setup pipeline (one-time)
+    pipeline = setup_pipeline(
+        sca_list,
+        catalog_dir=cfg.get("catalog_dir"),
+        sensitivity_dir=cfg.get("sensitivity_dir"),
+        optical_model_path=cfg.get("optical_model"),
+        psf_cache_dir=cfg.get("psf_cache_dir"),
+        dlam_angstroms=cfg.get("dlam_angstroms", 2.0),
+        batch_size=cfg.get("batch_size", 1000),
+        verbose=verbose,
     )
 
-    # F158 bandpass for normalization
-    f158_band = stsyn.band("roman, wfi, f158")
+    # Process each pointing
+    output_dir = Path(cfg["output_dir"])
+    cone_radius = cfg.get("cone_radius", 0.6)
 
-    # Generate all spectra
-    log(f"  Normalizing {n_any} spectra to F158 magnitudes...")
-    spectra_flam = generate_spectra(
-        templates_synphot, tidx_sel, mag_sel, wavelengths_angstrom, f158_band,
-    )
-    spectra_jax = jnp.array(spectra_flam)
+    t_all = time.time()
+    for i, pointing in enumerate(cfg["pointings"]):
+        name = pointing["name"]
+        log(f"\n{'='*60}")
+        log(f"Pointing {i+1}/{len(cfg['pointings'])}: {name}")
+        log(f"{'='*60}")
 
-    # Load sensitivity curves
-    sensitivities = load_sensitivities(sensitivity_dir, sca, wavelengths)
-
-    timings["generate_spectra"] = time.time() - t0
-    log(f"  Done in {timings['generate_spectra']:.2f}s")
-
-    # -----------------------------------------------------------------------
-    # Step 6: Disperse all sources per order
-    # -----------------------------------------------------------------------
-    log("Step 6: Dispersing sources...")
-    t0 = time.time()
-
-    # Load PSF payloads
-    log("  Loading PSF payloads...")
-    psf_payloads = {}
-    for psf_order in ["0", "1"]:
-        psf_payloads[psf_order] = psf_model.get_or_make_psf_payload(
-            detector=detector_name, order=psf_order,
-            cache_dir=str(psf_cache_dir), verbose=verbose,
-        )
-    psf_payloads["2"] = psf_payloads["1"]  # Order 2 reuses order 1 PSFs
-
-    # Create star dispersers
-    star_dispersers = {}
-    for order in ORDERS:
-        star_dispersers[order] = star_disperser.make_star_disperser(
-            psf_payloads[order], optical_payloads[order],
+        pointing_dir = output_dir / name
+        process_pointing(
+            pipeline,
+            pointing["ra"], pointing["dec"], pointing["pa"],
+            str(pointing_dir),
+            cone_radius=cone_radius,
+            verbose=verbose,
         )
 
-    # For each order, we need SCA coords and the per-order source mask.
-    # Convert FPA -> SCA for the selected sources.
-    xsca_all, ysca_all = omj.fpa_to_sca(
-        optical_payloads["1"], xfpa_sel, yfpa_sel,
-    )
-
-    output = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32)
-
-    # JIT warmup: compile the fori_loop with n=1 for each order
-    log("  JIT warmup (compiling dispersers)...")
-    for order in ORDERS:
-        n_order = int(order_masks_sel[order].sum())
-        if n_order == 0:
-            continue
-
-        # Get sources for this order
-        omask = order_masks_sel[order]
-        x_ord = jnp.array(np.asarray(xsca_all)[omask])
-        y_ord = jnp.array(np.asarray(ysca_all)[omask])
-        spec_ord = jnp.array(np.asarray(spectra_jax)[omask])
-
-        fori_fn = make_fori_dispatcher(
-            star_dispersers[order], sensitivities[order],
-            wavelengths_jax, dlam_angstroms, spec_ord, x_ord, y_ord,
-        )
-        t_warmup = time.time()
-        _ = fori_fn(1, output)
-        _.block_until_ready()
-        log(f"    Order {order}: compiled in {time.time() - t_warmup:.1f}s "
-            f"({n_order} sources to disperse)")
-
-        # Now disperse all sources for this order
-        t_order = time.time()
-        output = fori_fn(n_order, output)
-        output.block_until_ready()
-        elapsed = time.time() - t_order
-        ms_per_star = elapsed / n_order * 1e3
-        timings[f"disperse_order_{order}"] = elapsed
-        log(f"    Order {order}: {n_order} sources in {elapsed:.2f}s "
-            f"({ms_per_star:.1f} ms/star)")
-
-    timings["disperse_total"] = time.time() - t0
-    log(f"  Total dispersion: {timings['disperse_total']:.2f}s")
-
-    # -----------------------------------------------------------------------
-    # Write outputs
-    # -----------------------------------------------------------------------
-    log("Writing outputs...")
-    t0 = time.time()
-
-    write_fits(output, output_file, pointing_ra, pointing_dec, pointing_pa, sca)
-    log(f"  FITS: {output_file}")
-
-    png_file = str(Path(output_file).with_suffix(".png"))
-    write_png(output, png_file)
-    log(f"  PNG:  {png_file}")
-
-    timings["write_outputs"] = time.time() - t0
-    timings["total"] = time.time() - t_total
-
-    # -----------------------------------------------------------------------
-    # Summary
-    # -----------------------------------------------------------------------
-    log("\n" + "=" * 60)
-    log("Timing Summary")
-    log("=" * 60)
-    log(f"  Load catalog:       {timings['load_catalog']:.2f}s")
-    log(f"  Cone search:        {timings['cone_search']:.2f}s")
-    log(f"  Sky -> FPA:         {timings['sky_to_fpa']:.2f}s")
-    log(f"  Select sources:     {timings['select_sources']:.2f}s")
-    log(f"  Generate spectra:   {timings['generate_spectra']:.2f}s")
-    log(f"  Dispersion total:   {timings['disperse_total']:.2f}s")
-    for order in ORDERS:
-        key = f"disperse_order_{order}"
-        if key in timings:
-            log(f"    Order {order}:         {timings[key]:.2f}s")
-    log(f"  Write outputs:      {timings['write_outputs']:.2f}s")
-    log(f"  ─────────────────────────────")
-    log(f"  TOTAL:              {timings['total']:.2f}s")
-    log("=" * 60)
-
-    output_np = np.array(output)
-    log(f"\nImage statistics:")
-    log(f"  Total flux:   {output_np.sum():.4e}")
-    log(f"  Peak value:   {output_np.max():.4e}")
-    log(f"  Non-zero px:  {(output_np > 0).sum():,} "
-        f"({100 * (output_np > 0).sum() / output_np.size:.1f}%)")
-
-    return output
+    total = time.time() - t_all
+    setup_time = pipeline["timings"]["setup_total"]
+    log(f"\n{'='*60}")
+    log(f"All pointings complete")
+    log(f"  Setup:      {setup_time:.1f}s")
+    log(f"  Processing: {total - setup_time:.1f}s")
+    log(f"  Total:      {total:.1f}s")
+    log(f"{'='*60}")
 
 
 # ---------------------------------------------------------------------------
@@ -668,23 +1175,35 @@ def build_star_grism_image(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build a simulated Roman grism image from a stellar catalog.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Build simulated Roman grism images from a stellar catalog.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Use --generate-config to create a documented template config file.",
     )
 
-    # Required arguments
-    parser.add_argument("--pointing-ra", type=float, required=True,
-                        help="Pointing RA in degrees")
-    parser.add_argument("--pointing-dec", type=float, required=True,
-                        help="Pointing Dec in degrees")
-    parser.add_argument("--pointing-pa", type=float, required=True,
-                        help="Position angle in degrees")
-    parser.add_argument("--sca", type=int, required=True,
-                        help="SCA number (1-18)")
-    parser.add_argument("--output", type=str, required=True,
-                        help="Output FITS filename")
+    # Mode selection
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--config", type=str,
+                      help="YAML config file for batch mode "
+                           "(multiple pointings/SCAs)")
+    mode.add_argument("--pointing-ra", type=float,
+                      help="Pointing RA in degrees (quick mode)")
+    mode.add_argument("--generate-config", type=str, metavar="FILE",
+                      help="Write a documented template config file and exit")
+    mode.add_argument("--mosaic", type=str, metavar="DIR",
+                      help="Generate mosaic PNG from a pointing directory "
+                           "containing SCA*.fits files")
 
-    # Optional arguments
+    # Quick mode arguments
+    parser.add_argument("--pointing-dec", type=float,
+                        help="Pointing Dec in degrees (quick mode)")
+    parser.add_argument("--pointing-pa", type=float,
+                        help="Position angle in degrees (quick mode)")
+    parser.add_argument("--sca", type=int,
+                        help="SCA number, 1-18 (quick mode)")
+    parser.add_argument("--output", type=str,
+                        help="Output FITS filename (quick mode)")
+
+    # Shared optional arguments
     parser.add_argument("--catalog-dir", type=str, default=None,
                         help="Path to star catalog directory")
     parser.add_argument("--sensitivity-dir", type=str, default=None,
@@ -694,13 +1213,43 @@ def main():
     parser.add_argument("--psf-cache-dir", type=str, default=None,
                         help="Path to PSF cache directory")
     parser.add_argument("--cone-radius", type=float, default=0.6,
-                        help="Cone search radius in degrees")
+                        help="Cone search radius in degrees (default: 0.6)")
     parser.add_argument("--dlam", type=float, default=2.0,
-                        help="Wavelength spacing in Angstroms")
+                        help="Wavelength spacing in Angstroms (default: 2.0)")
+    parser.add_argument("--batch-size", type=int, default=1000,
+                        help="Sources per JIT batch (default: 1000)")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress progress output")
 
     args = parser.parse_args()
+
+    # Generate config mode
+    if args.generate_config:
+        with open(args.generate_config, "w") as f:
+            f.write(EXAMPLE_CONFIG)
+        print(f"Wrote template config to {args.generate_config}")
+        return
+
+    # Mosaic mode
+    if args.mosaic:
+        write_mosaic_from_directory(
+            args.mosaic,
+            optical_model_path=args.optical_model,
+        )
+        return
+
+    # Batch mode
+    if args.config:
+        run_batch(args.config, verbose=not args.quiet)
+        return
+
+    # Quick mode — validate required arguments
+    if args.pointing_dec is None or args.pointing_pa is None:
+        parser.error("--pointing-dec and --pointing-pa required in quick mode")
+    if args.sca is None:
+        parser.error("--sca required in quick mode")
+    if args.output is None:
+        parser.error("--output required in quick mode")
 
     build_star_grism_image(
         pointing_ra=args.pointing_ra,
@@ -714,6 +1263,7 @@ def main():
         psf_cache_dir=args.psf_cache_dir,
         cone_radius=args.cone_radius,
         dlam_angstroms=args.dlam,
+        batch_size=args.batch_size,
         verbose=not args.quiet,
     )
 
