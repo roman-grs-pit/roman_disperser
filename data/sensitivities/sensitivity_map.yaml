@@ -1,0 +1,96 @@
+# Grism sensitivity file mapping
+# Maps each SCA (1-18) and spectral order to a sensitivity FITS file.
+# All files are relative to this directory.
+#
+# Currently all SCAs use the SCA1 calibration files.
+# Update individual entries as per-SCA calibrations become available.
+
+SCA1:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA2:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA3:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA4:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA5:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA6:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA7:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA8:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA9:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA10:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA11:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA12:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA13:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA14:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA15:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA16:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA17:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
+
+SCA18:
+  "0": SCA1_sens_12052024_order0.fits
+  "1": SCA1_sens_12052024.fits
+  "2": SCA1_sens_12052024_order2.fits
