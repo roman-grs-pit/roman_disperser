@@ -21,6 +21,7 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
  - @docs/star_dispersion.md : Star dispersion design phases and PSF interpolation approach.
  - @docs/psf_phase1_plan.md : PSF data model implementation plan with validation results.
  - @docs/galaxy_dispersion_plan.md : Design for the new galaxy disperser using Jacobian-based shape warping + PSF convolution.
+ - @docs/star_grism_pipeline.md : User guide for `scripts/build_star_grism_image.py` (output format, config, catalog assumptions).
 
 ## Commands
 
@@ -55,7 +56,9 @@ payload = omj.make_sca_payload(model, sca=1, order="1")
 xmpa, ympa = omj.trace_beam(payload, xfpa, yfpa, wavelength)
 ```
 
-Key functions: `sca_to_mpa`, `mpa_to_sca`, `sca_to_fpa`, `fpa_to_sca`, `get_mpa_coords`, `get_trace_coeffs`, `trace_beam`
+Key functions: `sca_to_mpa`, `mpa_to_sca`, `sca_to_fpa`, `fpa_to_sca`, `get_mpa_coords`, `get_trace_coeffs`, `trace_beam`, `get_pa_rotation`, `get_fpa_pos`
+
+Sky-to-FPA functions (`get_pa_rotation`, `get_fpa_pos`) are standalone — no payload needed. They convert (RA, Dec) to FPA coordinates given telescope pointing parameters. The class-based equivalents live in `RomanDetectorCoordinates` in `optical_model_utils.py`.
 
 All use `jnp.einsum` for polynomial evaluation.
 
@@ -161,6 +164,14 @@ Key functions: `trace_beam_sca`, `trace_beam_sca_with_jacobian`, `disperse_galax
 4. Interpolate convolved images to fine wavelength grid; deposit onto detector with exact positions
 
 **Note:** Galaxy images must be at `psf_payload['oversample']`× resolution (typically 4×). Pixel spacing is derived automatically from the PSF payload.
+
+### Catalog Pipeline
+
+The `catalog` module provides utilities for assigning sources to detectors:
+
+- **`select_sources(payload, xfpa, yfpa, ...)`**: Returns boolean mask of sources whose dispersed trace overlaps the padded detector region. JIT-compilable. Traces at multiple wavelengths to capture curvature.
+
+**TODO:** Expand catalog module documentation as more functions are added.
 
 ## Coding Guidelines
 

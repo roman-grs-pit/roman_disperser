@@ -8,6 +8,7 @@ from . import galaxy_disperser
 from . import demo_utils
 from . import psf_utils
 from . import psf_model
+from . import catalog
 
 __all__ = [
     "RomanOpticalModel",
@@ -18,4 +19,5 @@ __all__ = [
     "demo_utils",
     "psf_utils",
     "psf_model",
+    "catalog",
 ]

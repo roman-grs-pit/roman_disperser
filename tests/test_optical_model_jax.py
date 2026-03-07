@@ -443,6 +443,81 @@ class TestJAXCompatibility:
         np.testing.assert_allclose(ysca_rt, ysca, rtol=RTOL, atol=ATOL)
 
 
+class TestGetPARotation:
+    """Test get_pa_rotation standalone function."""
+
+    @pytest.mark.parametrize("pa", [0.0, 45.0, 90.0, 180.0, 270.0, -30.0])
+    def test_compare_to_class(self, optical_model, pa):
+        """JAX get_pa_rotation should match class method."""
+        rot_jax = omj.get_pa_rotation(pa)
+        rot_class = optical_model.coords.get_pa_rotation(pa=pa)
+
+        np.testing.assert_allclose(rot_jax, rot_class, rtol=RTOL, atol=ATOL)
+
+    @pytest.mark.parametrize("pa", [0.0, 45.0, 90.0, 180.0])
+    def test_orthogonality(self, pa):
+        """Rotation matrix should be orthogonal: R @ R.T = I."""
+        rot = omj.get_pa_rotation(pa)
+        product = rot @ rot.T
+        np.testing.assert_allclose(product, jnp.eye(2), rtol=RTOL, atol=ATOL)
+
+    def test_jit_compilation(self):
+        """Verify get_pa_rotation is JIT-compilable."""
+        @jax.jit
+        def jitted_rotation(pa):
+            return omj.get_pa_rotation(pa)
+
+        rot = jitted_rotation(45.0)
+        assert rot.shape == (2, 2)
+        assert isinstance(rot, jnp.ndarray)
+
+
+class TestGetFPAPos:
+    """Test get_fpa_pos standalone function."""
+
+    def test_compare_to_class(self, optical_model):
+        """Compare to class method calculate_fpa_pos."""
+        np.random.seed(456)
+        pointing_ra, pointing_dec, pointing_pa = 200.0, -30.0, 120.0
+        ra = pointing_ra + np.random.uniform(-0.05, 0.05, size=10)
+        dec = pointing_dec + np.random.uniform(-0.05, 0.05, size=10)
+
+        xfpa_jax, yfpa_jax = omj.get_fpa_pos(
+            jnp.asarray(ra), jnp.asarray(dec), pointing_ra, pointing_dec, pointing_pa
+        )
+        xfpa_class, yfpa_class = optical_model.coords.calculate_fpa_pos(
+            ra, dec, pointing_ra, pointing_dec, pointing_pa
+        )
+
+        np.testing.assert_allclose(xfpa_jax, xfpa_class, rtol=RTOL, atol=ATOL)
+        np.testing.assert_allclose(yfpa_jax, yfpa_class, rtol=RTOL, atol=ATOL)
+
+    def test_vectorized(self):
+        """Verify works with arrays of (ra, dec) and scalar pointing params."""
+        pointing_ra, pointing_dec, pointing_pa = 100.0, 10.0, 90.0
+        ra = jnp.array([100.01, 100.02, 99.99])
+        dec = jnp.array([10.01, 9.99, 10.02])
+
+        xfpa, yfpa = omj.get_fpa_pos(ra, dec, pointing_ra, pointing_dec, pointing_pa)
+
+        assert xfpa.shape == (3,)
+        assert yfpa.shape == (3,)
+
+    def test_jit_compilation(self):
+        """Verify get_fpa_pos is JIT-compilable."""
+        @jax.jit
+        def jitted_fpa_pos(ra, dec, pra, pdec, ppa):
+            return omj.get_fpa_pos(ra, dec, pra, pdec, ppa)
+
+        ra = jnp.array([150.01, 150.02])
+        dec = jnp.array([2.01, 1.99])
+
+        xfpa, yfpa = jitted_fpa_pos(ra, dec, 150.0, 2.0, 60.0)
+        assert xfpa.shape == (2,)
+        assert yfpa.shape == (2,)
+        assert isinstance(xfpa, jnp.ndarray)
+
+
 class TestMapCoords:
     """Test polynomial coordinate mapping (get_mpa_coords)."""
 

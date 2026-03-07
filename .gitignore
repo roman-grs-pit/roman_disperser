@@ -23,3 +23,6 @@ data/psf_radial_validation.pkl
 
 # Workbench data files (large, per-study)
 workbench/*/data/
+
+# Temporary markdown file to edit prompts
+prompt.md

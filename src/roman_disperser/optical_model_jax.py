@@ -227,6 +227,43 @@ def fpa_to_mpa(payload, xfpa, yfpa):
     return xmpa, ympa
 
 
+def get_pa_rotation(pa):
+    """Return 2x2 rotation matrix for a given position angle (JAX version).
+
+    Args:
+        pa: position angle in degrees (scalar)
+
+    Returns:
+        2x2 rotation matrix (JAX array)
+    """
+    theta = jnp.deg2rad(pa + 180 - 60)
+    return jnp.array([
+        [jnp.cos(theta), -jnp.sin(theta)],
+        [jnp.sin(theta),  jnp.cos(theta)],
+    ])
+
+
+def get_fpa_pos(ra, dec, pointing_ra, pointing_dec, pointing_pa):
+    """Convert sky coordinates to FPA position (JAX version).
+
+    Args:
+        ra, dec: source coordinates in degrees (1D arrays)
+        pointing_ra, pointing_dec: telescope pointing in degrees (scalars)
+        pointing_pa: position angle in degrees (scalar)
+
+    Returns:
+        xfpa, yfpa: FPA coordinates in degrees
+    """
+    dx = (ra - pointing_ra) * jnp.cos(jnp.deg2rad(dec))
+    dy = dec - pointing_dec
+    xy = jnp.stack([dx, dy])  # [2, N]
+    rot_matrix = get_pa_rotation(pa=pointing_pa)
+    xy = rot_matrix @ xy
+    xfpa = -xy[0, :]
+    yfpa = -xy[1, :]
+    return xfpa, yfpa
+
+
 # -------- polynomial functions --------
 
 

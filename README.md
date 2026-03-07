@@ -11,6 +11,7 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
 | **PSF Model** | `psf_model.py` | Complete — STPSF grids with trilinear interpolation |
 | **Star Disperser** | `star_disperser.py` | Complete — point sources with wavelength-dependent PSFs |
 | **Galaxy Disperser** | `galaxy_disperser.py` | Complete — extended sources with Jacobian warping + PSF convolution |
+| **Catalog Pipeline** | `catalog.py` + `scripts/build_star_grism_image.py` | Complete — source selection, full-field star grism simulation |
 | **Galaxy Disperser** (legacy) | `disperser.py` | Replaced by `galaxy_disperser.py` |
 
 ## Installation
@@ -96,7 +97,7 @@ pixi run pytest -v tests/test_psf_model.py           # PSF model tests
 
 The test suite includes:
 
-- **Optical model tests** (`test_optical_model_jax.py`): SCA/FPA/MPA coordinate transformations, polynomial mappings, trace coefficients, and spectral traces
+- **Optical model tests** (`test_optical_model_jax.py`): SCA/FPA/MPA coordinate transformations, sky-to-FPA transforms, polynomial mappings, trace coefficients, and spectral traces
 - **Disperser tests** (`test_disperser.py`): Bilinear interpolation, flux conservation, boundary handling, multi-galaxy batching
 - **PSF model tests** (`test_psf_model.py`): PSF interpolation, caching, trilinear accuracy
 - **Star disperser tests** (`test_star_disperser.py`): PSF deposition, chunk invariance, flux conservation
@@ -113,6 +114,7 @@ The test suite includes:
 - [Star Dispersion](docs/star_dispersion.md) — Star dispersion design phases and PSF interpolation
 - [PSF Phase 1 Plan](docs/psf_phase1_plan.md) — PSF data model implementation and validation results
 - [Galaxy Dispersion Plan](docs/galaxy_dispersion_plan.md) — New galaxy disperser design (Jacobian-based)
+- [Star Grism Pipeline](docs/star_grism_pipeline.md) — User guide for `build_star_grism_image.py` (output format, config, catalog assumptions)
 
 ## Notebooks
 
@@ -176,6 +178,7 @@ roman_disperser/
 │   ├── galaxy_dispersion_plan.md
 │   └── reference/stpsf_full.md
 ├── scripts/
+│   ├── build_star_grism_image.py    # Full-field star grism image pipeline
 │   ├── generate_psf_caches.py       # Batch PSF cache generation
 │   └── migrate_psf_caches.py        # PSF cache migration
 ├── data/
