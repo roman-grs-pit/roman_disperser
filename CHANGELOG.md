@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-03-07
+
+### Added
+- Star grism image pipeline (`scripts/build_star_grism_image.py`): full-field star simulation from catalog
+  - Quick mode (single SCA) and batch mode (YAML config, multiple pointings/SCAs)
+  - Per-SCA sensitivity curves applied per order
+  - Poisson noise sampling with deterministic JAX RNG key tree
+  - FITS output: PRIMARY (metadata) + MODEL (noiseless count-rate) + ISIM (Poisson-sampled counts)
+  - Per-SCA quicklook PNGs (asinh stretch, 4× block-averaged)
+  - Focal-plane mosaic PNG with all SCAs in WFI layout
+  - Per-pointing metadata YAML with RNG keys and per-SCA/order source counts
+  - `--force` flag to overwrite existing outputs; skips by default
+  - `--mosaic` mode to regenerate mosaic from existing pointing directory
+  - `--generate-config` to write a documented template YAML
+- Catalog module (`catalog.py`): `select_sources` for per-order detector assignment using trace overlap
+- Sky-to-FPA transforms (`optical_model_jax.py`): `get_fpa_pos` and `get_pa_rotation` standalone functions
+- Example batch config (`scripts/example_star_config.yaml`)
+- Per-SCA sensitivity FITS files and `sensitivity_map.yaml`
+- Pipeline documentation (`docs/star_grism_pipeline.md`): output format, config reference, catalog assumptions, architecture
+
+### Performance
+- 18 SCAs × 3 orders in ~5 minutes on RTX 4090 (after ~30s one-time JIT warmup)
+- Per-SCA I/O optimized to ~0.6s (FITS + PNG write)
+- Spectrum generation vectorized across all sources
+
 ## [0.4.0] - 2026-03-03
 
 ### Added

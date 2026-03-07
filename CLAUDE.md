@@ -21,6 +21,7 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
  - @docs/star_dispersion.md : Star dispersion design phases and PSF interpolation approach.
  - @docs/psf_phase1_plan.md : PSF data model implementation plan with validation results.
  - @docs/galaxy_dispersion_plan.md : Design for the new galaxy disperser using Jacobian-based shape warping + PSF convolution.
+ - @docs/star_grism_pipeline.md : User guide for `scripts/build_star_grism_image.py` (output format, config, catalog assumptions).
 
 ## Commands
 

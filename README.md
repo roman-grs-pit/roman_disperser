@@ -11,7 +11,7 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
 | **PSF Model** | `psf_model.py` | Complete — STPSF grids with trilinear interpolation |
 | **Star Disperser** | `star_disperser.py` | Complete — point sources with wavelength-dependent PSFs |
 | **Galaxy Disperser** | `galaxy_disperser.py` | Complete — extended sources with Jacobian warping + PSF convolution |
-| **Catalog Pipeline** | `catalog.py` | In progress — source selection and detector assignment |
+| **Catalog Pipeline** | `catalog.py` + `scripts/build_star_grism_image.py` | Complete — source selection, full-field star grism simulation |
 | **Galaxy Disperser** (legacy) | `disperser.py` | Replaced by `galaxy_disperser.py` |
 
 ## Installation
@@ -114,6 +114,7 @@ The test suite includes:
 - [Star Dispersion](docs/star_dispersion.md) — Star dispersion design phases and PSF interpolation
 - [PSF Phase 1 Plan](docs/psf_phase1_plan.md) — PSF data model implementation and validation results
 - [Galaxy Dispersion Plan](docs/galaxy_dispersion_plan.md) — New galaxy disperser design (Jacobian-based)
+- [Star Grism Pipeline](docs/star_grism_pipeline.md) — User guide for `build_star_grism_image.py` (output format, config, catalog assumptions)
 
 ## Notebooks
 
@@ -177,6 +178,7 @@ roman_disperser/
 │   ├── galaxy_dispersion_plan.md
 │   └── reference/stpsf_full.md
 ├── scripts/
+│   ├── build_star_grism_image.py    # Full-field star grism image pipeline
 │   ├── generate_psf_caches.py       # Batch PSF cache generation
 │   └── migrate_psf_caches.py        # PSF cache migration
 ├── data/

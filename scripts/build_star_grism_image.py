@@ -84,7 +84,8 @@ def load_star_catalog(catalog_dir):
     data = np.loadtxt(catalog_dir / "sim_star_cat_galacticus.txt", skiprows=1)
 
     raw_template_index = data[:, 1].astype(int)
-    temp_inds = raw_template_index - 58 * (raw_template_index // 58)
+    # Wrap to valid range: input_spectral_STARS.lis has 58 templates (indices 0-57)
+    temp_inds = raw_template_index % 58
 
     with open(catalog_dir / "SEDtemplates" / "input_spectral_STARS.lis") as f:
         template_files = [line.strip() for line in f.readlines()]
@@ -280,8 +281,13 @@ def select_sources_per_order(
     masks : dict mapping order str -> bool ndarray [N]
     any_mask : bool ndarray [N] - True if source is on detector for any order
     """
+    n = len(xfpa)
     masks = {}
-    any_mask = np.zeros(len(xfpa), dtype=bool)
+    any_mask = np.zeros(n, dtype=bool)
+    if n == 0:
+        for order in orders:
+            masks[order] = any_mask.copy()
+        return masks, any_mask
     for order in orders:
         mask = catalog.select_sources(optical_payloads[order], xfpa, yfpa)
         masks[order] = np.asarray(mask)
@@ -719,6 +725,7 @@ def setup_pipeline(
                 detector=detector_name, order=psf_order,
                 cache_dir=str(psf_cache_dir), verbose=False,
             )
+        # STPSF only provides GRISM0 and GRISM1; reuse order 1 PSF for order 2
         psf_payloads["2"] = psf_payloads["1"]
         log(f"    PSF payloads loaded")
 
@@ -825,7 +832,6 @@ def process_pointing(
     -------
     sca_outputs : dict mapping sca (int) -> jnp.ndarray [4088, 4088]
     """
-    timings = {}
     t_total = time.time()
 
     def log(msg):
@@ -858,27 +864,11 @@ def process_pointing(
         pointing_ra, pointing_dec, cone_radius,
     )
     n_cone = int(cone_mask.sum())
-    timings["cone_search"] = time.time() - t0
     log(f"    {n_cone} sources within {cone_radius} deg "
-        f"in {timings['cone_search']:.2f}s")
+        f"in {time.time() - t0:.2f}s")
 
     if n_cone == 0:
-        log("    WARNING: No sources in cone. Writing empty images.")
-        sca_outputs = {}
-        empty_np = np.zeros((DETECTOR_SIZE, DETECTOR_SIZE), dtype=np.float32)
-        for sca_num in sca_list:
-            sca_outputs[sca_num] = jnp.zeros(
-                (DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32,
-            )
-            key_data = jax.random.key_data(sca_keys[sca_num]) \
-                if sca_num in sca_keys else np.zeros(2, dtype=np.uint32)
-            stem = f"{prefix}_detSCA{sca_num:02d}"
-            write_fits(empty_np, empty_np,
-                       str(output_dir / f"{stem}.fits"),
-                       pointing_ra, pointing_dec, pointing_pa, sca_num,
-                       exptime, key_data, seed)
-            write_png(empty_np, str(output_dir / f"{stem}.png"))
-        return sca_outputs
+        log("    WARNING: No sources in cone.")
 
     ra_cone = star_catalog["ra"][cone_mask]
     dec_cone = star_catalog["dec"][cone_mask]
@@ -886,14 +876,17 @@ def process_pointing(
     tidx_cone = star_catalog["temp_idx"][cone_mask]
 
     # -- Step 2: Sky -> FPA --------------------------------------------------
-    log("  Sky -> FPA conversion...")
-    t0 = time.time()
-    xfpa, yfpa = omj.get_fpa_pos(
-        jnp.array(ra_cone), jnp.array(dec_cone),
-        pointing_ra, pointing_dec, pointing_pa,
-    )
-    timings["sky_to_fpa"] = time.time() - t0
-    log(f"    Done in {timings['sky_to_fpa']:.2f}s")
+    if n_cone > 0:
+        log("  Sky -> FPA conversion...")
+        t0 = time.time()
+        xfpa, yfpa = omj.get_fpa_pos(
+            jnp.array(ra_cone), jnp.array(dec_cone),
+            pointing_ra, pointing_dec, pointing_pa,
+        )
+        log(f"    Done in {time.time() - t0:.2f}s")
+    else:
+        xfpa = jnp.array([], dtype=jnp.float32)
+        yfpa = jnp.array([], dtype=jnp.float32)
 
     # -- Step 3: Process each SCA --------------------------------------------
     sca_outputs = {}
@@ -918,74 +911,58 @@ def process_pointing(
             log(f"    Order {order}: {n_ord} sources")
         source_counts[sca_num] = sca_counts
 
-        if n_any == 0:
-            log(f"    No sources on detector, skipping.")
-            empty = jnp.zeros(
-                (DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32,
-            )
-            sca_outputs[sca_num] = empty
-            empty_np = np.zeros(
-                (DETECTOR_SIZE, DETECTOR_SIZE), dtype=np.float32,
-            )
-            key_data = jax.random.key_data(sca_keys[sca_num]) \
-                if sca_num in sca_keys else np.zeros(2, dtype=np.uint32)
-            stem = f"{prefix}_detSCA{sca_num:02d}"
-            write_fits(empty_np, empty_np,
-                       str(output_dir / f"{stem}.fits"),
-                       pointing_ra, pointing_dec, pointing_pa, sca_num,
-                       exptime, key_data, seed)
-            write_png(empty_np, str(output_dir / f"{stem}.png"))
-            continue
-
-        # Generate spectra for sources on this SCA
-        mag_sel = mag_cone[any_mask]
-        tidx_sel = tidx_cone[any_mask]
-
-        t0 = time.time()
-        spectra_flam = generate_spectra(
-            pipeline["template_grid"], tidx_sel, mag_sel,
-        )
-        timings[f"spectra_sca{sca_num}"] = time.time() - t0
-        log(f"    Spectra: {n_any} sources in "
-            f"{timings[f'spectra_sca{sca_num}']:.2f}s")
-
-        # Get SCA coordinates (use order "1" payload for FPA->SCA)
-        xfpa_sel = xfpa[any_mask]
-        yfpa_sel = yfpa[any_mask]
-        xsca_all = np.asarray(omj.fpa_to_sca(
-            sd["optical_payloads"]["1"], xfpa_sel, yfpa_sel,
-        )[0])
-        ysca_all = np.asarray(omj.fpa_to_sca(
-            sd["optical_payloads"]["1"], xfpa_sel, yfpa_sel,
-        )[1])
-
-        # Disperse per order with batching
+        # Disperse sources (or keep zeros if none on this SCA)
         output = jnp.zeros(
             (DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32,
         )
-        order_masks_sel = {
-            order: order_masks[order][any_mask] for order in ORDERS
-        }
 
-        for order in ORDERS:
-            omask = order_masks_sel[order]
-            n_order = int(omask.sum())
-            if n_order == 0:
-                continue
+        if n_any > 0:
+            # Generate spectra for sources on this SCA
+            mag_sel = mag_cone[any_mask]
+            tidx_sel = tidx_cone[any_mask]
 
-            x_ord = xsca_all[omask]
-            y_ord = ysca_all[omask]
-            spec_ord = spectra_flam[omask]
-
-            t_order = time.time()
-            output = disperse_batched(
-                sd["fori_fns"][order], spec_ord, x_ord, y_ord,
-                output, batch_size,
+            t0 = time.time()
+            spectra_flam = generate_spectra(
+                pipeline["template_grid"], tidx_sel, mag_sel,
             )
-            elapsed = time.time() - t_order
-            ms_per = elapsed / n_order * 1e3
-            log(f"    Order {order}: dispersed {n_order} in {elapsed:.2f}s "
-                f"({ms_per:.1f} ms/star)")
+            log(f"    Spectra: {n_any} sources in "
+                f"{time.time() - t0:.2f}s")
+
+            # Get SCA coordinates (order "1" defines the undispersed position)
+            xfpa_sel = xfpa[any_mask]
+            yfpa_sel = yfpa[any_mask]
+            xsca_all, ysca_all = omj.fpa_to_sca(
+                sd["optical_payloads"]["1"], xfpa_sel, yfpa_sel,
+            )
+            xsca_all = np.asarray(xsca_all)
+            ysca_all = np.asarray(ysca_all)
+
+            # Disperse per order with batching
+            order_masks_sel = {
+                order: order_masks[order][any_mask] for order in ORDERS
+            }
+
+            for order in ORDERS:
+                omask = order_masks_sel[order]
+                n_order = int(omask.sum())
+                if n_order == 0:
+                    continue
+
+                x_ord = xsca_all[omask]
+                y_ord = ysca_all[omask]
+                spec_ord = spectra_flam[omask]
+
+                t_order = time.time()
+                output = disperse_batched(
+                    sd["fori_fns"][order], spec_ord, x_ord, y_ord,
+                    output, batch_size,
+                )
+                elapsed = time.time() - t_order
+                ms_per = elapsed / n_order * 1e3
+                log(f"    Order {order}: dispersed {n_order} in {elapsed:.2f}s "
+                    f"({ms_per:.1f} ms/star)")
+        else:
+            log(f"    No sources on detector.")
 
         sca_outputs[sca_num] = output
 
@@ -1064,8 +1041,7 @@ def process_pointing(
     with open(meta_path, "w") as f:
         yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
 
-    timings["pointing_total"] = time.time() - t_total
-    log(f"\n  Pointing complete in {timings['pointing_total']:.1f}s")
+    log(f"\n  Pointing complete in {time.time() - t_total:.1f}s")
 
     return sca_outputs
 
