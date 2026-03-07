@@ -34,12 +34,14 @@ import yaml
 import astropy.units as u
 import jax
 import jax.numpy as jnp
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import synphot as syn
 import stsynphot as stsyn
 from astropy.io import fits
 from matplotlib.colors import AsinhNorm
+from PIL import Image
 
 from roman_disperser import catalog, psf_model, star_disperser
 from roman_disperser.optical_model import RomanOpticalModel
@@ -370,12 +372,17 @@ def disperse_batched(fori_fn, spectra, xsca, ysca, output, batch_size):
 # Output
 # ---------------------------------------------------------------------------
 
-def write_fits(output_array, output_file, pointing_ra, pointing_dec,
+def write_fits(output_np, output_file, pointing_ra, pointing_dec,
                pointing_pa, sca):
     """Write the grism image to a FITS file.
 
     Primary HDU contains pointing metadata. MODEL extension contains the
     counts array.
+
+    Parameters
+    ----------
+    output_np : ndarray
+        Numpy array (not JAX).  Caller converts before calling.
     """
     primary = fits.PrimaryHDU()
     primary.header["WFICENRA"] = (pointing_ra, "Pointing RA [deg]")
@@ -383,39 +390,42 @@ def write_fits(output_array, output_file, pointing_ra, pointing_dec,
     primary.header["WFICENPA"] = (pointing_pa, "Position angle [deg]")
     primary.header["DETNUM"] = (sca, "SCA number")
 
-    model_hdu = fits.ImageHDU(data=np.array(output_array), name="MODEL")
+    model_hdu = fits.ImageHDU(data=output_np, name="MODEL")
 
     hdul = fits.HDUList([primary, model_hdu])
     hdul.writeto(output_file, overwrite=True)
 
 
-def write_png(output_array, png_file, linear_width=0.01):
-    """Write an asinh-stretched quicklook PNG."""
-    output_np = np.array(output_array)
+def write_png(output_np, png_file, linear_width=0.01):
+    """Write an asinh-stretched quicklook PNG.
+
+    Parameters
+    ----------
+    output_np : ndarray
+        Numpy array (not JAX).  Caller converts before calling.
+    """
     # Downsample for quicklook: 4088 -> 1022 pixels (4× block-average).
-    # At dpi=150 with figsize=10 the output is ~1500px, so 1022 is plenty.
     bf = 4
     ny, nx = output_np.shape
     ny_trim = (ny // bf) * bf
     nx_trim = (nx // bf) * bf
-    output_np = output_np[:ny_trim, :nx_trim].reshape(
+    small = output_np[:ny_trim, :nx_trim].reshape(
         ny_trim // bf, bf, nx_trim // bf, bf
     ).mean(axis=(1, 3))
-    fig, ax = plt.subplots(figsize=(10, 10))
-    vmax = output_np.max()
+
+    # Asinh stretch + inferno colormap via matplotlib's normalizer and cmap
+    vmax = small.max()
     if vmax == 0:
         vmax = 1.0
     norm = AsinhNorm(linear_width=linear_width, vmin=0, vmax=vmax)
-    ax.imshow(output_np, origin="lower", cmap="inferno", norm=norm)
-    ax.set_xlabel("X (SCA pixels)")
-    ax.set_ylabel("Y (SCA pixels)")
-    ax.set_title("Grism Image (asinh stretch)")
-    plt.colorbar(
-        ax.images[0], ax=ax, label="Counts (asinh stretch)", shrink=0.8,
-    )
-    plt.tight_layout()
-    fig.savefig(png_file, dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    cmap = matplotlib.colormaps["inferno"]
+    rgba = cmap(norm(small))
+    rgb = (rgba[:, :, :3] * 255).astype(np.uint8)
+
+    # Flip vertically for origin="lower" convention
+    rgb = rgb[::-1]
+
+    Image.fromarray(rgb).save(png_file)
 
 
 def write_mosaic_png(sca_images, sca_list, model, png_file,
@@ -815,12 +825,14 @@ def process_pointing(
     if n_cone == 0:
         log("    WARNING: No sources in cone. Writing empty images.")
         sca_outputs = {}
+        empty_np = np.zeros((DETECTOR_SIZE, DETECTOR_SIZE), dtype=np.float32)
         for sca_num in sca_list:
-            empty = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32)
-            sca_outputs[sca_num] = empty
-            write_fits(empty, str(output_dir / f"SCA{sca_num:02d}.fits"),
+            sca_outputs[sca_num] = jnp.zeros(
+                (DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32,
+            )
+            write_fits(empty_np, str(output_dir / f"SCA{sca_num:02d}.fits"),
                        pointing_ra, pointing_dec, pointing_pa, sca_num)
-            write_png(empty, str(output_dir / f"SCA{sca_num:02d}.png"))
+            write_png(empty_np, str(output_dir / f"SCA{sca_num:02d}.png"))
         return sca_outputs
 
     ra_cone = star_catalog["ra"][cone_mask]
@@ -862,9 +874,12 @@ def process_pointing(
                 (DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32,
             )
             sca_outputs[sca_num] = empty
-            write_fits(empty, str(output_dir / f"SCA{sca_num:02d}.fits"),
+            empty_np = np.zeros(
+                (DETECTOR_SIZE, DETECTOR_SIZE), dtype=np.float32,
+            )
+            write_fits(empty_np, str(output_dir / f"SCA{sca_num:02d}.fits"),
                        pointing_ra, pointing_dec, pointing_pa, sca_num)
-            write_png(empty, str(output_dir / f"SCA{sca_num:02d}.png"))
+            write_png(empty_np, str(output_dir / f"SCA{sca_num:02d}.png"))
             continue
 
         # Generate spectra for sources on this SCA
@@ -919,20 +934,25 @@ def process_pointing(
 
         sca_outputs[sca_num] = output
 
+        # Single GPU->CPU transfer, reused for FITS, PNG, and stats
+        t0 = time.time()
+        output_np = np.array(output)
+        t_transfer = time.time() - t0
+
         # Write per-SCA outputs
         fits_path = str(output_dir / f"SCA{sca_num:02d}.fits")
         png_path = str(output_dir / f"SCA{sca_num:02d}.png")
         t0 = time.time()
-        write_fits(output, fits_path, pointing_ra, pointing_dec,
+        write_fits(output_np, fits_path, pointing_ra, pointing_dec,
                    pointing_pa, sca_num)
         t_fits = time.time() - t0
         t0 = time.time()
-        write_png(output, png_path)
+        write_png(output_np, png_path)
         t_png = time.time() - t0
 
-        output_np = np.array(output)
         elapsed_sca = time.time() - t_sca
-        log(f"    I/O: FITS {t_fits:.2f}s, PNG {t_png:.2f}s")
+        log(f"    I/O: transfer {t_transfer:.2f}s, "
+            f"FITS {t_fits:.2f}s, PNG {t_png:.2f}s")
         log(f"    Total: {elapsed_sca:.2f}s, flux={output_np.sum():.4e}, "
             f"peak={output_np.max():.4e}")
 
@@ -1164,8 +1184,8 @@ def run_batch(config_path, verbose=True):
     log(f"\n{'='*60}")
     log(f"All pointings complete")
     log(f"  Setup:      {setup_time:.1f}s")
-    log(f"  Processing: {total - setup_time:.1f}s")
-    log(f"  Total:      {total:.1f}s")
+    log(f"  Processing: {total:.1f}s")
+    log(f"  Total:      {setup_time + total:.1f}s")
     log(f"{'='*60}")
 
 
