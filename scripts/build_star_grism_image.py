@@ -27,6 +27,7 @@ Can also be imported as a module:
 
 import argparse
 import os
+import re
 import time
 from pathlib import Path
 
@@ -516,14 +517,15 @@ def write_mosaic_from_directory(pointing_dir, optical_model_path=None,
                                 linear_width=0.01):
     """Generate a focal-plane mosaic PNG from per-SCA FITS files in a directory.
 
-    Scans ``pointing_dir`` for files matching ``SCA*.fits`` and reads the
-    MODEL extension from each.  This can be run standalone after the main
-    pipeline without reprocessing any sources.
+    Scans ``pointing_dir`` for files matching ``grism_*_detSCA*.fits`` (or
+    the legacy ``SCA*.fits`` pattern) and reads the MODEL extension from
+    each.  This can be run standalone after the main pipeline without
+    reprocessing any sources.
 
     Parameters
     ----------
     pointing_dir : str or Path
-        Directory containing per-SCA FITS files (``SCA01.fits``, …).
+        Directory containing per-SCA FITS files.
     optical_model_path : str or Path, optional
         Path to the optical model YAML.  Defaults to the standard location.
     linear_width : float
@@ -537,27 +539,31 @@ def write_mosaic_from_directory(pointing_dir, optical_model_path=None,
         )
     model = RomanOpticalModel(str(optical_model_path))
 
-    # Discover SCA FITS files
+    # Discover SCA FITS files (try new naming first, fall back to legacy)
     sca_images = {}
     sca_list = []
-    for fpath in sorted(pointing_dir.glob("SCA*.fits")):
-        # Extract SCA number from filename like SCA05.fits
-        stem = fpath.stem  # e.g. "SCA05"
-        try:
-            sca_num = int(stem[3:])
-        except ValueError:
+    fits_files = sorted(pointing_dir.glob("grism_*_detSCA*.fits"))
+    if not fits_files:
+        fits_files = sorted(pointing_dir.glob("SCA*.fits"))
+    for fpath in fits_files:
+        # Extract SCA number from _detSCA05.fits or SCA05.fits
+        m = re.search(r"SCA(\d+)", fpath.stem)
+        if m is None:
             continue
+        sca_num = int(m.group(1))
         with fits.open(fpath) as hdul:
             if "MODEL" in hdul:
                 sca_images[sca_num] = hdul["MODEL"].data.astype(np.float32)
                 sca_list.append(sca_num)
 
     if not sca_list:
-        print(f"No SCA*.fits files with MODEL extension found in {pointing_dir}")
+        print(f"No per-SCA FITS files with MODEL extension found in "
+              f"{pointing_dir}")
         return
 
     sca_list.sort()
-    png_file = str(pointing_dir / "mosaic.png")
+    prefix = f"grism_{pointing_dir.name}"
+    png_file = str(pointing_dir / f"{prefix}_mosaic.png")
     write_mosaic_png(sca_images, sca_list, model, png_file,
                      linear_width=linear_width)
     print(f"Mosaic written to {png_file}")
@@ -802,6 +808,7 @@ def process_pointing(
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"grism_{output_dir.name}"
 
     star_catalog = pipeline["star_catalog"]
     sca_list = pipeline["sca_list"]
@@ -830,9 +837,10 @@ def process_pointing(
             sca_outputs[sca_num] = jnp.zeros(
                 (DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32,
             )
-            write_fits(empty_np, str(output_dir / f"SCA{sca_num:02d}.fits"),
+            stem = f"{prefix}_detSCA{sca_num:02d}"
+            write_fits(empty_np, str(output_dir / f"{stem}.fits"),
                        pointing_ra, pointing_dec, pointing_pa, sca_num)
-            write_png(empty_np, str(output_dir / f"SCA{sca_num:02d}.png"))
+            write_png(empty_np, str(output_dir / f"{stem}.png"))
         return sca_outputs
 
     ra_cone = star_catalog["ra"][cone_mask]
@@ -877,9 +885,10 @@ def process_pointing(
             empty_np = np.zeros(
                 (DETECTOR_SIZE, DETECTOR_SIZE), dtype=np.float32,
             )
-            write_fits(empty_np, str(output_dir / f"SCA{sca_num:02d}.fits"),
+            stem = f"{prefix}_detSCA{sca_num:02d}"
+            write_fits(empty_np, str(output_dir / f"{stem}.fits"),
                        pointing_ra, pointing_dec, pointing_pa, sca_num)
-            write_png(empty_np, str(output_dir / f"SCA{sca_num:02d}.png"))
+            write_png(empty_np, str(output_dir / f"{stem}.png"))
             continue
 
         # Generate spectra for sources on this SCA
@@ -940,8 +949,9 @@ def process_pointing(
         t_transfer = time.time() - t0
 
         # Write per-SCA outputs
-        fits_path = str(output_dir / f"SCA{sca_num:02d}.fits")
-        png_path = str(output_dir / f"SCA{sca_num:02d}.png")
+        stem = f"{prefix}_detSCA{sca_num:02d}"
+        fits_path = str(output_dir / f"{stem}.fits")
+        png_path = str(output_dir / f"{stem}.png")
         t0 = time.time()
         write_fits(output_np, fits_path, pointing_ra, pointing_dec,
                    pointing_pa, sca_num)
@@ -959,7 +969,7 @@ def process_pointing(
     # -- Mosaic PNG ----------------------------------------------------------
     if len(sca_list) > 1:
         log("\n  Writing mosaic PNG...")
-        mosaic_path = str(output_dir / "mosaic.png")
+        mosaic_path = str(output_dir / f"{prefix}_mosaic.png")
         write_mosaic_png(
             {s: np.array(sca_outputs[s]) for s in sca_list},
             sca_list, pipeline["model"], mosaic_path,
@@ -1048,8 +1058,9 @@ def build_star_grism_image(
     )
 
     # Move from tmp layout to single-file output
-    tmp_fits = tmp_dir / f"SCA{sca:02d}.fits"
-    tmp_png = tmp_dir / f"SCA{sca:02d}.png"
+    tmp_prefix = f"grism_{tmp_dir.name}"
+    tmp_fits = tmp_dir / f"{tmp_prefix}_detSCA{sca:02d}.fits"
+    tmp_png = tmp_dir / f"{tmp_prefix}_detSCA{sca:02d}.png"
     if tmp_fits.exists():
         tmp_fits.rename(output_file)
     if tmp_png.exists():
@@ -1236,7 +1247,7 @@ def main():
                       help="Write a documented template config file and exit")
     mode.add_argument("--mosaic", type=str, metavar="DIR",
                       help="Generate mosaic PNG from a pointing directory "
-                           "containing SCA*.fits files")
+                           "containing grism_*_detSCA*.fits files")
 
     # Quick mode arguments
     parser.add_argument("--pointing-dec", type=float,
