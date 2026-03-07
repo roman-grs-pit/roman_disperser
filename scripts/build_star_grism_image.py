@@ -991,6 +991,7 @@ def build_star_grism_image(
     dlam_angstroms=2.0,
     batch_size=1000,
     verbose=True,
+    force=False,
 ):
     """Build a simulated grism image for a single SCA.
 
@@ -1014,11 +1015,20 @@ def build_star_grism_image(
         Sources per JIT batch (default: 1000).
     verbose : bool
         Print progress information (default: True).
+    force : bool
+        Overwrite existing output file (default: skip).
 
     Returns
     -------
-    output : jnp.ndarray [4088, 4088]
+    output : jnp.ndarray [4088, 4088], or None if skipped
     """
+    output_file = Path(output_file)
+    if not force and output_file.exists():
+        if verbose:
+            print(f"Skipping {output_file} (already exists, "
+                  f"use --force to overwrite)")
+        return None
+
     pipeline = setup_pipeline(
         [sca],
         catalog_dir=catalog_dir,
@@ -1031,7 +1041,6 @@ def build_star_grism_image(
     )
 
     # Use a temp directory, then move the files to match the requested output
-    output_file = Path(output_file)
     tmp_dir = output_file.parent / f".tmp_sca{sca}"
     sca_outputs = process_pointing(
         pipeline, pointing_ra, pointing_dec, pointing_pa,
@@ -1119,7 +1128,7 @@ batch_size: 1000
 """
 
 
-def run_batch(config_path, verbose=True):
+def run_batch(config_path, verbose=True, force=False):
     """Run the pipeline from a YAML configuration file.
 
     Parameters
@@ -1128,6 +1137,8 @@ def run_batch(config_path, verbose=True):
         Path to YAML config file.
     verbose : bool
         Print progress.
+    force : bool
+        Overwrite existing pointing directories (default: skip them).
     """
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
@@ -1143,9 +1154,22 @@ def run_batch(config_path, verbose=True):
     else:
         sca_list = [int(s) for s in scas]
 
+    # Check which pointings need processing before expensive setup
+    output_dir = Path(cfg["output_dir"])
+    pointings_todo = []
+    for pointing in cfg["pointings"]:
+        pointing_dir = output_dir / pointing["name"]
+        if force or not pointing_dir.exists():
+            pointings_todo.append(pointing)
+
     log(f"Config: {config_path}")
     log(f"SCAs: {sca_list}")
-    log(f"Pointings: {len(cfg['pointings'])}")
+    log(f"Pointings: {len(cfg['pointings'])} total, "
+        f"{len(pointings_todo)} to process")
+
+    if not pointings_todo:
+        log("Nothing to do (all pointings exist, use --force to overwrite).")
+        return
 
     # Setup pipeline (one-time)
     pipeline = setup_pipeline(
@@ -1159,15 +1183,15 @@ def run_batch(config_path, verbose=True):
         verbose=verbose,
     )
 
-    # Process each pointing
-    output_dir = Path(cfg["output_dir"])
+    # Process pointings that need work
     cone_radius = cfg.get("cone_radius", 0.6)
+    n_skipped = len(cfg["pointings"]) - len(pointings_todo)
 
     t_all = time.time()
-    for i, pointing in enumerate(cfg["pointings"]):
+    for i, pointing in enumerate(pointings_todo):
         name = pointing["name"]
         log(f"\n{'='*60}")
-        log(f"Pointing {i+1}/{len(cfg['pointings'])}: {name}")
+        log(f"Pointing {i+1}/{len(pointings_todo)}: {name}")
         log(f"{'='*60}")
 
         pointing_dir = output_dir / name
@@ -1182,7 +1206,8 @@ def run_batch(config_path, verbose=True):
     total = time.time() - t_all
     setup_time = pipeline["timings"]["setup_total"]
     log(f"\n{'='*60}")
-    log(f"All pointings complete")
+    log(f"All pointings complete "
+        f"({len(pointings_todo)} processed, {n_skipped} skipped)")
     log(f"  Setup:      {setup_time:.1f}s")
     log(f"  Processing: {total:.1f}s")
     log(f"  Total:      {setup_time + total:.1f}s")
@@ -1240,6 +1265,8 @@ def main():
                         help="Sources per JIT batch (default: 1000)")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress progress output")
+    parser.add_argument("--force", action="store_true",
+                        help="Overwrite existing output directories/files")
 
     args = parser.parse_args()
 
@@ -1260,7 +1287,7 @@ def main():
 
     # Batch mode
     if args.config:
-        run_batch(args.config, verbose=not args.quiet)
+        run_batch(args.config, verbose=not args.quiet, force=args.force)
         return
 
     # Quick mode — validate required arguments
@@ -1285,6 +1312,7 @@ def main():
         dlam_angstroms=args.dlam,
         batch_size=args.batch_size,
         verbose=not args.quiet,
+        force=args.force,
     )
 
 
