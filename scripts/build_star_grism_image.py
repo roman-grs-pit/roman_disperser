@@ -373,27 +373,44 @@ def disperse_batched(fori_fn, spectra, xsca, ysca, output, batch_size):
 # Output
 # ---------------------------------------------------------------------------
 
-def write_fits(output_np, output_file, pointing_ra, pointing_dec,
-               pointing_pa, sca):
+def write_fits(model_np, isim_np, output_file, pointing_ra, pointing_dec,
+               pointing_pa, sca, exptime, rng_key_data, seed):
     """Write the grism image to a FITS file.
 
-    Primary HDU contains pointing metadata. MODEL extension contains the
-    counts array.
+    Primary HDU contains pointing/simulation metadata.  MODEL extension
+    contains the noiseless count-rate image (counts/s).  ISIM extension
+    contains the Poisson-sampled image (counts).
 
     Parameters
     ----------
-    output_np : ndarray
-        Numpy array (not JAX).  Caller converts before calling.
+    model_np : ndarray
+        Noiseless count-rate image (counts/s).
+    isim_np : ndarray
+        Poisson-sampled image (counts).
+    output_file : str
+    pointing_ra, pointing_dec, pointing_pa : float
+    sca : int
+    exptime : float
+        Exposure time in seconds.
+    rng_key_data : ndarray [2] of uint32
+        JAX RNG key data used for this SCA's Poisson draw.
+    seed : int
+        Top-level seed for the full run.
     """
     primary = fits.PrimaryHDU()
     primary.header["WFICENRA"] = (pointing_ra, "Pointing RA [deg]")
     primary.header["WFICENDEC"] = (pointing_dec, "Pointing Dec [deg]")
     primary.header["WFICENPA"] = (pointing_pa, "Position angle [deg]")
     primary.header["DETNUM"] = (sca, "SCA number")
+    primary.header["EXPTIME"] = (exptime, "Exposure time [s]")
+    primary.header["SEED"] = (seed, "Top-level RNG seed")
+    primary.header["RNDSEED0"] = (int(rng_key_data[0]), "JAX RNG key word 0")
+    primary.header["RNDSEED1"] = (int(rng_key_data[1]), "JAX RNG key word 1")
 
-    model_hdu = fits.ImageHDU(data=output_np, name="MODEL")
+    model_hdu = fits.ImageHDU(data=model_np, name="MODEL")
+    isim_hdu = fits.ImageHDU(data=isim_np, name="ISIM")
 
-    hdul = fits.HDUList([primary, model_hdu])
+    hdul = fits.HDUList([primary, model_hdu, isim_hdu])
     hdul.writeto(output_file, overwrite=True)
 
 
@@ -777,6 +794,9 @@ def process_pointing(
     output_dir,
     *,
     cone_radius=0.6,
+    exptime=190.22,
+    pointing_key=None,
+    seed=0,
     verbose=True,
 ):
     """Process a single pointing: select sources, generate spectra, disperse.
@@ -792,6 +812,12 @@ def process_pointing(
         existing files are overwritten without warning.
     cone_radius : float
         Cone search radius in degrees (default: 0.6).
+    exptime : float
+        Exposure time in seconds (default: 190.22).
+    pointing_key : jax.random.key or None
+        JAX RNG key for this pointing.  Split into per-SCA keys.
+    seed : int
+        Top-level seed (stored in FITS header for provenance).
     verbose : bool
         Print progress information.
 
@@ -813,6 +839,13 @@ def process_pointing(
     star_catalog = pipeline["star_catalog"]
     sca_list = pipeline["sca_list"]
     batch_size = pipeline["batch_size"]
+
+    # Split pointing key into per-SCA keys
+    sca_keys = {}
+    if pointing_key is not None:
+        split_keys = jax.random.split(pointing_key, len(sca_list))
+        for i, sca_num in enumerate(sca_list):
+            sca_keys[sca_num] = split_keys[i]
 
     log(f"\nPointing: RA={pointing_ra}, Dec={pointing_dec}, PA={pointing_pa}")
     log(f"Output:   {output_dir}")
@@ -837,9 +870,13 @@ def process_pointing(
             sca_outputs[sca_num] = jnp.zeros(
                 (DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32,
             )
+            key_data = jax.random.key_data(sca_keys[sca_num]) \
+                if sca_num in sca_keys else np.zeros(2, dtype=np.uint32)
             stem = f"{prefix}_detSCA{sca_num:02d}"
-            write_fits(empty_np, str(output_dir / f"{stem}.fits"),
-                       pointing_ra, pointing_dec, pointing_pa, sca_num)
+            write_fits(empty_np, empty_np,
+                       str(output_dir / f"{stem}.fits"),
+                       pointing_ra, pointing_dec, pointing_pa, sca_num,
+                       exptime, key_data, seed)
             write_png(empty_np, str(output_dir / f"{stem}.png"))
         return sca_outputs
 
@@ -860,6 +897,8 @@ def process_pointing(
 
     # -- Step 3: Process each SCA --------------------------------------------
     sca_outputs = {}
+    sca_model_np = {}  # per-SCA MODEL numpy arrays for mosaic/PNG
+    source_counts = {}  # per-SCA per-order source counts
 
     for sca_num in sca_list:
         log(f"\n  SCA {sca_num}:")
@@ -872,9 +911,12 @@ def process_pointing(
         )
         n_any = int(any_mask.sum())
 
+        sca_counts = {}
         for order in ORDERS:
             n_ord = int(order_masks[order].sum())
+            sca_counts[order] = n_ord
             log(f"    Order {order}: {n_ord} sources")
+        source_counts[sca_num] = sca_counts
 
         if n_any == 0:
             log(f"    No sources on detector, skipping.")
@@ -885,9 +927,13 @@ def process_pointing(
             empty_np = np.zeros(
                 (DETECTOR_SIZE, DETECTOR_SIZE), dtype=np.float32,
             )
+            key_data = jax.random.key_data(sca_keys[sca_num]) \
+                if sca_num in sca_keys else np.zeros(2, dtype=np.uint32)
             stem = f"{prefix}_detSCA{sca_num:02d}"
-            write_fits(empty_np, str(output_dir / f"{stem}.fits"),
-                       pointing_ra, pointing_dec, pointing_pa, sca_num)
+            write_fits(empty_np, empty_np,
+                       str(output_dir / f"{stem}.fits"),
+                       pointing_ra, pointing_dec, pointing_pa, sca_num,
+                       exptime, key_data, seed)
             write_png(empty_np, str(output_dir / f"{stem}.png"))
             continue
 
@@ -943,18 +989,33 @@ def process_pointing(
 
         sca_outputs[sca_num] = output
 
-        # Single GPU->CPU transfer, reused for FITS, PNG, and stats
+        # Poisson sample on GPU (output is counts/s, multiply by exptime)
+        sca_key = sca_keys.get(sca_num)
+        if sca_key is not None:
+            expected_counts = output * exptime
+            isim = jax.random.poisson(sca_key, expected_counts).astype(
+                jnp.float32,
+            )
+            key_data = np.array(jax.random.key_data(sca_key))
+        else:
+            isim = output * exptime
+            key_data = np.zeros(2, dtype=np.uint32)
+
+        # Single GPU->CPU transfer for both arrays
         t0 = time.time()
         output_np = np.array(output)
+        isim_np = np.array(isim)
         t_transfer = time.time() - t0
+        sca_model_np[sca_num] = output_np
 
-        # Write per-SCA outputs
+        # Write per-SCA outputs (PNG from noiseless MODEL for clean visualization)
         stem = f"{prefix}_detSCA{sca_num:02d}"
         fits_path = str(output_dir / f"{stem}.fits")
         png_path = str(output_dir / f"{stem}.png")
         t0 = time.time()
-        write_fits(output_np, fits_path, pointing_ra, pointing_dec,
-                   pointing_pa, sca_num)
+        write_fits(output_np, isim_np, fits_path,
+                   pointing_ra, pointing_dec, pointing_pa, sca_num,
+                   exptime, key_data, seed)
         t_fits = time.time() - t0
         t0 = time.time()
         write_png(output_np, png_path)
@@ -971,10 +1032,37 @@ def process_pointing(
         log("\n  Writing mosaic PNG...")
         mosaic_path = str(output_dir / f"{prefix}_mosaic.png")
         write_mosaic_png(
-            {s: np.array(sca_outputs[s]) for s in sca_list},
-            sca_list, pipeline["model"], mosaic_path,
+            sca_model_np, sca_list, pipeline["model"], mosaic_path,
         )
         log(f"    {mosaic_path}")
+
+    # -- Metadata YAML -------------------------------------------------------
+    pointing_key_data = jax.random.key_data(pointing_key).tolist() \
+        if pointing_key is not None else None
+    meta = {
+        "pointing": {
+            "ra": pointing_ra,
+            "dec": pointing_dec,
+            "pa": pointing_pa,
+        },
+        "exptime": exptime,
+        "seed": seed,
+        "pointing_key": pointing_key_data,
+        "sca_keys": {
+            sca_num: jax.random.key_data(sca_keys[sca_num]).tolist()
+            for sca_num in sca_keys
+        },
+        "dlam_angstroms": pipeline["dlam_angstroms"],
+        "cone_radius": cone_radius,
+        "batch_size": pipeline["batch_size"],
+        "source_counts": {
+            f"SCA{sca_num}": counts
+            for sca_num, counts in sorted(source_counts.items())
+        },
+    }
+    meta_path = output_dir / f"{prefix}_meta.yaml"
+    with open(meta_path, "w") as f:
+        yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
 
     timings["pointing_total"] = time.time() - t_total
     log(f"\n  Pointing complete in {timings['pointing_total']:.1f}s")
@@ -993,6 +1081,8 @@ def build_star_grism_image(
     sca,
     output_file,
     *,
+    seed,
+    exptime=190.22,
     catalog_dir=None,
     sensitivity_dir=None,
     optical_model_path=None,
@@ -1015,6 +1105,10 @@ def build_star_grism_image(
         SCA (detector) number, 1-18.
     output_file : str
         Output FITS filename.  A PNG with the same stem is also produced.
+    seed : int
+        RNG seed (required).
+    exptime : float
+        Exposure time in seconds (default: 190.22).
     catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir : str, optional
         Override default data paths.
     cone_radius : float
@@ -1052,9 +1146,12 @@ def build_star_grism_image(
 
     # Use a temp directory, then move the files to match the requested output
     tmp_dir = output_file.parent / f".tmp_sca{sca}"
+    pointing_key = jax.random.key(seed)
     sca_outputs = process_pointing(
         pipeline, pointing_ra, pointing_dec, pointing_pa,
-        str(tmp_dir), cone_radius=cone_radius, verbose=verbose,
+        str(tmp_dir), cone_radius=cone_radius,
+        exptime=exptime, pointing_key=pointing_key, seed=seed,
+        verbose=verbose,
     )
 
     # Move from tmp layout to single-file output
@@ -1091,6 +1188,16 @@ EXAMPLE_CONFIG = """\
 # Top-level output directory.  Each pointing creates a subdirectory
 # containing per-SCA FITS/PNG files and a focal-plane mosaic PNG.
 output_dir: /workspace/scratch/roman-star-fields
+
+# ── RNG seed (required) ──────────────────────────────────────────────────
+# Integer seed for reproducible Poisson noise.  Split deterministically
+# into per-pointing and per-SCA keys.
+seed: 42
+
+# ── Exposure time ─────────────────────────────────────────────────────────
+# Exposure time in seconds.  The noiseless model (counts/s) is multiplied
+# by exptime before Poisson sampling.
+exptime: 190.22
 
 # ── Detectors ───────────────────────────────────────────────────────────────
 # Which SCAs to simulate.  Use "all" for 1-18, or list specific numbers.
@@ -1165,16 +1272,25 @@ def run_batch(config_path, verbose=True, force=False):
     else:
         sca_list = [int(s) for s in scas]
 
-    # Check which pointings need processing before expensive setup
+    # Parse seed and exposure time
+    seed = cfg["seed"]
+    exptime = cfg.get("exptime", 190.22)
+
+    # Check which pointings need processing before expensive setup.
+    # Track original index so key derivation is stable regardless of skips.
     output_dir = Path(cfg["output_dir"])
-    pointings_todo = []
-    for pointing in cfg["pointings"]:
+    base_key = jax.random.key(seed)
+    all_pointing_keys = jax.random.split(base_key, len(cfg["pointings"]))
+
+    pointings_todo = []  # list of (pointing_dict, pointing_key)
+    for idx, pointing in enumerate(cfg["pointings"]):
         pointing_dir = output_dir / pointing["name"]
         if force or not pointing_dir.exists():
-            pointings_todo.append(pointing)
+            pointings_todo.append((pointing, all_pointing_keys[idx]))
 
     log(f"Config: {config_path}")
     log(f"SCAs: {sca_list}")
+    log(f"Seed: {seed}, Exptime: {exptime}s")
     log(f"Pointings: {len(cfg['pointings'])} total, "
         f"{len(pointings_todo)} to process")
 
@@ -1199,7 +1315,7 @@ def run_batch(config_path, verbose=True, force=False):
     n_skipped = len(cfg["pointings"]) - len(pointings_todo)
 
     t_all = time.time()
-    for i, pointing in enumerate(pointings_todo):
+    for i, (pointing, pointing_key) in enumerate(pointings_todo):
         name = pointing["name"]
         log(f"\n{'='*60}")
         log(f"Pointing {i+1}/{len(pointings_todo)}: {name}")
@@ -1211,6 +1327,9 @@ def run_batch(config_path, verbose=True, force=False):
             pointing["ra"], pointing["dec"], pointing["pa"],
             str(pointing_dir),
             cone_radius=cone_radius,
+            exptime=exptime,
+            pointing_key=pointing_key,
+            seed=seed,
             verbose=verbose,
         )
 
@@ -1274,6 +1393,10 @@ def main():
                         help="Wavelength spacing in Angstroms (default: 2.0)")
     parser.add_argument("--batch-size", type=int, default=1000,
                         help="Sources per JIT batch (default: 1000)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="RNG seed (required for quick mode)")
+    parser.add_argument("--exptime", type=float, default=190.22,
+                        help="Exposure time in seconds (default: 190.22)")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress progress output")
     parser.add_argument("--force", action="store_true",
@@ -1308,6 +1431,8 @@ def main():
         parser.error("--sca required in quick mode")
     if args.output is None:
         parser.error("--output required in quick mode")
+    if args.seed is None:
+        parser.error("--seed required in quick mode")
 
     build_star_grism_image(
         pointing_ra=args.pointing_ra,
@@ -1315,6 +1440,8 @@ def main():
         pointing_pa=args.pointing_pa,
         sca=args.sca,
         output_file=args.output,
+        seed=args.seed,
+        exptime=args.exptime,
         catalog_dir=args.catalog_dir,
         sensitivity_dir=args.sensitivity_dir,
         optical_model_path=args.optical_model,

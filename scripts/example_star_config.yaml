@@ -11,6 +11,12 @@
 # containing per-SCA FITS/PNG files and a focal-plane mosaic PNG.
 output_dir: /workspace/scratch/roman-star-fields
 
+# ── RNG seed (required) ──────────────────────────────────────────────────
+seed: 42
+
+# ── Exposure time ─────────────────────────────────────────────────────────
+exptime: 190.22
+
 # ── Detectors ───────────────────────────────────────────────────────────────
 # Which SCAs to simulate.  Use "all" for 1-18, or list specific numbers.
 scas: all
