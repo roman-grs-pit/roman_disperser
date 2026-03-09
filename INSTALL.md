@@ -36,14 +36,20 @@ pip install -e .
 
 ## GPU support
 
-JAX GPU support is installed separately, regardless of whether you use pixi or pip:
+With pixi, use the `cuda` environment: `pixi install -e cuda`. This handles everything automatically.
+
+For pip installs, JAX GPU support is installed separately. There are two options depending on your system:
 
 ```bash
-# After installing roman_disperser
+# Option 1: System with CUDA already installed (e.g., runpod, HPC clusters)
+# Uses your system's CUDA/cuDNN libraries
+pip install jax[cuda12-local]
+
+# Option 2: System without CUDA (installs CUDA libraries via pip wheels)
 pip install jax[cuda12]
 ```
 
-With pixi, use the `cuda` environment instead: `pixi install -e cuda`.
+**Which to use?** If `nvcc --version` or `nvidia-smi` works on your system, you already have CUDA — use `cuda12-local`. On cloud VMs with pre-installed NVIDIA drivers (runpod, Lambda, etc.), `cuda12-local` is the safer choice since the pip-bundled CUDA libraries can conflict with the system ones.
 
 Verify your GPU is visible:
 
