@@ -17,7 +17,7 @@ Pixi manages all dependencies (Python, JAX, STPSF, etc.) and sets environment va
 For production use or custom environments:
 
 ```bash
-git clone <repo-url>
+git clone git@github.com:roman-grs-pit/roman_disperser.git
 cd roman_disperser
 
 # Full install — all dependencies (pipeline, PSF generation, testing, notebooks)
