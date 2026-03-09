@@ -1,0 +1,90 @@
+# Installation
+
+## Quick Start (recommended)
+
+The recommended development workflow uses [Pixi](https://pixi.sh):
+
+```bash
+pixi install          # CPU environment
+pixi install -e cuda  # GPU environment (Linux + NVIDIA CUDA 12)
+pixi run pytest -q tests -m "not slow"
+```
+
+Pixi manages all dependencies (Python, JAX, STPSF, etc.) and sets environment variables automatically.
+
+## pip install (without pixi)
+
+For production use or custom environments:
+
+```bash
+git clone <repo-url>
+cd roman_disperser
+
+# Full install — all dependencies (pipeline, PSF generation, testing, notebooks)
+pip install -e ".[full]"
+
+# Minimal install — core only (optical model, dispersers, pre-cached PSF loading)
+pip install -e .
+```
+
+### Dependency tiers
+
+| Tier | Includes | Enables |
+|------|----------|---------|
+| Core (`pip install -e .`) | numpy, jax, scipy, pyyaml, matplotlib | Optical model, dispersers, pre-cached PSF loading |
+| Full (`pip install -e ".[full]"`) | Core + astropy, pandas, tqdm, synphot, stsynphot, stpsf, pytest, ipykernel, jupyterlab | Star grism pipeline, PSF generation, testing, notebooks |
+
+## GPU support
+
+JAX GPU support is installed separately, regardless of whether you use pixi or pip:
+
+```bash
+# After installing roman_disperser
+pip install jax[cuda12]
+```
+
+With pixi, use the `cuda` environment instead: `pixi install -e cuda`.
+
+Verify your GPU is visible:
+
+```bash
+python -c "import jax; print(f'Backend: {jax.default_backend()}'); print(jax.devices())"
+```
+
+## Environment variables
+
+| Variable | Purpose | Default (pixi) |
+|----------|---------|-----------------|
+| `STPSF_PATH` | Path to STPSF reference data (~1-2 GB) | `$HOME/data/Roman/stpsf-data` |
+| `PYSYN_CDBS` | Path to synphot calibration data | `$HOME/data/synphot/grp/redcat/trds` |
+
+Pixi sets these defaults automatically via `scripts/activate.sh`. To override, export the variable before running pixi:
+
+```bash
+export STPSF_PATH=/my/custom/path
+pixi run pytest -q tests
+```
+
+Non-pixi users must set these manually for pipeline features (PSF generation, spectrum normalization).
+
+- STPSF reference data: downloaded on first use by STPSF, or see [STPSF docs](https://stpsf.readthedocs.io)
+- Synphot calibration data: see [stsynphot docs](https://stsynphot.readthedocs.io)
+
+## Data files
+
+| Data | Location | Notes |
+|------|----------|-------|
+| Optical model, sensitivity curves, star catalog | `data/` (in repo) | Included |
+| PSF caches (~4.3 GB) | `data/psf_cache/` | Generate with `scripts/generate_psf_caches.py` |
+| STPSF reference data | `$STPSF_PATH` | External, ~1-2 GB |
+| Synphot calibration data | `$PYSYN_CDBS` | External |
+
+## Verifying your install
+
+```bash
+# Minimal install
+python -c "import roman_disperser; print('OK')"
+
+# Full install
+pytest -q tests -m "not slow"
+```

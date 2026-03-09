@@ -4,9 +4,32 @@ build-backend = "hatchling.build"
 
 [project]
 name = "roman_disperser"
-version = "0.1.0"
+version = "0.5.0"
 requires-python = ">=3.12"
-dependencies = ["numpy"]
+authors = [
+    { name = "Nikhil Padmanabhan", email = "nikhil.padmanabhan@gmail.com" },
+]
+description = "JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy"
+dependencies = [
+    "numpy>=2.0",
+    "jax>=0.7",
+    "scipy",
+    "pyyaml",
+    "matplotlib>=3.10",
+]
+
+[project.optional-dependencies]
+full = [
+    "astropy>=7.2.0,<8",
+    "pandas>=2.3.3,<3",
+    "tqdm",
+    "synphot>=1.6.1,<2",
+    "stsynphot>=1.5.0,<2",
+    "stpsf>=2.1.0,<3",
+    "pytest>=9.0.2,<10",
+    "ipykernel",
+    "jupyterlab",
+]
 
 [tool.pytest.ini_options]
 markers = [
@@ -14,7 +37,5 @@ markers = [
     "stpsf: marks tests that require STPSF library",
 ]
 filterwarnings = [
-    # Ignore STPSF internal deprecation warnings about _log.warn
     "ignore:The 'warn' method is deprecated:DeprecationWarning:stpsf",
 ]
-
