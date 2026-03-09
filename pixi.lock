@@ -4052,15 +4052,15 @@ packages:
 - pypi: ./
   name: roman-disperser
   version: 0.5.0
-  sha256: af04737647273c05ed9fffb5c037763a261fad33f38c2fb3f297bce786bd639e
+  sha256: 66aa058405bd231d8bfbd4e3023f85134861706f8905cd4e9b6ce15f49a2c8b2
   requires_dist:
   - numpy>=2.0
   - jax>=0.7
   - scipy
   - pyyaml
   - matplotlib>=3.10
+  - pandas>=2.3.3,<3
   - astropy>=7.2.0,<8 ; extra == 'full'
-  - pandas>=2.3.3,<3 ; extra == 'full'
   - tqdm ; extra == 'full'
   - synphot>=1.6.1,<2 ; extra == 'full'
   - stsynphot>=1.5.0,<2 ; extra == 'full'
