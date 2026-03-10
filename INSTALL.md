@@ -20,11 +20,11 @@ For production use or custom environments:
 git clone git@github.com:roman-grs-pit/roman_disperser.git
 cd roman_disperser
 
-# Full install — all dependencies (pipeline, PSF generation, testing, notebooks)
-pip install -e ".[full]"
-
 # Minimal install — core only (optical model, dispersers, pre-cached PSF loading)
 pip install -e .
+
+# Full install — all dependencies (pipeline, testing, notebooks)
+pip install -e ".[full]"
 ```
 
 ### Dependency tiers
@@ -32,7 +32,7 @@ pip install -e .
 | Tier | Includes | Enables |
 |------|----------|---------|
 | Core (`pip install -e .`) | numpy, jax, scipy, pyyaml, matplotlib, pandas | Optical model, dispersers, pre-cached PSF loading |
-| Full (`pip install -e ".[full]"`) | Core + astropy, tqdm, synphot, pytest | Star grism pipeline, testing |
+| Full (`pip install -e ".[full]"`) | Core + astropy, tqdm, synphot, pytest | Star grism pipeline, sensitivity calibration, testing |
 
 ## GPU support
 
@@ -63,7 +63,7 @@ python -c "import jax; print(f'Backend: {jax.default_backend()}'); print(jax.dev
 |------|----------|-------|
 | Optical model, sensitivity curves, star catalog | `data/` (in repo) | Included |
 | Synphot reference spectra (F158 bandpass, templates) | `data/synphot/` (in repo) | Included (~60 KB) |
-| PSF caches (~4.3 GB) | `data/psf_cache/` | `pixi run download-psf-caches` or `python scripts/download_psf_caches.py` |
+| PSF caches (~4.3 GB) | `data/psf_cache/` | `python scripts/download_psf_caches.py` |
 | STPSF reference data | `~/data/stpsf-data` | Only for PSF cache regeneration (~1-2 GB) |
 
 ### PSF caches
@@ -71,8 +71,8 @@ python -c "import jax; print(f'Backend: {jax.default_backend()}'); print(jax.dev
 Most users should download pre-generated PSF caches:
 
 ```bash
-pixi run download-psf-caches          # or: python scripts/download_psf_caches.py
-pixi run download-psf-caches --force  # re-download all files
+python scripts/download_psf_caches.py          # skip existing files
+python scripts/download_psf_caches.py --force  # re-download all
 ```
 
 This downloads 36 files (~4.3 GB) from a public GitHub release. No authentication required.
