@@ -168,7 +168,7 @@ One-time initialization shared across all pointings:
 
 1. Build wavelength grid from `dlam_angstroms` over 0.9–2.0 μm.
 2. Load star catalog and SED template files.
-3. Load F158 bandpass via stsynphot; precompute all unique templates normalized to 0 ABmag on the wavelength grid.
+3. Load F158 bandpass via `refdata.get_f158_band()`; precompute all unique templates normalized to 0 ABmag on the wavelength grid.
 4. Load optical model.
 5. For each SCA: create optical payloads (per order), load sensitivity curves, load PSF payloads from cache, build `star_disperser` instances, and wrap each in a `make_batched_fori` closure.
 6. JIT warmup: call each `fori_fn` once with dummy data to trigger compilation (~5–10s per SCA/order).
