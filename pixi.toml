@@ -8,15 +8,13 @@ version = "0.5.0"
 [tasks]
 check-jax = "python -c 'import jax; print(f\"Backend: {jax.default_backend()}\"); print(jax.devices())'"
 
-[activation]
-scripts = ["scripts/activate.sh"]
-
 [dependencies]
 python = ">=3.12, <3.13"
 
 [pypi-dependencies]
 roman_disperser = { path = ".", editable = true, extras = ["full"] }
 stsynphot = ">=1.5.0, <2"
+stpsf = ">=2.1.0, <3"
 ipykernel = "*"
 jupyterlab = "*"
 

@@ -4052,7 +4052,7 @@ packages:
 - pypi: ./
   name: roman-disperser
   version: 0.5.0
-  sha256: 1084e7114a9e2d6e9a2501d12ea3739ab651b2be491b94958d4b27e9ef52f64b
+  sha256: 493af564ee2d459ffcdc010701c529fbbbd5d39badd0ab49e411dba79ce5103c
   requires_dist:
   - numpy>=2.0
   - jax>=0.7
@@ -4063,7 +4063,6 @@ packages:
   - astropy>=7.2.0,<8 ; extra == 'full'
   - tqdm ; extra == 'full'
   - synphot>=1.6.1,<2 ; extra == 'full'
-  - stpsf>=2.1.0,<3 ; extra == 'full'
   - pytest>=9.0.2,<10 ; extra == 'full'
   requires_python: '>=3.12'
   editable: true

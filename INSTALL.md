@@ -10,7 +10,7 @@ pixi install -e cuda  # GPU environment (Linux + NVIDIA CUDA 12)
 pixi run pytest -q tests -m "not slow"
 ```
 
-Pixi manages all dependencies (Python, JAX, STPSF, etc.) and sets environment variables automatically.
+Pixi manages all dependencies (Python, JAX, STPSF, etc.) automatically.
 
 ## pip install (without pixi)
 
@@ -32,7 +32,7 @@ pip install -e .
 | Tier | Includes | Enables |
 |------|----------|---------|
 | Core (`pip install -e .`) | numpy, jax, scipy, pyyaml, matplotlib, pandas | Optical model, dispersers, pre-cached PSF loading |
-| Full (`pip install -e ".[full]"`) | Core + astropy, tqdm, synphot, stpsf, pytest | Star grism pipeline, PSF generation, testing |
+| Full (`pip install -e ".[full]"`) | Core + astropy, tqdm, synphot, pytest | Star grism pipeline, testing |
 
 ## GPU support
 
@@ -57,27 +57,6 @@ Verify your GPU is visible:
 python -c "import jax; print(f'Backend: {jax.default_backend()}'); print(jax.devices())"
 ```
 
-## Environment variables
-
-| Variable | Purpose | Default (pixi) |
-|----------|---------|-----------------|
-| `STPSF_PATH` | Path to STPSF reference data (~1-2 GB) | `$HOME/data/Roman/stpsf-data` |
-
-Pixi sets this default automatically via `scripts/activate.sh`. To override, export the variable before running pixi:
-
-```bash
-export STPSF_PATH=/my/custom/path
-pixi run pytest -q tests
-```
-
-Non-pixi users must set this manually for PSF generation.
-
-- STPSF reference data: downloaded on first use by STPSF, or see [STPSF docs](https://stpsf.readthedocs.io)
-
-The F158 bandpass and spectral templates used for spectrum normalization are
-bundled in `data/synphot/` (see `data/synphot/README.md`). `PYSYN_CDBS` and
-`stsynphot` are no longer required for normal use.
-
 ## Data files
 
 | Data | Location | Notes |
@@ -85,7 +64,12 @@ bundled in `data/synphot/` (see `data/synphot/README.md`). `PYSYN_CDBS` and
 | Optical model, sensitivity curves, star catalog | `data/` (in repo) | Included |
 | Synphot reference spectra (F158 bandpass, templates) | `data/synphot/` (in repo) | Included (~60 KB) |
 | PSF caches (~4.3 GB) | `data/psf_cache/` | Generate with `scripts/generate_psf_caches.py` |
-| STPSF reference data | `$STPSF_PATH` | External, ~1-2 GB |
+| STPSF reference data | `~/data/stpsf-data` | Only for PSF cache generation (~1-2 GB) |
+
+STPSF reference data is only needed to regenerate PSF caches (most users will use
+pre-generated caches). STPSF looks for data in `~/data/stpsf-data` by default, or
+set `STPSF_PATH` to override. See [STPSF docs](https://stpsf.readthedocs.io) for
+download instructions.
 
 ## Verifying your install
 
