@@ -16,6 +16,7 @@ python = ">=3.12, <3.13"
 
 [pypi-dependencies]
 roman_disperser = { path = ".", editable = true, extras = ["full"] }
+stsynphot = ">=1.5.0, <2"
 
 # --- ENVIRONMENTS ---
 [environments]

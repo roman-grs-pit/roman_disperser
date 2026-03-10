@@ -9,6 +9,7 @@ from . import demo_utils
 from . import psf_utils
 from . import psf_model
 from . import catalog
+from . import refdata
 
 __all__ = [
     "RomanOpticalModel",
@@ -20,4 +21,5 @@ __all__ = [
     "psf_utils",
     "psf_model",
     "catalog",
+    "refdata",
 ]

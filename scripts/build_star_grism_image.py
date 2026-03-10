@@ -39,12 +39,11 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import synphot as syn
-import stsynphot as stsyn
 from astropy.io import fits
 from matplotlib.colors import AsinhNorm
 from PIL import Image
 
-from roman_disperser import catalog, psf_model, star_disperser
+from roman_disperser import catalog, psf_model, refdata, star_disperser
 from roman_disperser.optical_model import RomanOpticalModel
 import roman_disperser.optical_model_jax as omj
 
@@ -679,7 +678,7 @@ def setup_pipeline(
     log(f"  {len(star_catalog['ra'])} sources in {timings['load_catalog']:.2f}s")
 
     # -- Load F158 bandpass --------------------------------------------------
-    f158_band = stsyn.band("roman, wfi, f158")
+    f158_band = refdata.get_f158_band()
 
     # -- Load all unique SED templates and precompute on wavelength grid -----
     log("Loading spectral templates...")
