@@ -96,3 +96,20 @@ python -c "import roman_disperser; print('OK')"
 # Full install
 pytest -q tests -m "not slow"
 ```
+
+## Getting started
+
+Once installed with PSF caches downloaded:
+
+- **Interactive demo** — `notebooks/galaxy/stars_and_galaxies_demo.ipynb` (CPU) or
+  `notebooks/galaxy/stars_and_galaxies_gpu_demo.ipynb` (GPU).
+  Disperses stars and galaxies onto a single detector with visualization.
+
+- **Batch pipeline** — generate a config, edit it, and run:
+  ```bash
+  python scripts/build_star_grism_image.py --generate-config my_config.yaml
+  # Edit my_config.yaml (pointings, SCAs, output directory, etc.)
+  python scripts/build_star_grism_image.py --config my_config.yaml
+  ```
+  See `scripts/example_star_config.yaml` for a fully commented example and
+  `docs/star_grism_pipeline.md` for details.
