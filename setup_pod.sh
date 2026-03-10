@@ -25,11 +25,9 @@ END_PIXI=$(date +%s)
 # 2. Hydrate data
 START_DATA=$(date +%s)
 export DATA_ROOT="/root/data"
-mkdir -p "$DATA_ROOT/Roman"
-
 # List of archives to look for in /workspace/scratch/
 # Format: "archive_name:target_directory"
-ARCHIVES=("synphot:$DATA_ROOT" "stpsf-data:$DATA_ROOT/Roman")
+ARCHIVES=("synphot:$DATA_ROOT" "stpsf-data:$DATA_ROOT")
 
 for entry in "${ARCHIVES[@]}"; do
     archive="${entry%%:*}"
