@@ -4052,7 +4052,7 @@ packages:
 - pypi: ./
   name: roman-disperser
   version: 0.5.0
-  sha256: 9b1d120aeaeb8f2a41dcd0e549a3cda327e7dcaa5bf801df6eeff6316f7935e8
+  sha256: 1084e7114a9e2d6e9a2501d12ea3739ab651b2be491b94958d4b27e9ef52f64b
   requires_dist:
   - numpy>=2.0
   - jax>=0.7
@@ -4065,8 +4065,6 @@ packages:
   - synphot>=1.6.1,<2 ; extra == 'full'
   - stpsf>=2.1.0,<3 ; extra == 'full'
   - pytest>=9.0.2,<10 ; extra == 'full'
-  - ipykernel ; extra == 'full'
-  - jupyterlab ; extra == 'full'
   requires_python: '>=3.12'
   editable: true
 - pypi: https://files.pythonhosted.org/packages/4d/a1/bca7fd3d452b272e13335db8d6b0b3ecde0f90ad6f16f3328c6fb150c889/rpds_py-0.30.0-cp312-cp312-macosx_11_0_arm64.whl

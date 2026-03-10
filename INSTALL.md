@@ -32,7 +32,7 @@ pip install -e .
 | Tier | Includes | Enables |
 |------|----------|---------|
 | Core (`pip install -e .`) | numpy, jax, scipy, pyyaml, matplotlib, pandas | Optical model, dispersers, pre-cached PSF loading |
-| Full (`pip install -e ".[full]"`) | Core + astropy, tqdm, synphot, stpsf, pytest, ipykernel, jupyterlab | Star grism pipeline, PSF generation, testing, notebooks |
+| Full (`pip install -e ".[full]"`) | Core + astropy, tqdm, synphot, stpsf, pytest | Star grism pipeline, PSF generation, testing |
 
 ## GPU support
 
