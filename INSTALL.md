@@ -62,7 +62,7 @@ python -c "import jax; print(f'Backend: {jax.default_backend()}'); print(jax.dev
 | Variable | Purpose | Default (pixi) |
 |----------|---------|-----------------|
 | `STPSF_PATH` | Path to STPSF reference data (~1-2 GB) | `$HOME/data/Roman/stpsf-data` |
-| `PYSYN_CDBS` | Path to synphot calibration data | `$HOME/data/synphot` |
+| `PYSYN_CDBS` | Path to synphot `trds` directory | `$HOME/data/synphot/grp/redcat/trds` |
 
 Pixi sets these defaults automatically via `scripts/activate.sh`. To override, export the variable before running pixi:
 
