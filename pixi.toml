@@ -7,6 +7,7 @@ version = "0.5.0"
 
 [tasks]
 check-jax = "python -c 'import jax; print(f\"Backend: {jax.default_backend()}\"); print(jax.devices())'"
+download-psf-caches = "python scripts/download_psf_caches.py"
 
 [dependencies]
 python = ">=3.12, <3.13"

@@ -63,13 +63,29 @@ python -c "import jax; print(f'Backend: {jax.default_backend()}'); print(jax.dev
 |------|----------|-------|
 | Optical model, sensitivity curves, star catalog | `data/` (in repo) | Included |
 | Synphot reference spectra (F158 bandpass, templates) | `data/synphot/` (in repo) | Included (~60 KB) |
-| PSF caches (~4.3 GB) | `data/psf_cache/` | Generate with `scripts/generate_psf_caches.py` |
-| STPSF reference data | `~/data/stpsf-data` | Only for PSF cache generation (~1-2 GB) |
+| PSF caches (~4.3 GB) | `data/psf_cache/` | `pixi run download-psf-caches` or `python scripts/download_psf_caches.py` |
+| STPSF reference data | `~/data/stpsf-data` | Only for PSF cache regeneration (~1-2 GB) |
 
-STPSF reference data is only needed to regenerate PSF caches (most users will use
-pre-generated caches). STPSF looks for data in `~/data/stpsf-data` by default, or
-set `STPSF_PATH` to override. See [STPSF docs](https://stpsf.readthedocs.io) for
-download instructions.
+### PSF caches
+
+Most users should download pre-generated PSF caches:
+
+```bash
+pixi run download-psf-caches          # or: python scripts/download_psf_caches.py
+pixi run download-psf-caches --force  # re-download all files
+```
+
+This downloads 36 files (~4.3 GB) from a public GitHub release. No authentication required.
+
+To regenerate caches from scratch (requires STPSF and its reference data):
+
+```bash
+pixi run python scripts/generate_psf_caches.py --workers 2  # ~2 hours
+```
+
+STPSF reference data is only needed for regeneration. STPSF looks for data in
+`~/data/stpsf-data` by default, or set `STPSF_PATH` to override. See
+[STPSF docs](https://stpsf.readthedocs.io) for download instructions.
 
 ## Verifying your install
 
