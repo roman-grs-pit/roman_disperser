@@ -23,9 +23,10 @@ pixi install -e cuda      # GPU environment (Linux + NVIDIA CUDA 12)
 
 ### pip path
 
-We recommend installing into a virtual environment (`python -m venv` or conda).
+We recommend installing into a virtual environment:
 
 ```bash
+conda create -n roman python=3.12 && conda activate roman  # or use python -m venv
 pip install -e ".[full]"  # all dependencies (pipeline, notebooks, testing)
 ```
 
