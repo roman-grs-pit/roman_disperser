@@ -42,7 +42,10 @@ python scripts/download_psf_caches.py
 **4. Verify**
 
 ```bash
-python -c "import roman_disperser; print('OK')"
+# Pixi
+pixi run pytest -q tests -m "not slow"
+
+# pip
 pytest -q tests -m "not slow"
 ```
 
