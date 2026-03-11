@@ -8,8 +8,6 @@ stsynphot or a PYSYN_CDBS installation.  All data files live in
 
 from pathlib import Path
 
-import synphot as syn
-
 # Resolve data directory relative to this file:
 # src/roman_disperser/refdata.py -> ../../data/synphot/
 _DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "synphot"
@@ -31,6 +29,8 @@ def get_f158_band():
     synphot.SpectralElement
         The F158 throughput curve.
     """
+    import synphot as syn
+
     path = _DATA_DIR / "roman_wfi_f158.fits"
     return syn.SpectralElement.from_file(str(path))
 
@@ -62,5 +62,7 @@ def get_template(name):
         raise ValueError(
             f"Unknown template {name!r}. Available: {available}"
         )
+    import synphot as syn
+
     path = _DATA_DIR / _TEMPLATES[name]
     return syn.SourceSpectrum.from_file(str(path))
