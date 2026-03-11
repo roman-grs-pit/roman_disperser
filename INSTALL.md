@@ -1,55 +1,68 @@
 # Installation
 
-## Quick Start (recommended)
+## Quick Start
 
-The recommended development workflow uses [Pixi](https://pixi.sh):
-
-```bash
-pixi install          # CPU environment
-pixi install -e cuda  # GPU environment (Linux + NVIDIA CUDA 12)
-pixi run pytest -q tests -m "not slow"
-```
-
-Pixi manages all dependencies (Python, JAX, STPSF, etc.) automatically.
-
-## pip install (without pixi)
-
-For production use or custom environments:
+**1. Clone the repo**
 
 ```bash
 git clone git@github.com:roman-grs-pit/roman_disperser.git
 cd roman_disperser
-
-# Minimal install — core only (optical model, dispersers, pre-cached PSF loading)
-pip install -e .
-
-# Full install — all dependencies (pipeline, testing, notebooks)
-pip install -e ".[full]"
 ```
 
-### Dependency tiers
+**2. Install dependencies** — pick one path:
 
-| Tier | Includes | Enables |
-|------|----------|---------|
-| Core (`pip install -e .`) | numpy, jax, scipy, pyyaml, matplotlib, pandas | Optical model, dispersers, pre-cached PSF loading |
-| Full (`pip install -e ".[full]"`) | Core + astropy, tqdm, synphot, pytest | Star grism pipeline, sensitivity calibration, testing |
+- **[Pixi](https://pixi.sh)** — self-contained environment, recommended for development. Manages Python, JAX, STPSF, and all dependencies automatically.
+- **pip** — use when adding to an existing Python environment (cloud VMs, HPC, existing venvs).
+
+### Pixi path
+
+```bash
+pixi install              # CPU environment
+pixi install -e cuda      # GPU environment (Linux + NVIDIA CUDA 12)
+```
+
+### pip path
+
+```bash
+pip install -e ".[full]"  # all dependencies (pipeline, notebooks, testing)
+```
+
+For GPU support with pip, see [GPU support](#gpu-support) below.
+
+A minimal install (`pip install -e .`) is also available — it includes only the
+core library (optical model, dispersers, pre-cached PSF loading) without astropy,
+synphot, or pytest.
+
+**3. Download PSF caches** (~4.3 GB)
+
+```bash
+python scripts/download_psf_caches.py
+```
+
+**4. Verify**
+
+```bash
+python -c "import roman_disperser; print('OK')"
+pytest -q tests -m "not slow"
+```
+
+**5. Run a demo** — see [Getting started](#getting-started) below.
 
 ## GPU support
 
 With pixi, use the `cuda` environment: `pixi install -e cuda`. This handles everything automatically.
 
-For pip installs, JAX GPU support is installed separately. There are two options depending on your system:
+For pip installs, JAX GPU support is installed separately:
 
 ```bash
-# Option 1: System with CUDA already installed (e.g., runpod, HPC clusters)
-# Uses your system's CUDA/cuDNN libraries
+# System with CUDA already installed (runpod, HPC clusters, Lambda, etc.)
 pip install jax[cuda12-local]
 
-# Option 2: System without CUDA (installs CUDA libraries via pip wheels)
+# System without CUDA (installs CUDA libraries via pip wheels)
 pip install jax[cuda12]
 ```
 
-**Which to use?** If `nvcc --version` or `nvidia-smi` works on your system, you already have CUDA — use `cuda12-local`. On cloud VMs with pre-installed NVIDIA drivers (runpod, Lambda, etc.), `cuda12-local` is the safer choice since the pip-bundled CUDA libraries can conflict with the system ones.
+**Which to use?** If `nvcc --version` or `nvidia-smi` works, you already have CUDA — use `cuda12-local`. On cloud VMs with pre-installed NVIDIA drivers, `cuda12-local` is the safer choice since pip-bundled CUDA libraries can conflict with system ones.
 
 Verify your GPU is visible:
 
@@ -87,16 +100,6 @@ STPSF reference data is only needed for regeneration. STPSF looks for data in
 `~/data/stpsf-data` by default, or set `STPSF_PATH` to override. See
 [STPSF docs](https://stpsf.readthedocs.io) for download instructions.
 
-## Verifying your install
-
-```bash
-# Minimal install
-python -c "import roman_disperser; print('OK')"
-
-# Full install
-pytest -q tests -m "not slow"
-```
-
 ## Getting started
 
 Once installed with PSF caches downloaded:
@@ -113,3 +116,7 @@ Once installed with PSF caches downloaded:
   ```
   See `scripts/example_star_config.yaml` for a fully commented example and
   `docs/star_grism_pipeline.md` for details.
+
+  **Note:** The batch pipeline processes all 18 SCAs per pointing and benefits
+  significantly from a GPU. On CPU, expect ~30 min per SCA; on GPU (e.g., RTX 4090),
+  ~1 min per SCA.
