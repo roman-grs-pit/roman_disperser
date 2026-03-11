@@ -19,6 +19,7 @@ cd roman_disperser
 ```bash
 pixi install              # CPU environment
 pixi install -e cuda      # GPU environment (Linux + NVIDIA CUDA 12)
+pixi shell                # activate the environment for subsequent steps
 ```
 
 ### pip path
@@ -45,10 +46,6 @@ python scripts/download_psf_caches.py
 **4. Verify**
 
 ```bash
-# Pixi
-pixi run pytest -q tests -m "not slow"
-
-# pip
 pytest -q tests -m "not slow"
 ```
 
