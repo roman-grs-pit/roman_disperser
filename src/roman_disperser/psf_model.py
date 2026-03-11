@@ -146,7 +146,11 @@ def save_psf_payload(payload, filepath, verbose=True):
     load_psf_payload : Load cached payload
     get_or_make_psf_payload : Convenience function with auto-caching
     """
-    import stpsf
+    try:
+        import stpsf
+        stpsf_version = stpsf.__version__
+    except ModuleNotFoundError:
+        stpsf_version = "unknown"
 
     filepath = Path(filepath)
 
@@ -169,7 +173,7 @@ def save_psf_payload(payload, filepath, verbose=True):
         # Metadata
         'detector': np.array(payload['detector'], dtype='S'),  # byte string
         'order': np.array(payload['order'], dtype='S'),
-        'stpsf_version': np.array(stpsf.__version__, dtype='S'),
+        'stpsf_version': np.array(stpsf_version, dtype='S'),
         'save_timestamp': np.array(time.time()),
     }
 
@@ -221,8 +225,6 @@ def load_psf_payload(filepath, verbose=True):
     save_psf_payload : Save payload to cache
     get_or_make_psf_payload : Convenience function with auto-caching
     """
-    import stpsf
-
     filepath = Path(filepath)
 
     if not filepath.exists():
@@ -246,17 +248,21 @@ def load_psf_payload(filepath, verbose=True):
                 return val.decode('utf-8')
             return str(val)
 
-        # Check STPSF version
+        # Check STPSF version (if stpsf is available)
         if 'stpsf_version' in data:
             cached_version = decode_bytes(data['stpsf_version'])
-            current_version = stpsf.__version__
-            if cached_version != current_version:
-                warnings.warn(
-                    f"PSF cache was generated with STPSF {cached_version}, "
-                    f"but current version is {current_version}. "
-                    f"PSF shapes may differ slightly.",
-                    UserWarning
-                )
+            try:
+                import stpsf
+                current_version = stpsf.__version__
+                if cached_version != current_version:
+                    warnings.warn(
+                        f"PSF cache was generated with STPSF {cached_version}, "
+                        f"but current version is {current_version}. "
+                        f"PSF shapes may differ slightly.",
+                        UserWarning
+                    )
+            except ModuleNotFoundError:
+                pass  # stpsf not installed; skip version check
 
         # Reconstruct payload with JAX arrays
         payload = {
@@ -931,6 +937,11 @@ def make_psf_payload(
         raise ValueError("Spatial x grid must be strictly increasing")
     if not np.all(np.diff(y_grid) > 0):
         raise ValueError("Spatial y grid must be strictly increasing")
+
+    # Validate order before calling STPSF
+    valid_orders = {'0', '1'}
+    if order not in valid_orders:
+        raise ValueError(f"Invalid order '{order}'. Must be '0' or '1'.")
 
     # Compute PSF grid with timing
     if verbose:
