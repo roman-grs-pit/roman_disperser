@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-03-11
+
+### Added
+- pip installability with dependency tiers: core (`pip install -e .`) and full (`pip install -e ".[full]"`)
+- Bundled synphot reference data (`data/synphot/`): F158 bandpass, G0V stellar template, KC96 galaxy templates — eliminates PYSYN_CDBS dependency
+- `refdata` module for loading bundled spectral data without stsynphot
+- PSF cache download script (`scripts/download_psf_caches.py`): downloads pre-generated caches from GitHub Releases
+- INSTALL.md with branching quickstart (pixi and pip paths), GPU setup, data file guide
+
+### Changed
+- STPSF moved from pip dependency to pixi-only (only needed for PSF cache regeneration)
+- stsynphot replaced by bundled synphot reference data throughout notebooks and pipeline
+- synphot import made lazy in `refdata.py` (not needed for minimal install)
+- stpsf import made optional in `psf_model.py` save/load functions
+- Demo notebooks find project root by walking up to `pyproject.toml` (works outside pixi)
+- README.md overhauled: points to INSTALL.md, fixed API examples, updated project structure
+- ipykernel and jupyterlab moved from pip to pixi-only dependencies
+
+### Fixed
+- `import roman_disperser` now works with minimal pip install (no synphot/stpsf required)
+- PSF model tests pass without stpsf installed
+
 ## [0.5.0] - 2026-03-07
 
 ### Added
