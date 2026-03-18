@@ -176,8 +176,11 @@ The `catalog` module provides utilities for assigning sources to detectors:
 ## Coding Guidelines
 
 - Significant changes should ALWAYS be done on a new branch. Create a descriptive branch name for the feature or bug fix.
-- When merging a branch back in to `main`, finish by tagging the release with a version number. Use semantic versioning and ask if you have a question. 
-    Also, make sure to update the `CHANGELOG.md` with a summary of the changes.
+- When merging a branch back in to `main`, finish by tagging the release with a version number. Use semantic versioning and ask if you have a question. The release process is:
+    1. Bump the version in `pyproject.toml`
+    2. Run `pixi install` and commit `pixi.lock` if it changed (version bumps can update the lockfile)
+    3. Update `CHANGELOG.md` with a summary of the changes
+    4. Tag the release
 - This is a research code, so value simplicity and clarity over deep class hierarchies and generality. Prefer functional routines over complex object-oriented designs.
 
 ## Notes
