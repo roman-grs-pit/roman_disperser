@@ -268,8 +268,9 @@ store.create_array("wavelengths", data=wavelengths, compressors=compressor,
                                "grid_definition": "np.linspace(9000, 20000, 5501)"})
 
 # Star templates (tiny, no sharding needed)
+N_wl = len(wavelengths)
 store.create_array("star_seds", data=star_template_array,
-                   chunks=(24, 5501), compressors=compressor,
+                   chunks=star_template_array.shape, compressors=compressor,
                    attributes={"units": "FLAM (erg/s/cm^2/Å, normalized to 0 mag F158)",
                                "axes": ["template_index", "wavelength"]})
 
@@ -283,8 +284,8 @@ for sim_num in range(1, n_partitions + 1):
     store.create_array(
         f"galaxy_seds/sim_{sim_num:03d}",
         data=galaxy_data,
-        chunks=(10, N_wl),               # inner chunk: 10 sources
-        shards=(shard_rows, N_wl),        # outer shard: whole array
+        chunks=(10, N_wl),                # inner chunk: 10 sources
+        shards=(shard_rows, N_wl),         # outer shard: whole array
         compressors=compressor,
         attributes={"units": "FLAM (erg/s/cm^2/Å, apparent)",
                     "axes": ["sed_index", "wavelength"],
