@@ -17,7 +17,6 @@ dependencies = [
     "pyyaml",
     "matplotlib>=3.10",
     "pandas>=2.3.3,<3",
-    "h5py",
     "pyarrow",
     "zarr",
 ]
