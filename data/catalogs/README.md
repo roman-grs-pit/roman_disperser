@@ -13,18 +13,19 @@ data/catalogs/
   README.md              # This file
   metadata.parquet       # Source metadata (stars + galaxies)
   seds.zarr/             # Zarr v3 store containing:
-    wavelengths           #   Common wavelength grid (5501,) float64
-    star_seds/            #   Stellar SED templates (N_templates × 5501)
+    wavelengths           #   Common wavelength grid (N_wl,) float64
+    star_seds/            #   Stellar SED templates (N_templates × N_wl)
     galaxy_seds/          #   Group with per-partition arrays:
-      sim_001/            #     Galaxy SEDs, partition 1 (N₁ × 5501)
-      sim_002/            #     Galaxy SEDs, partition 2 (N₂ × 5501)
+      sim_001/            #     Galaxy SEDs, partition 1 (N₁ × N_wl)
+      sim_002/            #     Galaxy SEDs, partition 2 (N₂ × N_wl)
       ...                 #     (one sharded array per partition)
 ```
 
 ## Wavelength Grid
 
 All SED arrays share a common wavelength grid stored in the Zarr store at
-`seds.zarr/wavelengths`. The grid covers the Roman grism range:
+`seds.zarr/wavelengths` (units: Angstroms). The grid must cover at least the
+Roman grism wavelength range (0.9–2.0 μm). The reference catalog uses:
 
 ```python
 import numpy as np
@@ -94,7 +95,7 @@ import numpy as np
 # Load metadata and SED store
 meta = pq.read_table("data/catalogs/metadata.parquet").to_pandas()
 store = zarr.open("data/catalogs/seds.zarr", mode="r")
-wavelengths = np.array(store["wavelengths"])  # (5501,) Angstroms
+wavelengths = np.array(store["wavelengths"])  # Angstroms
 
 # Look up one source
 row = meta.iloc[42]
@@ -109,7 +110,7 @@ else:
 ## Star SEDs (Zarr)
 
 **Path:** `seds.zarr/star_seds`
-**Shape:** `(N_templates, 5501)` — typically 24 unique stellar templates.
+**Shape:** `(N_templates, N_wavelengths)`
 
 Templates are normalized to 0 AB magnitude in the F158 band. The per-source
 `flux_scale` in the metadata applies the actual magnitude:
@@ -120,7 +121,7 @@ Multiple stars may share the same `sed_index` (template).
 ## Galaxy SEDs (Zarr)
 
 **Path:** `seds.zarr/galaxy_seds/sim_{NNN}`
-**Shape per partition:** `(N_sources, 5501)` — one row per galaxy.
+**Shape per partition:** `(N_sources, N_wavelengths)` — one row per galaxy.
 
 Galaxy SEDs are stored in per-partition sharded arrays. Each galaxy's
 `sed_index` is its row index within its partition's array.
@@ -145,8 +146,8 @@ All Zarr arrays use:
 Galaxy SED arrays use Zarr v3 sharding to enable efficient random access to
 non-consecutive sources (e.g., all galaxies on a given SCA):
 
-- **Shard (outer chunk):** `(N_sources, 5501)` — one shard file per partition
-- **Inner chunk:** `(10, 5501)` — random access unit (10 sources × all wavelengths)
+- **Shard (outer chunk):** `(N_sources, N_wl)` — one shard file per partition
+- **Inner chunk:** `(10, N_wl)` — random access unit (10 sources × all wavelengths)
 
 Each partition is stored as a single file on disk with an internal index.
 Reading one source requires decompressing only 10 rows (~220 KB compressed),
@@ -223,7 +224,7 @@ sources = df[mask]
 
 # --- Read SEDs ---
 store = zarr.open("data/catalogs/seds.zarr", mode="r")
-wavelengths = np.array(store["wavelengths"])  # (5501,) Angstroms
+wavelengths = np.array(store["wavelengths"])  # Angstroms
 
 # Load SEDs for selected sources (random access via sharding)
 for _, row in sources.iterrows():
@@ -275,15 +276,15 @@ store.create_array("star_seds", data=star_template_array,
 # Galaxy SEDs — one sharded array per partition
 # chunks = inner chunk (random access unit), shards = outer shard (file on disk)
 for sim_num in range(1, n_partitions + 1):
-    galaxy_data = ...  # (N_sources, 5501) float32, FLAM
+    galaxy_data = ...  # (N_sources, N_wl) float32, FLAM
     n_src = galaxy_data.shape[0]
     # Round shard up to multiple of inner chunk size
     shard_rows = ((n_src + 9) // 10) * 10
     store.create_array(
         f"galaxy_seds/sim_{sim_num:03d}",
         data=galaxy_data,
-        chunks=(10, 5501),               # inner chunk: 10 sources
-        shards=(shard_rows, 5501),        # outer shard: whole array
+        chunks=(10, N_wl),               # inner chunk: 10 sources
+        shards=(shard_rows, N_wl),        # outer shard: whole array
         compressors=compressor,
         attributes={"units": "FLAM (erg/s/cm^2/Å, apparent)",
                     "axes": ["sed_index", "wavelength"],
