@@ -195,10 +195,22 @@ The Zarr store includes self-describing metadata on groups and arrays:
 | `seds.zarr/galaxy_seds/sim_001` | 29,956 | 659 MB | ~413 MB |
 | **Total** | | | **~416 MB** |
 
-For the full 100-simulation catalog: ~41 GB compressed for galaxy SEDs,
-metadata and star templates remain negligible. A magnitude cut (e.g., F158 ≤ 25
-or 26) substantially reduces this by excluding faint sources below detection
-threshold.
+The catalog applies a magnitude cut of **F158 ≤ 26 AB** to exclude sources below
+the grism detection threshold. At mag 26, a flat AB source yields ~0.3
+counts/s/pixel in 1st order — corresponding to SNR/resolution-element ~0.3 in
+the deep survey (32 exposures) and ~0.1 in the wide survey (8 exposures). This
+is sufficient for contamination modeling while excluding sources that contribute
+negligibly to the detector signal. See `scripts/magnitude_cutoff.py` for the
+SNR analysis.
+
+With this cut, the full 100-simulation catalog contains ~1.2M galaxies:
+
+| File | Sources | Compressed |
+|------|---------|------------|
+| Galaxy SEDs (100 sims) | ~1,180,000 | ~16 GB |
+| Star SEDs | 24 templates | ~200 KB |
+| Metadata | ~1,270,000 | ~30 MB |
+| **Total** | | **~16 GB** |
 
 ## Reading and Writing
 
