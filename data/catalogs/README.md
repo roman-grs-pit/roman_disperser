@@ -64,11 +64,11 @@ Column metadata (units, descriptions) is embedded in the Parquet schema.
 | `half_light_radius` | float32 | arcsec | Half-light radius. 0 for point sources |
 | `pa` | float32 | deg | Position angle (E of N). 0 for point sources |
 | `ba` | float32 | — | Minor-to-major axis ratio (0–1). 1 for point sources |
-| `F158` | float32 | maggies | F158 flux. AB mag = −2.5 × log10(F158) |
+| `F158` | float32 | AB mag | F158 apparent magnitude |
 | `z_obs` | float32 | — | Observed redshift (includes peculiar velocity). 0 for stars |
 | `z_cosmo` | float32 | — | Cosmological redshift. 0 for stars |
 | `sed_index` | int32 | — | Row index into the SED Zarr array (per `type` and `sim`) |
-| `flux_scale` | float32 | — | SED multiplier. Galaxy SEDs: 1.0. Star SEDs: `10^(−0.4 × mag)` |
+| `flux_scale` | float32 | — | SED multiplier. Galaxy SEDs: 1.0. Star SEDs: `10^(−0.4 × F158)` |
 | `sim` | int16 | — | Partition number for galaxy SED lookup. 0 for stars |
 
 For galaxies, `sed_index` is the row index within the partition array
@@ -182,16 +182,6 @@ The Zarr store includes self-describing metadata on groups and arrays:
 - **`galaxy_seds` group:** number of partitions
 - **`galaxy_seds/sim_NNN`:** units (FLAM, apparent), frame (observed),
   axis labels
-
-## Magnitude Cut
-
-The catalog applies a magnitude cut of **F158 ≤ 26 AB** to exclude sources below
-the grism detection threshold. At mag 26, a flat AB source yields ~2.5 counts/s
-integrated over the full 1st-order trace, corresponding to SNR/resolution-element
-~0.3 in the deep survey (32 exposures) and ~0.1 in the wide survey (8 exposures).
-This is sufficient for contamination modeling while excluding sources that
-contribute negligibly to the detector signal. See `scripts/magnitude_cutoff.py`
-for the full SNR analysis.
 
 ## Reading and Writing
 
@@ -322,6 +312,13 @@ merger trees. The catalog contains 1/100th of the full simulation (one
 sub-sample); each sub-sample covers the entire 4 deg² field, so `sim` values
 1–100 correspond to independent random sub-samples of the same volume, not
 spatial tiles.
+
+- **Magnitude cut:** F158 ≤ 26 AB. At mag 26, a flat AB source yields
+  ~2.5 counts/s integrated over the full 1st-order grism trace, corresponding
+  to SNR/resolution-element ~0.3 in the deep survey (32 exposures) and ~0.1
+  in the wide survey (8 exposures). This is sufficient for contamination
+  modeling while excluding sources that contribute negligibly to the detector
+  signal. See `scripts/magnitude_cutoff.py` for the full SNR analysis.
 
 - **Galaxy SEDs and metadata:** Galacticus 4 deg² mock.
   Cosmology: Planck 2016 (H0=67.74, Om0=0.3089).
