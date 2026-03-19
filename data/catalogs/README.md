@@ -24,12 +24,14 @@ data/catalogs/
 ## Wavelength Grid
 
 All SED arrays share a common wavelength grid stored in the Zarr store at
-`seds.zarr/wavelengths` (units: Angstroms). The grid must cover at least the
-Roman grism wavelength range (0.9–2.0 μm). The reference catalog uses:
+`seds.zarr/wavelengths` (units: Angstroms). The grid should use 2 Å spacing
+and must cover at least the Roman grism wavelength range (0.9–2.0 μm). A
+wider range is acceptable; the disperser will use only the grism range. The
+reference catalog uses:
 
 ```python
 import numpy as np
-wavelengths = np.linspace(9000, 20000, 5501)  # Angstroms, 2 Å spacing
+wavelengths = np.linspace(9000, 21000, 6001)  # Angstroms, 2 Å spacing
 ```
 
 ## SED Units
@@ -56,6 +58,10 @@ width in Angstroms.
 A single Parquet file with one row per source (stars and galaxies together).
 Column metadata (units, descriptions) is embedded in the Parquet schema.
 
+### Required columns (used by the grism disperser)
+
+These columns are consumed directly by the grism simulation pipeline:
+
 | Column | Type | Units | Description |
 |--------|------|-------|-------------|
 | `ra` | float64 | deg | Right ascension (ICRS) |
@@ -65,12 +71,23 @@ Column metadata (units, descriptions) is embedded in the Parquet schema.
 | `half_light_radius` | float32 | arcsec | Half-light radius. 0 for point sources |
 | `pa` | float32 | deg | Position angle (E of N). 0 for point sources |
 | `ba` | float32 | — | Minor-to-major axis ratio (0–1). 1 for point sources |
-| `F158` | float32 | AB mag | F158 apparent magnitude |
-| `z_obs` | float32 | — | Observed redshift (includes peculiar velocity). 0 for stars |
-| `z_cosmo` | float32 | — | Cosmological redshift. 0 for stars |
 | `sed_index` | int32 | — | Row index into the SED Zarr array (per `type` and `sim`) |
 | `flux_scale` | float32 | — | SED multiplier. Galaxy SEDs: 1.0. Star SEDs: `10^(−0.4 × F158)` |
 | `sim` | int16 | — | Partition number for galaxy SED lookup. 0 for stars |
+
+### Ancillary columns (not used by the disperser)
+
+Additional columns for analysis and provenance. Users may add other columns;
+they will be ignored by the simulation pipeline.
+
+| Column | Type | Units | Description |
+|--------|------|-------|-------------|
+| `F158` | float32 | AB mag | F158 apparent magnitude |
+| `z_obs` | float32 | — | Observed redshift (includes peculiar velocity). 0 for stars |
+| `z_cosmo` | float32 | — | Cosmological redshift. 0 for stars |
+| `src_index` | int32 | — | Row index in original source file (for provenance) |
+
+### SED lookup
 
 For galaxies, `sed_index` is the row index within the partition array
 `seds.zarr/galaxy_seds/sim_{sim:03d}`. For stars, `sed_index` is the template
@@ -335,3 +352,9 @@ spatial tiles.
   stellar atlas SED templates from `data/stars/SEDtemplates/`.
 
 - **Extraction script:** `scripts/build_source_catalog.py`
+
+- **Verification script:** `scripts/verify_source_catalog.py` — validates the
+  built catalog against the original source files. Checks metadata consistency,
+  F158 magnitude round-trip, SED normalization against per-source synphot, and
+  provenance (RA, Dec, magnitudes traced back to original files). Requires
+  access to the raw Galacticus data.

@@ -35,6 +35,21 @@ def get_f158_band():
     return syn.SpectralElement.from_file(str(path))
 
 
+def get_f184_band():
+    """Load the Roman WFI F184 bandpass.
+
+    Returns
+    -------
+    synphot.SpectralElement
+        The F184 throughput curve.
+    """
+    import synphot as syn
+
+    path = _DATA_DIR / "roman_wfi_f184.fits"
+    return syn.SpectralElement.from_file(str(path))
+
+
+
 def get_template(name):
     """Load a bundled spectral template.
 
