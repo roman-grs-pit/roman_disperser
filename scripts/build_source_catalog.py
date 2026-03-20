@@ -408,18 +408,21 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
 # Zarr writing
 # ---------------------------------------------------------------------------
 
-def write_zarr_store(output_dir, wavelengths, star_seds, galaxy_partitions):
-    """Write the complete seds.zarr store.
+def init_zarr_store(output_dir, wavelengths, star_seds):
+    """Initialize seds.zarr with wavelength grid and star templates.
 
     Parameters
     ----------
     output_dir : Path
     wavelengths : ndarray [N_wl]
     star_seds : ndarray [N_templates, N_wl]
-    galaxy_partitions : dict mapping sim_num -> ndarray [N_sources, N_wl]
+
+    Returns
+    -------
+    store : zarr.Group (open for writing)
     """
     zarr_path = output_dir / "seds.zarr"
-    print(f"\nWriting Zarr store to {zarr_path}")
+    print(f"\nInitializing Zarr store at {zarr_path}")
 
     store = zarr.open(str(zarr_path), mode="w")
 
@@ -447,40 +450,55 @@ def write_zarr_store(output_dir, wavelengths, star_seds, galaxy_partitions):
     )
     print(f"  star_seds: {star_seds.shape}")
 
-    # Galaxy SED partitions
-    n_partitions = 0
-    for sim_num in sorted(galaxy_partitions.keys()):
-        seds = galaxy_partitions[sim_num]
-        n_src, n_wl = seds.shape
+    return store
 
-        # Shard size must be multiple of inner chunk
-        shard_rows = ((n_src + INNER_CHUNK_SOURCES - 1) // INNER_CHUNK_SOURCES) * INNER_CHUNK_SOURCES
 
-        # Zero-pad if needed
-        if shard_rows > n_src:
-            pad = np.zeros((shard_rows - n_src, n_wl), dtype=np.float32)
-            seds_padded = np.concatenate([seds, pad], axis=0)
-        else:
-            seds_padded = seds
+def write_galaxy_partition(store, sim_num, galaxy_seds):
+    """Write a single galaxy SED partition to an open Zarr store.
 
-        store.create_array(
-            f"galaxy_seds/sim_{sim_num:03d}",
-            data=seds_padded,
-            chunks=(INNER_CHUNK_SOURCES, n_wl),
-            shards=(shard_rows, n_wl),
-            compressors=COMPRESSOR,
-            attributes={
-                "units": "FLAM (erg/s/cm^2/Å, apparent)",
-                "axes": ["sed_index", "wavelength"],
-                "frame": "observed",
-                "n_sources": n_src,  # actual count (before padding)
-            },
-        )
-        n_partitions += 1
-        size_mb = seds_padded.nbytes / 1e6
-        print(f"  galaxy_seds/sim_{sim_num:03d}: {seds.shape} ({size_mb:.0f} MB uncompressed)")
+    Parameters
+    ----------
+    store : zarr.Group
+    sim_num : int
+    galaxy_seds : ndarray [N_sources, N_wl]
+    """
+    n_src, n_wl = galaxy_seds.shape
 
-    # Group-level metadata
+    # Shard size must be multiple of inner chunk
+    shard_rows = ((n_src + INNER_CHUNK_SOURCES - 1) // INNER_CHUNK_SOURCES) * INNER_CHUNK_SOURCES
+
+    # Zero-pad if needed
+    if shard_rows > n_src:
+        pad = np.zeros((shard_rows - n_src, n_wl), dtype=np.float32)
+        seds_padded = np.concatenate([galaxy_seds, pad], axis=0)
+    else:
+        seds_padded = galaxy_seds
+
+    store.create_array(
+        f"galaxy_seds/sim_{sim_num:03d}",
+        data=seds_padded,
+        chunks=(INNER_CHUNK_SOURCES, n_wl),
+        shards=(shard_rows, n_wl),
+        compressors=COMPRESSOR,
+        attributes={
+            "units": "FLAM (erg/s/cm^2/Å, apparent)",
+            "axes": ["sed_index", "wavelength"],
+            "frame": "observed",
+            "n_sources": n_src,  # actual count (before padding)
+        },
+    )
+    size_mb = seds_padded.nbytes / 1e6
+    print(f"  galaxy_seds/sim_{sim_num:03d}: {galaxy_seds.shape} ({size_mb:.0f} MB uncompressed)")
+
+
+def finalize_zarr_store(store, n_partitions):
+    """Write group-level metadata to finalize the Zarr store.
+
+    Parameters
+    ----------
+    store : zarr.Group
+    n_partitions : int
+    """
     store["galaxy_seds"].attrs.update({"n_partitions": n_partitions})
     store.attrs.update({
         "format_version": "1.0",
@@ -568,7 +586,11 @@ def main():
     fnu_to_flam, bandpass_weights = compute_f158_normalization(wavelengths)
     bandpass_norm = bandpass_weights.sum()
 
-    galaxy_partitions = {}
+    # Initialize Zarr store (wavelengths + stars)
+    zarr_store = init_zarr_store(output_dir, wavelengths, star_seds)
+
+    # Process and write galaxy partitions incrementally
+    n_partitions = 0
     for sim_num in sim_numbers:
         hdf5_path = galacticus_dir / f"galacticus_FOV_EVERY100_sub_{sim_num}.hdf5"
         if not hdf5_path.exists():
@@ -584,7 +606,8 @@ def main():
 
         if galaxy_table is not None:
             metadata_tables.append(galaxy_table)
-            galaxy_partitions[sim_num] = galaxy_seds
+            write_galaxy_partition(zarr_store, sim_num, galaxy_seds)
+            n_partitions += 1
             print(f"           Processed in {dt:.1f}s")
 
     # --- Write outputs ---
@@ -592,14 +615,14 @@ def main():
         print("\nNo data to write!")
         sys.exit(1)
 
+    # Finalize Zarr store
+    finalize_zarr_store(zarr_store, n_partitions)
+
     # Combine and write metadata
     combined = pa.concat_tables(metadata_tables)
     parquet_path = output_dir / "metadata.parquet"
     pq.write_table(combined, parquet_path)
     print(f"\nMetadata: {parquet_path} ({combined.num_rows} rows)")
-
-    # Write Zarr store
-    write_zarr_store(output_dir, wavelengths, star_seds, galaxy_partitions)
 
     print("\nDone!")
 
