@@ -12,6 +12,7 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
 | **Star Disperser** | `star_disperser.py` | Point sources with wavelength-dependent PSFs |
 | **Galaxy Disperser** | `galaxy_disperser.py` | Extended sources with Jacobian warping + PSF convolution |
 | **Catalog Pipeline** | `catalog.py` + `scripts/build_star_grism_image.py` | Source selection, full-field star grism simulation |
+| **Sérsic Profiles** | `sersic.py` | JAX/vmap Sérsic profile generator for galaxy morphologies |
 | **Reference Data** | `refdata.py` | Bundled F158 bandpass and spectral templates |
 
 ## Installation
@@ -91,6 +92,7 @@ pytest -v tests/test_psf_model.py           # PSF model tests
 - **PSF model** (`test_psf_model.py`): PSF interpolation, caching, trilinear accuracy
 - **Star disperser** (`test_star_disperser.py`): PSF deposition, chunk invariance, flux conservation
 - **Galaxy disperser** (`test_galaxy_disperser.py`): Jacobian warping, PSF convolution, delta-vs-star comparison
+- **Sérsic profiles** (`test_sersic.py`): b_n accuracy, astropy comparison, normalization, PA transformation
 - **GPU consistency** (`test_disperser_gpu.py`): CPU vs GPU verification (skipped if no GPU)
 - **Demo utils** (`test_demo_utils.py`): Synthetic data generation helpers
 
@@ -113,6 +115,7 @@ pytest -v tests/test_psf_model.py           # PSF model tests
 - `stars_and_galaxies_gpu_demo.ipynb` — Same demo optimized for GPU
 - `profile_dispersers.ipynb` — Performance profiling: per-operation timing breakdown
 - `jacobian_exploration.ipynb` — Jacobian characterization for galaxy disperser design
+- `sersic_profiles.ipynb` — Sérsic profile validation: astropy comparison, PA transforms, radial profiles
 
 **PSF and star notebooks** (`notebooks/psf/`):
 - `single_star_demo.ipynb` — Single star dispersal with wavelength-dependent PSF
@@ -135,6 +138,7 @@ roman_disperser/
 │   ├── galaxy_disperser.py        # Galaxy disperser (Jacobian warp + PSF convolution)
 │   ├── psf_model.py               # PSF grids and trilinear interpolation
 │   ├── psf_utils.py               # STPSF ↔ disperser coordinate conversion
+│   ├── sersic.py                  # Sérsic profile generator (JAX/vmap)
 │   ├── catalog.py                 # Source selection for detector fields
 │   ├── refdata.py                 # Bundled synphot reference data
 │   └── demo_utils.py              # Synthetic galaxy/spectrum helpers

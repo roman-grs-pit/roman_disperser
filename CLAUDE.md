@@ -4,13 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy. Six main components:
+JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy. Seven main components:
 - **Class-based** (`optical_model.py`): Reference implementation using NumPy
 - **JAX functional** (`optical_model_jax.py`): JIT-compilable, vectorized implementation
 - **Disperser** (`disperser.py`): Legacy 2D+1D galaxy disperser (replaced by `galaxy_disperser.py`)
 - **Star disperser** (`star_disperser.py`): Point source dispersion with wavelength-dependent PSFs
 - **Galaxy disperser** (`galaxy_disperser.py`): Extended source dispersion with Jacobian-based shape warping + PSF convolution
 - **PSF model** (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation
+- **Sérsic profiles** (`sersic.py`): JAX/vmap Sérsic profile generator for galaxy morphologies
 
 ## Design Documents
 

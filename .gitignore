@@ -30,3 +30,6 @@ workbench/*/data/
 
 # Temporary markdown file to edit prompts
 prompt.md
+
+# Temporary images for Claude Code screenshot sharing
+output.png
