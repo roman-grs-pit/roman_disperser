@@ -52,7 +52,7 @@ def download(force=False):
         urllib.request.urlretrieve(url, tmp_path)
         print("Extracting...")
         with tarfile.open(tmp_path, "r:gz") as tar:
-            tar.extractall(path=catalog_dir)
+            tar.extractall(path=catalog_dir, filter="data")
         print(f"Catalog installed to {catalog_dir}")
     finally:
         tmp_path.unlink(missing_ok=True)
