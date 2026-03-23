@@ -18,15 +18,30 @@ Supports two modes:
     pixi run -e cuda python scripts/build_grism_image.py \
         --config my_config.yaml
 
+   See ``scripts/example_grism_config.yaml`` for a documented template, or
+   generate one with ``--generate-config my_config.yaml``.
+
 Can also be imported as a module:
 
     from scripts.build_grism_image import setup_pipeline, process_pointing
+
+**Memory note:** All cone-selected galaxy SEDs are loaded into CPU memory per
+pointing. At full catalog scale (~300k galaxies in a typical cone) this can
+reach ~7 GB. If memory becomes a bottleneck, refactor to load SEDs per-SCA
+instead of per-pointing (move ``load_galaxy_seds`` into the SCA loop).
 """
 
 import argparse
 import os
+import tempfile
 import time
 from pathlib import Path
+
+# Enable JAX compilation cache in a tmpdir (cleared on reboot)
+os.environ.setdefault(
+    "JAX_COMPILATION_CACHE_DIR",
+    os.path.join(tempfile.gettempdir(), "jax-cache-grism"),
+)
 
 import yaml
 import jax
@@ -43,7 +58,7 @@ from roman_disperser.pipeline import (
     DETECTOR_SIZE, ORDERS, LAM_MIN, LAM_MAX,
     resolve_paths, cone_search, select_sources_per_order,
     load_sensitivities,
-    make_batched_fori, disperse_batched,
+    make_batched_star_fori, disperse_batched_stars,
     make_batched_galaxy_fori, disperse_batched_galaxies,
     write_fits, write_png, write_mosaic_png, write_mosaic_from_directory,
 )
@@ -362,7 +377,7 @@ def setup_pipeline(
         # Build batched fori_loops for stars
         star_fori_fns = {}
         for order in ORDERS:
-            star_fori_fns[order] = make_batched_fori(
+            star_fori_fns[order] = make_batched_star_fori(
                 star_dispersers[order], sensitivities[order],
                 wavelengths_jax, dlam_angstroms,
             )
@@ -602,10 +617,7 @@ def process_pointing(
         )
         n_any = int(any_mask.sum())
 
-        sca_counts = {}
-        for order in ORDERS:
-            n_ord = int(order_masks[order].sum())
-            sca_counts[order] = n_ord
+        sca_counts = {order: {"stars": 0, "galaxies": 0} for order in ORDERS}
         source_counts[sca_num] = sca_counts
 
         # Disperse sources
@@ -623,7 +635,29 @@ def process_pointing(
             xsca_all_np = np.asarray(xsca_all)
             ysca_all_np = np.asarray(ysca_all)
 
-            # Separate into stars and galaxies within selected sources
+            # -- Index mapping overview --
+            # We have three nested subsets of cone sources:
+            #
+            #   cone (n_cone)  →  on-detector (n_any)  →  per-order
+            #          ↓                   ↓
+            #   star_spectra_all    xsca_all / ysca_all
+            #   galaxy_spectra_all  galaxy_images (generated per SCA below)
+            #
+            # star_spectra_all is a dense [n_stars_cone, N_wl] array indexed
+            # by rank among stars in the cone.  Similarly galaxy_spectra_all
+            # is dense [n_galaxies_cone, N_wl].  To look up spectra for a
+            # source selected for a given order, we need to map:
+            #
+            #   per-order index  →  on-detector index  →  cone index
+            #                                           →  rank within type
+            #
+            # cone_indices maps on-detector → cone position.
+            # searchsorted(star_cone_indices, cone_pos) gives the rank within
+            # the star-only array (and likewise for galaxies).
+            #
+            # Galaxy images are generated fresh per SCA from is_galaxy_sel,
+            # so their index is the rank within selected galaxies (not cone).
+
             any_mask_np = np.asarray(any_mask) if not isinstance(any_mask, np.ndarray) else any_mask
             is_star_sel = is_star[any_mask_np]
             is_galaxy_sel = is_galaxy[any_mask_np]
@@ -631,14 +665,10 @@ def process_pointing(
             n_galaxies_sel = int(is_galaxy_sel.sum())
             log(f"    Selected: {n_stars_sel} stars, {n_galaxies_sel} galaxies")
 
-            # Map from any_mask indices back to cone indices for spectra lookup
-            # any_mask selects from cone sources; we need indices into
-            # star_spectra_all and galaxy_spectra_all
             cone_indices = np.where(any_mask_np)[0]
             star_cone_indices = np.where(is_star)[0]
             galaxy_cone_indices = np.where(is_galaxy)[0]
 
-            # Build per-order masks relative to selected sources
             order_masks_sel = {
                 order: order_masks[order][any_mask_np] for order in ORDERS
             }
@@ -683,14 +713,11 @@ def process_pointing(
                 # Stars in this order
                 star_omask = omask & is_star_sel
                 n_star_order = int(star_omask.sum())
+                sca_counts[order]["stars"] = n_star_order
                 if n_star_order > 0:
-                    # Find indices into star_spectra_all
-                    # star_spectra_all is indexed by position within is_star
-                    star_sel_in_any = np.where(is_star_sel)[0]
+                    # on-detector index → cone index → rank in star_spectra_all
                     star_order_in_sel = np.where(star_omask)[0]
-                    # Map to cone-level star indices
                     star_cone_pos = cone_indices[star_order_in_sel]
-                    # Map to position within star_spectra_all
                     star_rank = np.searchsorted(star_cone_indices, star_cone_pos)
 
                     x_star = xsca_all_np[star_omask]
@@ -698,7 +725,7 @@ def process_pointing(
                     spec_star = star_spectra_all[star_rank]
 
                     t_order = time.time()
-                    output = disperse_batched(
+                    output = disperse_batched_stars(
                         sd["star_fori_fns"][order],
                         spec_star, x_star, y_star,
                         output, batch_size,
@@ -711,16 +738,15 @@ def process_pointing(
                 # Galaxies in this order
                 gal_omask = omask & is_galaxy_sel
                 n_gal_order = int(gal_omask.sum())
+                sca_counts[order]["galaxies"] = n_gal_order
                 if n_gal_order > 0:
-                    # Map to position within galaxy arrays
+                    # on-detector index → rank in galaxy_images (per-SCA)
                     gal_sel_positions = np.where(is_galaxy_sel)[0]
                     gal_order_in_sel = np.where(gal_omask)[0]
-                    # Find position within the galaxy-only arrays
                     gal_rank_in_sel = np.searchsorted(
                         gal_sel_positions, gal_order_in_sel
                     )
-
-                    # Map to galaxy_spectra_all indices
+                    # on-detector index → cone index → rank in galaxy_spectra_all
                     gal_cone_pos = cone_indices[gal_order_in_sel]
                     gal_rank_in_cone = np.searchsorted(
                         galaxy_cone_indices, gal_cone_pos
@@ -752,9 +778,7 @@ def process_pointing(
                 for j, ci in enumerate(sel_cone_idx):
                     row = meta_cone_reset.iloc[ci]
                     manifest_rows.append({
-                        "catalog_index": int(meta_cone.index[ci]
-                                             if ci < len(meta_cone.index)
-                                             else ci),
+                        "catalog_index": int(meta_cone.index[ci]),
                         "sca": sca_num,
                         "order": order,
                         "type": "PSF" if sel_is_star[j] else "SER",
@@ -767,14 +791,14 @@ def process_pointing(
 
         else:
             log(f"    No sources on detector.")
-            for order in ORDERS:
-                sca_counts[order] = 0
 
         sca_outputs[sca_num] = output
 
         # Log per-order counts
         for order in ORDERS:
-            log(f"    Order {order}: {sca_counts[order]} sources")
+            c = sca_counts[order]
+            log(f"    Order {order}: {c['stars']} stars, "
+                f"{c['galaxies']} galaxies")
 
         # Poisson sample on GPU
         sca_key = sca_keys.get(sca_num)
@@ -965,14 +989,25 @@ def build_grism_image(
         verbose=verbose,
     )
 
-    # Move from tmp layout to single-file output
+    # Move from tmp layout to single-file output, renaming to match
+    # the user-specified output stem (e.g. test_sca5.fits → test_sca5_*)
     tmp_prefix = f"grism_{tmp_dir.name}"
+    out_stem = output_file.stem
+    out_dir = output_file.parent
+
     tmp_fits = tmp_dir / f"{tmp_prefix}_detSCA{sca:02d}.fits"
     tmp_png = tmp_dir / f"{tmp_prefix}_detSCA{sca:02d}.png"
+    tmp_manifest = tmp_dir / f"{tmp_prefix}_sources.parquet"
+    tmp_meta = tmp_dir / f"{tmp_prefix}_meta.yaml"
+
     if tmp_fits.exists():
         tmp_fits.rename(output_file)
     if tmp_png.exists():
-        tmp_png.rename(output_file.with_suffix(".png"))
+        tmp_png.rename(out_dir / f"{out_stem}.png")
+    if tmp_manifest.exists():
+        tmp_manifest.rename(out_dir / f"{out_stem}_sources.parquet")
+    if tmp_meta.exists():
+        tmp_meta.rename(out_dir / f"{out_stem}_meta.yaml")
 
     # Clean up temp dir
     for f in tmp_dir.iterdir():
@@ -997,7 +1032,7 @@ EXAMPLE_CONFIG = """\
 # -- Output -----------------------------------------------------------------
 # Top-level output directory.  Each pointing creates a subdirectory
 # containing per-SCA FITS/PNG files and a focal-plane mosaic PNG.
-output_dir: /workspace/scratch/roman-grism-fields
+output_dir: output/grism-fields
 
 # -- RNG seed (required) ----------------------------------------------------
 # Integer seed for reproducible Poisson noise.  Split deterministically

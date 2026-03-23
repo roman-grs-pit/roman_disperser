@@ -1,0 +1,61 @@
+# Unified grism image builder configuration
+#
+# Disperses both stars and galaxies from the unified Parquet+Zarr catalog.
+#
+# Usage:
+#   pixi run -e cuda python scripts/build_grism_image.py --config this_file.yaml
+
+# -- Output -----------------------------------------------------------------
+# Top-level output directory.  Each pointing creates a subdirectory
+# containing per-SCA FITS/PNG files and a focal-plane mosaic PNG.
+output_dir: output/grism-fields
+
+# -- RNG seed (required) ----------------------------------------------------
+# Integer seed for reproducible Poisson noise.  Split deterministically
+# into per-pointing and per-SCA keys.
+seed: 42
+
+# -- Exposure time -----------------------------------------------------------
+# Exposure time in seconds.  The noiseless model (counts/s) is multiplied
+# by exptime before Poisson sampling.
+exptime: 190.22
+
+# -- Detectors ---------------------------------------------------------------
+# Which SCAs to simulate.  Use "all" for 1-18, or list specific numbers.
+scas: all
+# scas: [1, 5, 12]
+
+# -- Pointings ---------------------------------------------------------------
+# Each entry becomes a subdirectory under output_dir.
+pointings:
+  - name: ra10_dec0_pa0
+    ra: 10.0
+    dec: 0.0
+    pa: 0.0
+
+  - name: ra10_dec0_pa10
+    ra: 10.0
+    dec: 0.0
+    pa: 10.0
+
+# -- Source selection --------------------------------------------------------
+# Initial cone search radius around the pointing center (degrees).
+cone_radius: 0.6
+
+# -- Batching ----------------------------------------------------------------
+# Stars per JIT batch (larger = more GPU memory, less loop overhead).
+batch_size: 1000
+
+# Galaxies per JIT batch (smaller than stars due to larger per-source memory).
+galaxy_batch_size: 100
+
+# Sersic image size in native pixels.  Oversampled size = galaxy_npix * oversample.
+# 30 native pixels = 120 oversampled pixels at 4x oversampling.
+galaxy_npix: 30
+
+# -- Data paths (optional, defaults shown) -----------------------------------
+# Uncomment to override:
+# catalog_dir: data/catalogs
+# sensitivity_dir: data/sensitivities
+# optical_model: data/Roman_grism_OpticalModel_v0.8.yaml
+# psf_cache_dir: data/psf_cache

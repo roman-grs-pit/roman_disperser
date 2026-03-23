@@ -11,7 +11,6 @@ Not added to ``__init__.py`` — scripts import directly::
 
 import os
 import re
-import time
 from pathlib import Path
 
 import yaml
@@ -24,7 +23,7 @@ from astropy.io import fits
 from matplotlib.colors import AsinhNorm
 from PIL import Image
 
-from roman_disperser import catalog, psf_model, star_disperser
+from roman_disperser import catalog
 from roman_disperser.optical_model import RomanOpticalModel
 import roman_disperser.optical_model_jax as omj
 
@@ -169,7 +168,7 @@ def load_sensitivities(sensitivity_dir, sca, wavelengths):
 # Star batching
 # ---------------------------------------------------------------------------
 
-def make_batched_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
+def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
     """Build a JIT-compiled fori_loop that processes a fixed-size batch of stars.
 
     The compiled function takes padded arrays of shape [batch_size, ...]
@@ -200,12 +199,12 @@ def make_batched_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
     return run
 
 
-def disperse_batched(fori_fn, spectra, xsca, ysca, output, batch_size):
+def disperse_batched_stars(fori_fn, spectra, xsca, ysca, output, batch_size):
     """Disperse sources in fixed-size batches, reusing compiled code.
 
     Parameters
     ----------
-    fori_fn : compiled fori_loop from make_batched_fori
+    fori_fn : compiled fori_loop from make_batched_star_fori
     spectra : ndarray [N, N_wl]
     xsca, ysca : ndarray [N]
     output : jnp.ndarray [4088, 4088]

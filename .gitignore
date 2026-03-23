@@ -31,5 +31,8 @@ workbench/*/data/
 # Temporary markdown file to edit prompts
 prompt.md
 
+# Pipeline output directory
+output/
+
 # Temporary images for Claude Code screenshot sharing
 output.png
