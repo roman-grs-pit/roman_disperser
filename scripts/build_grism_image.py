@@ -25,10 +25,12 @@ Can also be imported as a module:
 
     from scripts.build_grism_image import setup_pipeline, process_pointing
 
-**Memory note:** Galaxy SEDs are loaded per-SCA (only the sources selected for
-that detector), keeping memory usage at ~200 MB per SCA instead of ~7 GB for
-all cone galaxies. Star SEDs are still loaded per-pointing since the template
-array is small (~0.5 MB).
+**Memory note:** PSF payloads, dispersers, and JIT-compiled functions are built
+per-SCA and released after processing, so only one SCA's compiled code lives
+in memory at a time (~2-3 GB vs ~18+ GB for all 18 SCAs).  Galaxy SEDs are
+also loaded per-SCA (~200 MB vs ~7 GB for all cone galaxies).  The JAX
+compilation cache (``/tmp/jax-cache-grism``) avoids recompilation across
+pointings.
 """
 
 import argparse
@@ -245,11 +247,13 @@ def setup_pipeline(
     galaxy_npix=30,
     verbose=True,
 ):
-    """One-time setup: load model, catalog, PSFs, compile dispersers.
+    """One-time setup: load model, catalog, optical payloads, sensitivities.
 
-    This function performs all expensive initialization that can be shared
-    across multiple pointings.  The returned ``pipeline`` dict contains
-    everything needed by ``process_pointing``.
+    Loads lightweight data that can be shared across pointings.  PSF loading,
+    disperser construction, and JIT compilation are deferred to
+    ``process_pointing`` (per-SCA) to keep memory bounded.  The JAX
+    compilation cache (set at module level) avoids recompilation across
+    pointings.
 
     Parameters
     ----------
@@ -319,7 +323,9 @@ def setup_pipeline(
     log("Loading optical model...")
     model = RomanOpticalModel(config_file=str(optical_model_path))
 
-    # -- Per-SCA setup: payloads, PSFs, dispersers, sensitivity, JIT ---------
+    # -- Per-SCA setup: optical payloads and sensitivity curves ---------------
+    # PSFs, dispersers, and JIT compilation are deferred to process_pointing
+    # so that only one SCA's compiled functions live in memory at a time.
     log(f"Setting up {len(sca_list)} SCAs...")
     sca_data = {}
 
@@ -338,106 +344,21 @@ def setup_pipeline(
         detector_name = f"WFI{sca_num:02d}"
         log(f"\n  SCA {sca_num} ({detector_name}):")
 
-        # Optical payloads
+        # Optical payloads (small — polynomial coefficients)
         optical_payloads = {
             order: omj.make_sca_payload(model, sca=sca_num, order=order)
             for order in ORDERS
         }
 
-        # Sensitivity curves
+        # Sensitivity curves (tiny — one array per order)
         sensitivities = load_sensitivities(
             sensitivity_dir, sca_num, wavelengths_um,
         )
 
-        # PSF payloads
-        psf_payloads = {}
-        for psf_order in ["0", "1"]:
-            psf_payloads[psf_order] = psf_model.get_or_make_psf_payload(
-                detector=detector_name, order=psf_order,
-                cache_dir=str(psf_cache_dir), verbose=False,
-            )
-        # STPSF only provides GRISM0 and GRISM1; reuse order 1 PSF for order 2
-        psf_payloads["2"] = psf_payloads["1"]
-        log(f"    PSF payloads loaded")
-
-        # Star dispersers
-        star_dispersers = {}
-        for order in ORDERS:
-            star_dispersers[order] = star_disperser.make_star_disperser(
-                psf_payloads[order], optical_payloads[order],
-            )
-
-        # Galaxy dispersers
-        galaxy_dispersers = {}
-        for order in ORDERS:
-            galaxy_dispersers[order] = galaxy_disperser.make_galaxy_disperser(
-                psf_payloads[order], optical_payloads[order],
-            )
-
-        # Build batched fori_loops for stars
-        star_fori_fns = {}
-        for order in ORDERS:
-            star_fori_fns[order] = make_batched_star_fori(
-                star_dispersers[order], sensitivities[order],
-                wavelengths_jax, dlam_angstroms,
-            )
-
-        # Build batched fori_loops for galaxies
-        galaxy_fori_fns = {}
-        for order in ORDERS:
-            galaxy_fori_fns[order] = make_batched_galaxy_fori(
-                galaxy_dispersers[order], sensitivities[order],
-                wavelengths_jax, dlam_angstroms,
-            )
-
         sca_data[sca_num] = {
             "optical_payloads": optical_payloads,
             "sensitivities": sensitivities,
-            "star_fori_fns": star_fori_fns,
-            "galaxy_fori_fns": galaxy_fori_fns,
         }
-
-    # -- JIT warmup ----------------------------------------------------------
-    log("\nJIT warmup (compiling all SCA/order dispersers)...")
-    t0 = time.time()
-    warmup_output = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32)
-
-    # Star warmup
-    warmup_spec = jnp.zeros((batch_size, n_wavelength), dtype=jnp.float32)
-    warmup_x = jnp.zeros(batch_size, dtype=jnp.float32)
-    warmup_y = jnp.zeros(batch_size, dtype=jnp.float32)
-
-    for sca_num in sca_list:
-        for order in ORDERS:
-            t1 = time.time()
-            _ = sca_data[sca_num]["star_fori_fns"][order](
-                1, warmup_spec, warmup_x, warmup_y, warmup_output,
-            )
-            _.block_until_ready()
-            log(f"  SCA {sca_num} star  order {order}: {time.time() - t1:.1f}s")
-
-    # Galaxy warmup
-    warmup_gspec = jnp.zeros(
-        (galaxy_batch_size, n_wavelength), dtype=jnp.float32
-    )
-    warmup_gx = jnp.zeros(galaxy_batch_size, dtype=jnp.float32)
-    warmup_gy = jnp.zeros(galaxy_batch_size, dtype=jnp.float32)
-    warmup_imgs = jnp.zeros(
-        (galaxy_batch_size, galaxy_npix_os, galaxy_npix_os), dtype=jnp.float32
-    )
-
-    for sca_num in sca_list:
-        for order in ORDERS:
-            t1 = time.time()
-            _ = sca_data[sca_num]["galaxy_fori_fns"][order](
-                1, warmup_gspec, warmup_gx, warmup_gy,
-                warmup_imgs, warmup_output,
-            )
-            _.block_until_ready()
-            log(f"  SCA {sca_num} galaxy order {order}: {time.time() - t1:.1f}s")
-
-    timings["jit_warmup"] = time.time() - t0
-    log(f"  Total warmup: {timings['jit_warmup']:.1f}s")
 
     timings["setup_total"] = time.time() - t_total
     log(f"\nSetup complete in {timings['setup_total']:.1f}s")
@@ -454,6 +375,7 @@ def setup_pipeline(
         "dlam_angstroms": dlam_angstroms,
         "sca_list": sca_list,
         "sca_data": sca_data,
+        "psf_cache_dir": str(psf_cache_dir),
         "batch_size": batch_size,
         "galaxy_batch_size": galaxy_batch_size,
         "galaxy_npix": galaxy_npix,
@@ -596,12 +518,92 @@ def process_pointing(
     source_counts = {}
     manifest_rows = []
 
+    n_wavelength = len(pipeline["wavelengths_um"])
+    wavelengths_jax = pipeline["wavelengths_jax"]
+    dlam_angstroms = pipeline["dlam_angstroms"]
+    psf_cache_dir = pipeline["psf_cache_dir"]
+
     for sca_num in sca_list:
         log(f"\n  SCA {sca_num}:")
         t_sca = time.time()
         sd = pipeline["sca_data"][sca_num]
 
-        # Select sources for this SCA (per order)
+        # Skip if FITS already exists
+        stem = f"{prefix}_detSCA{sca_num:02d}"
+        fits_path = str(output_dir / f"{stem}.fits")
+        png_path = str(output_dir / f"{stem}.png")
+        if Path(fits_path).exists():
+            log(f"    FITS exists, skipping.")
+            # Load existing model for mosaic
+            from astropy.io import fits as afits
+            with afits.open(fits_path) as hdul:
+                sca_model_np[sca_num] = hdul["MODEL"].data.copy()
+            continue
+
+        # -- Build dispersers and JIT-compile for this SCA -------------------
+        # PSFs, dispersers, and fori functions are built per-SCA and released
+        # after processing to keep memory bounded.  JAX compilation cache
+        # (set at module level) avoids recompilation across pointings.
+        t_jit = time.time()
+        detector_name = f"WFI{sca_num:02d}"
+
+        psf_payloads = {}
+        for psf_order in ["0", "1"]:
+            psf_payloads[psf_order] = psf_model.get_or_make_psf_payload(
+                detector=detector_name, order=psf_order,
+                cache_dir=psf_cache_dir, verbose=False,
+            )
+        psf_payloads["2"] = psf_payloads["1"]
+
+        star_fori_fns = {}
+        galaxy_fori_fns = {}
+        for order in ORDERS:
+            sd_fn = star_disperser.make_star_disperser(
+                psf_payloads[order], sd["optical_payloads"][order],
+            )
+            star_fori_fns[order] = make_batched_star_fori(
+                sd_fn, sd["sensitivities"][order],
+                wavelengths_jax, dlam_angstroms,
+            )
+            gd_fn = galaxy_disperser.make_galaxy_disperser(
+                psf_payloads[order], sd["optical_payloads"][order],
+            )
+            galaxy_fori_fns[order] = make_batched_galaxy_fori(
+                gd_fn, sd["sensitivities"][order],
+                wavelengths_jax, dlam_angstroms,
+            )
+
+        # JIT warmup
+        warmup_output = jnp.zeros(
+            (DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32,
+        )
+        warmup_spec = jnp.zeros(
+            (batch_size, n_wavelength), dtype=jnp.float32,
+        )
+        warmup_x = jnp.zeros(batch_size, dtype=jnp.float32)
+        warmup_y = jnp.zeros(batch_size, dtype=jnp.float32)
+        warmup_gspec = jnp.zeros(
+            (galaxy_batch_size, n_wavelength), dtype=jnp.float32,
+        )
+        warmup_gx = jnp.zeros(galaxy_batch_size, dtype=jnp.float32)
+        warmup_gy = jnp.zeros(galaxy_batch_size, dtype=jnp.float32)
+        warmup_imgs = jnp.zeros(
+            (galaxy_batch_size, galaxy_npix_os, galaxy_npix_os),
+            dtype=jnp.float32,
+        )
+        for order in ORDERS:
+            star_fori_fns[order](
+                1, warmup_spec, warmup_x, warmup_y, warmup_output,
+            ).block_until_ready()
+            galaxy_fori_fns[order](
+                1, warmup_gspec, warmup_gx, warmup_gy,
+                warmup_imgs, warmup_output,
+            ).block_until_ready()
+        del warmup_output, warmup_spec, warmup_x, warmup_y
+        del warmup_gspec, warmup_gx, warmup_gy, warmup_imgs
+        log(f"    JIT compile: {time.time() - t_jit:.1f}s")
+
+        # -- Select sources for this SCA (per order) -------------------------
         order_masks, any_mask = select_sources_per_order(
             sd["optical_payloads"], xfpa, yfpa,
         )
@@ -724,7 +726,7 @@ def process_pointing(
 
                     t_order = time.time()
                     output = disperse_batched_stars(
-                        sd["star_fori_fns"][order],
+                        star_fori_fns[order],
                         spec_star, x_star, y_star,
                         output, batch_size,
                     )
@@ -752,7 +754,7 @@ def process_pointing(
 
                     t_order = time.time()
                     output = disperse_batched_galaxies(
-                        sd["galaxy_fori_fns"][order],
+                        galaxy_fori_fns[order],
                         spec_gal, x_gal, y_gal, imgs_gal,
                         output, galaxy_batch_size,
                     )
@@ -786,6 +788,9 @@ def process_pointing(
         else:
             log(f"    No sources on detector.")
 
+        # Release compiled functions and PSF payloads for this SCA
+        del star_fori_fns, galaxy_fori_fns, psf_payloads
+
         sca_outputs[sca_num] = output
 
         # Log per-order counts
@@ -814,9 +819,6 @@ def process_pointing(
         sca_model_np[sca_num] = output_np
 
         # Write per-SCA outputs
-        stem = f"{prefix}_detSCA{sca_num:02d}"
-        fits_path = str(output_dir / f"{stem}.fits")
-        png_path = str(output_dir / f"{stem}.png")
         t0 = time.time()
         write_fits(output_np, isim_np, fits_path,
                    pointing_ra, pointing_dec, pointing_pa, sca_num,
