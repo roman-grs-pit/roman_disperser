@@ -9,10 +9,6 @@ Validates:
 5. sky_pa_to_sca_theta conversion
 """
 
-import os
-
-os.environ["JAX_PLATFORMS"] = "cpu"
-
 import jax
 import jax.numpy as jnp
 import numpy as np

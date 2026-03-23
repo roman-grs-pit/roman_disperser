@@ -10,10 +10,6 @@ These tests verify:
 Note: All wavelengths are in **microns** (consistent with optical model).
 """
 
-import os
-
-os.environ["JAX_PLATFORMS"] = "cpu"
-
 import jax
 import jax.numpy as jnp
 import numpy as np
