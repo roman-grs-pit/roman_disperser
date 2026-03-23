@@ -33,10 +33,10 @@ pointings:
     dec: 0.0
     pa: 0.0
 
-  - name: ra10_dec0_pa10
-    ra: 10.0
-    dec: 0.0
-    pa: 10.0
+  # - name: ra10_dec0_pa10
+  #   ra: 10.0
+  #   dec: 0.0
+  #   pa: 10.0
 
 # -- Source selection --------------------------------------------------------
 # Initial cone search radius around the pointing center (degrees).
