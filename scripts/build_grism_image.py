@@ -25,10 +25,10 @@ Can also be imported as a module:
 
     from scripts.build_grism_image import setup_pipeline, process_pointing
 
-**Memory note:** All cone-selected galaxy SEDs are loaded into CPU memory per
-pointing. At full catalog scale (~300k galaxies in a typical cone) this can
-reach ~7 GB. If memory becomes a bottleneck, refactor to load SEDs per-SCA
-instead of per-pointing (move ``load_galaxy_seds`` into the SCA loop).
+**Memory note:** Galaxy SEDs are loaded per-SCA (only the sources selected for
+that detector), keeping memory usage at ~200 MB per SCA instead of ~7 GB for
+all cone galaxies. Star SEDs are still loaded per-pointing since the template
+array is small (~0.5 MB).
 """
 
 import argparse
@@ -571,9 +571,10 @@ def process_pointing(
         xfpa = jnp.array([], dtype=jnp.float32)
         yfpa = jnp.array([], dtype=jnp.float32)
 
-    # -- Step 3: Load all cone-selected SEDs into CPU memory -----------------
+    # -- Step 3: Load star SEDs into CPU memory ------------------------------
+    # Galaxy SEDs are loaded per-SCA below to avoid holding all cone galaxies
+    # in memory at once (~7 GB for dense fields).
     star_spectra_all = None
-    galaxy_spectra_all = None
 
     if n_stars_cone > 0:
         log("  Loading star spectra...")
@@ -587,17 +588,6 @@ def process_pointing(
         )
         log(f"    {n_stars_cone} star spectra "
             f"({star_spectra_all.nbytes / 1e6:.1f} MB) "
-            f"in {time.time() - t0:.2f}s")
-
-    if n_galaxies_cone > 0:
-        log("  Loading galaxy spectra from Zarr...")
-        t0 = time.time()
-        galaxy_meta = meta_cone_reset[is_galaxy]
-        galaxy_spectra_all = load_galaxy_seds(
-            pipeline["store"], galaxy_meta, pipeline["wl_mask"],
-        )
-        log(f"    {n_galaxies_cone} galaxy spectra "
-            f"({galaxy_spectra_all.nbytes / 1e6:.1f} MB) "
             f"in {time.time() - t0:.2f}s")
 
     # -- Step 4: Per-SCA loop ------------------------------------------------
@@ -641,22 +631,23 @@ def process_pointing(
             #   cone (n_cone)  →  on-detector (n_any)  →  per-order
             #          ↓                   ↓
             #   star_spectra_all    xsca_all / ysca_all
-            #   galaxy_spectra_all  galaxy_images (generated per SCA below)
+            #                       galaxy_spectra_sel (loaded per SCA)
+            #                       galaxy_images      (generated per SCA)
             #
             # star_spectra_all is a dense [n_stars_cone, N_wl] array indexed
-            # by rank among stars in the cone.  Similarly galaxy_spectra_all
-            # is dense [n_galaxies_cone, N_wl].  To look up spectra for a
-            # source selected for a given order, we need to map:
+            # by rank among stars in the cone.  To look up star spectra for
+            # a given order, we map:
             #
             #   per-order index  →  on-detector index  →  cone index
-            #                                           →  rank within type
+            #                                           →  rank within stars
             #
             # cone_indices maps on-detector → cone position.
             # searchsorted(star_cone_indices, cone_pos) gives the rank within
-            # the star-only array (and likewise for galaxies).
+            # the star-only array.
             #
-            # Galaxy images are generated fresh per SCA from is_galaxy_sel,
-            # so their index is the rank within selected galaxies (not cone).
+            # Galaxy spectra and images are both loaded/generated per SCA
+            # from is_galaxy_sel, so they share the same indexing: rank
+            # among selected galaxies on this SCA.
 
             any_mask_np = np.asarray(any_mask) if not isinstance(any_mask, np.ndarray) else any_mask
             is_star_sel = is_star[any_mask_np]
@@ -667,19 +658,26 @@ def process_pointing(
 
             cone_indices = np.where(any_mask_np)[0]
             star_cone_indices = np.where(is_star)[0]
-            galaxy_cone_indices = np.where(is_galaxy)[0]
 
             order_masks_sel = {
                 order: order_masks[order][any_mask_np] for order in ORDERS
             }
 
-            # --- Generate galaxy images on GPU ---
+            # --- Load galaxy SEDs and generate images per SCA ---
             galaxy_images = None
+            galaxy_spectra_sel = None
             if n_galaxies_sel > 0:
                 t0 = time.time()
                 gal_sel_meta = meta_cone_reset.iloc[
                     cone_indices[is_galaxy_sel]
                 ]
+                galaxy_spectra_sel = load_galaxy_seds(
+                    pipeline["store"], gal_sel_meta, pipeline["wl_mask"],
+                )
+                log(f"    Galaxy SEDs: {n_galaxies_sel} spectra "
+                    f"({galaxy_spectra_sel.nbytes / 1e6:.1f} MB) "
+                    f"in {time.time() - t0:.2f}s")
+                t0 = time.time()
                 r_eff_pix = sersic.catalog_r_eff_to_pixels(
                     jnp.array(gal_sel_meta["half_light_radius"].values,
                               dtype=jnp.float32),
@@ -740,21 +738,16 @@ def process_pointing(
                 n_gal_order = int(gal_omask.sum())
                 sca_counts[order]["galaxies"] = n_gal_order
                 if n_gal_order > 0:
-                    # on-detector index → rank in galaxy_images (per-SCA)
+                    # on-detector index → rank in per-SCA arrays
                     gal_sel_positions = np.where(is_galaxy_sel)[0]
                     gal_order_in_sel = np.where(gal_omask)[0]
                     gal_rank_in_sel = np.searchsorted(
                         gal_sel_positions, gal_order_in_sel
                     )
-                    # on-detector index → cone index → rank in galaxy_spectra_all
-                    gal_cone_pos = cone_indices[gal_order_in_sel]
-                    gal_rank_in_cone = np.searchsorted(
-                        galaxy_cone_indices, gal_cone_pos
-                    )
 
                     x_gal = xsca_all_np[gal_omask]
                     y_gal = ysca_all_np[gal_omask]
-                    spec_gal = galaxy_spectra_all[gal_rank_in_cone]
+                    spec_gal = galaxy_spectra_sel[gal_rank_in_sel]
                     imgs_gal = galaxy_images[gal_rank_in_sel]
 
                     t_order = time.time()
