@@ -787,6 +787,7 @@ def process_pointing(
                         "ra": float(row["ra"]),
                         "dec": float(row["dec"]),
                         "flux_scale": float(row["flux_scale"]),
+                        "F158": float(row["F158"]),
                     })
 
         else:
@@ -861,6 +862,7 @@ def process_pointing(
             "ra": [r["ra"] for r in manifest_rows],
             "dec": [r["dec"] for r in manifest_rows],
             "flux_scale": [r["flux_scale"] for r in manifest_rows],
+            "F158": [r["F158"] for r in manifest_rows],
         })
         pq.write_table(manifest_table, str(manifest_path))
         log(f"\n  Source manifest: {len(manifest_rows)} rows -> {manifest_path}")

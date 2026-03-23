@@ -13,3 +13,5 @@ Large data files go in a `data/` subdirectory within each study (ignored by git)
 | Directory | Description |
 |-----------|-------------|
 | `20260220-grizli-comparison/` | Cross-code comparison against grizli grism simulation |
+| `20260321-galacticus-sed-units/` | Galacticus SED unit investigation |
+| `20260323-pipeline-validation/` | Unified pipeline visual validation (cutouts, spectra) |
