@@ -133,14 +133,15 @@ Once installed with PSF caches downloaded:
   `notebooks/galaxy/stars_and_galaxies_gpu_demo.ipynb` (GPU).
   Disperses stars and galaxies onto a single detector with visualization.
 
-- **Batch pipeline** — generate a config, edit it, and run:
+- **Batch pipeline** — provide a config YAML (simulation parameters) and an
+  ECSV pointing table (APT format):
   ```bash
   python scripts/build_grism_image.py --generate-config my_config.yaml
-  # Edit my_config.yaml (pointings, SCAs, output directory, etc.)
-  python scripts/build_grism_image.py --config my_config.yaml
+  # Edit my_config.yaml (SCAs, output directory, batch sizes, etc.)
+  python scripts/build_grism_image.py --config my_config.yaml --pointings pointings.ecsv
   ```
-  See `scripts/example_grism_config.yaml` for a fully commented example and
-  `docs/grism_pipeline.md` for details.
+  See `scripts/example_grism_config.yaml` and `scripts/example_pointings.ecsv`
+  for examples, and `docs/grism_pipeline.md` for details.
 
   **Note:** The batch pipeline processes all 18 SCAs per pointing and benefits
   significantly from a GPU. On CPU, expect ~30 min per SCA; on GPU (e.g., RTX 4090),

@@ -13,13 +13,15 @@ Supports two modes:
         --pointing-ra 9.5 --pointing-dec 0.95 --pointing-pa 0.0 \
         --sca 5 --output my_field.fits --seed 42
 
-2. **Batch mode** --- multiple pointings, multiple SCAs via YAML config:
+2. **Batch mode** --- YAML config + ECSV pointing table (APT format):
 
     pixi run -e cuda python scripts/build_grism_image.py \
-        --config my_config.yaml
+        --config my_config.yaml --pointings pointings.ecsv
 
-   See ``scripts/example_grism_config.yaml`` for a documented template, or
-   generate one with ``--generate-config my_config.yaml``.
+   The config YAML contains simulation parameters and data paths.
+   The ECSV file contains the pointing list in APT format (RA, Dec, PA,
+   exposure time, and APT identifiers).  See ``--generate-config`` for
+   a documented template config.
 
 Can also be imported as a module:
 
@@ -45,6 +47,9 @@ os.environ.setdefault(
     os.path.join(tempfile.gettempdir(), "jax-cache-grism"),
 )
 
+import hashlib
+import subprocess
+
 import yaml
 import jax
 import jax.numpy as jnp
@@ -65,6 +70,50 @@ from roman_disperser.pipeline import (
     write_fits, write_png, write_mosaic_png, write_mosaic_from_directory,
 )
 import roman_disperser.optical_model_jax as omj
+
+
+def get_git_sha():
+    """Return the current git commit SHA, or 'unknown' if not in a repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=Path(__file__).parent,
+        )
+        return result.stdout.strip() if result.returncode == 0 else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def make_pointing_key(seed, pointing_filename, plan, pass_, segment,
+                      observation, visit, exposure):
+    """Derive a deterministic JAX RNG key for a pointing.
+
+    The key is derived from the seed, pointing filename (as salt), and the
+    APT identifiers.  This ensures:
+    - Same seed + same pointing file + same exposure → same key
+    - Slicing or reordering the ECSV does not change keys
+    - Different pointing files get different keys (filename salt)
+
+    Parameters
+    ----------
+    seed : int
+        Top-level RNG seed.
+    pointing_filename : str
+        Basename of the ECSV pointing file (used as salt).
+    plan, pass_, segment, observation, visit, exposure : int
+        APT identifiers for this pointing.
+
+    Returns
+    -------
+    key : jax.random.key
+    """
+    # Build a deterministic hash from filename + APT identifiers
+    tag = f"{pointing_filename}:{plan}.{pass_}.{segment}.{observation}.{visit}.{exposure}"
+    h = hashlib.sha256(tag.encode()).digest()
+    # Use first 4 bytes as an offset, combined with the user seed
+    offset = int.from_bytes(h[:4], "big")
+    return jax.random.key(seed ^ offset)
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +450,8 @@ def process_pointing(
     pointing_key=None,
     seed=0,
     verbose=True,
+    extra_headers=None,
+    extra_meta=None,
 ):
     """Process a single pointing: select sources, generate spectra, disperse.
 
@@ -422,6 +473,11 @@ def process_pointing(
         Top-level seed (stored in FITS header for provenance).
     verbose : bool
         Print progress information.
+    extra_headers : dict, optional
+        Additional FITS header cards as ``{keyword: (value, comment)}``.
+        Written to the primary HDU of each per-SCA FITS file.
+    extra_meta : dict, optional
+        Additional fields to include in the per-pointing metadata YAML.
 
     Returns
     -------
@@ -822,7 +878,8 @@ def process_pointing(
         t0 = time.time()
         write_fits(output_np, isim_np, fits_path,
                    pointing_ra, pointing_dec, pointing_pa, sca_num,
-                   exptime, key_data, seed)
+                   exptime, key_data, seed,
+                   extra_headers=extra_headers)
         t_fits = time.time() - t0
         t0 = time.time()
         write_png(output_np, png_path)
@@ -889,6 +946,8 @@ def process_pointing(
             for sca_num, counts in sorted(source_counts.items())
         },
     }
+    if extra_meta:
+        meta_yaml.update(extra_meta)
     meta_path = output_dir / f"{prefix}_meta.yaml"
     with open(meta_path, "w") as f:
         yaml.dump(meta_yaml, f, default_flow_style=False, sort_keys=False)
@@ -1023,41 +1082,28 @@ EXAMPLE_CONFIG = """\
 #
 # Disperses both stars and galaxies from the unified Parquet+Zarr catalog.
 #
-# Usage:
-#   pixi run -e cuda python scripts/build_grism_image.py --config this_file.yaml
+# Usage (batch mode):
+#   pixi run -e cuda python scripts/build_grism_image.py \\
+#       --config this_file.yaml --pointings pointings.ecsv
+#
+# The pointing list is supplied separately as an ECSV file (APT format).
+# This config file contains simulation parameters and data paths only.
 
 # -- Output -----------------------------------------------------------------
-# Top-level output directory.  Each pointing creates a subdirectory
-# containing per-SCA FITS/PNG files and a focal-plane mosaic PNG.
+# Top-level output directory.  Each pointing creates a subdirectory named
+# {ecsv_basename}_{plan}.{pass}.{segment}.{observation}.{visit}.{exposure}/
 output_dir: output/grism-fields
 
 # -- RNG seed (required) ----------------------------------------------------
-# Integer seed for reproducible Poisson noise.  Split deterministically
-# into per-pointing and per-SCA keys.
+# Integer seed for reproducible Poisson noise.  Combined with the pointing
+# filename and APT identifiers to derive per-pointing keys, so results are
+# deterministic and independent of pointing order or slicing.
 seed: 42
-
-# -- Exposure time -----------------------------------------------------------
-# Exposure time in seconds.  The noiseless model (counts/s) is multiplied
-# by exptime before Poisson sampling.
-exptime: 190.22
 
 # -- Detectors ---------------------------------------------------------------
 # Which SCAs to simulate.  Use "all" for 1-18, or list specific numbers.
 scas: all
 # scas: [1, 5, 12]
-
-# -- Pointings ---------------------------------------------------------------
-# Each entry becomes a subdirectory under output_dir.
-pointings:
-  - name: ra10_dec0_pa0
-    ra: 10.0
-    dec: 0.0
-    pa: 0.0
-
-  - name: ra10_dec0_pa10
-    ra: 10.0
-    dec: 0.0
-    pa: 10.0
 
 # -- Source selection --------------------------------------------------------
 # Initial cone search radius around the pointing center (degrees).
@@ -1083,19 +1129,33 @@ galaxy_npix: 30
 """
 
 
-def run_batch(config_path, verbose=True, force=False):
-    """Run the pipeline from a YAML configuration file.
+def _pointing_dir_name(prefix, row):
+    """Build the output directory name for an ECSV pointing row."""
+    return (f"{prefix}"
+            f"_{int(row['PLAN']):03d}"
+            f".{int(row['PASS']):03d}"
+            f".{int(row['SEGMENT']):03d}"
+            f".{int(row['OBSERVATION']):03d}"
+            f".{int(row['VISIT']):03d}"
+            f".{int(row['EXPOSURE']):03d}")
+
+
+def run_batch(config_path, pointings_path, verbose=True, force=False):
+    """Run the pipeline from a YAML config + ECSV pointing table.
 
     Parameters
     ----------
     config_path : str
-        Path to YAML config file.
+        Path to YAML config file (simulation parameters and data paths).
+    pointings_path : str
+        Path to ECSV pointing table (APT format).
     verbose : bool
         Print progress.
     force : bool
         Overwrite existing pointing directories (default: skip them).
     """
     import warnings
+    from astropy.table import Table
 
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
@@ -1121,6 +1181,21 @@ def run_batch(config_path, verbose=True, force=False):
         )
         cfg.pop("batch_size")
 
+    # Load pointing table
+    ptable = Table.read(pointings_path, format="ascii.ecsv")
+
+    # Filter to GRISM pointings only
+    if "BANDPASS" in ptable.colnames:
+        grism_mask = ptable["BANDPASS"] == "GRISM"
+        n_filtered = len(ptable) - grism_mask.sum()
+        if n_filtered > 0:
+            log(f"Filtered {n_filtered} non-GRISM rows from pointing table")
+        ptable = ptable[grism_mask]
+
+    if len(ptable) == 0:
+        log("No GRISM pointings found in pointing table.")
+        return
+
     # Parse SCA list
     scas = cfg.get("scas", "all")
     if scas == "all":
@@ -1128,25 +1203,27 @@ def run_batch(config_path, verbose=True, force=False):
     else:
         sca_list = [int(s) for s in scas]
 
-    # Parse seed and exposure time
     seed = cfg["seed"]
-    exptime = cfg.get("exptime", 190.22)
+    git_sha = get_git_sha()
+
+    # Directory prefix from pointing filename
+    pointing_filename = Path(pointings_path).stem
+    output_dir = Path(cfg["output_dir"])
 
     # Check which pointings need processing before expensive setup.
-    output_dir = Path(cfg["output_dir"])
-    base_key = jax.random.key(seed)
-    all_pointing_keys = jax.random.split(base_key, len(cfg["pointings"]))
-
     pointings_todo = []
-    for idx, pointing in enumerate(cfg["pointings"]):
-        pointing_dir = output_dir / pointing["name"]
+    for row in ptable:
+        name = _pointing_dir_name(pointing_filename, row)
+        pointing_dir = output_dir / name
         if force or not pointing_dir.exists():
-            pointings_todo.append((pointing, all_pointing_keys[idx]))
+            pointings_todo.append(row)
 
     log(f"Config: {config_path}")
+    log(f"Pointings: {pointings_path}")
     log(f"SCAs: {sca_list}")
-    log(f"Seed: {seed}, Exptime: {exptime}s")
-    log(f"Pointings: {len(cfg['pointings'])} total, "
+    log(f"Seed: {seed}")
+    log(f"Git SHA: {git_sha}")
+    log(f"Pointings: {len(ptable)} total, "
         f"{len(pointings_todo)} to process")
 
     if not pointings_todo:
@@ -1168,25 +1245,67 @@ def run_batch(config_path, verbose=True, force=False):
 
     # Process pointings
     cone_radius = cfg.get("cone_radius", 0.6)
-    n_skipped = len(cfg["pointings"]) - len(pointings_todo)
+    n_skipped = len(ptable) - len(pointings_todo)
 
     t_all = time.time()
-    for i, (pointing, pointing_key) in enumerate(pointings_todo):
-        name = pointing["name"]
+    for i, row in enumerate(pointings_todo):
+        name = _pointing_dir_name(pointing_filename, row)
+        exptime = float(row["EXPOSURE_TIME"])
+
+        # Derive deterministic RNG key
+        pointing_key = make_pointing_key(
+            seed, pointing_filename,
+            int(row["PLAN"]), int(row["PASS"]), int(row["SEGMENT"]),
+            int(row["OBSERVATION"]), int(row["VISIT"]),
+            int(row["EXPOSURE"]),
+        )
+
         log(f"\n{'='*60}")
         log(f"Pointing {i+1}/{len(pointings_todo)}: {name}")
+        log(f"  RA={row['RA']:.6f}, Dec={row['DEC']:.6f}, "
+            f"PA={row['PA']:.1f}, exptime={exptime:.2f}s")
         log(f"{'='*60}")
+
+        # Extra FITS header fields for this pointing
+        extra_headers = {
+            "GITSHA": (git_sha, "Git commit SHA of pipeline code"),
+            "MA_TABLE": (int(row["MA_TABLE_NUMBER"]),
+                         "MA table number"),
+            "PLAN": (int(row["PLAN"]), "APT plan number"),
+            "PASS": (int(row["PASS"]), "APT pass number"),
+            "SEGMENT": (int(row["SEGMENT"]), "APT segment number"),
+            "OBS": (int(row["OBSERVATION"]), "APT observation number"),
+            "VISIT": (int(row["VISIT"]), "APT visit number"),
+            "EXPOSURE": (int(row["EXPOSURE"]), "APT exposure number"),
+        }
+
+        # Extra metadata for the YAML file
+        extra_meta = {
+            "git_sha": git_sha,
+            "pointing_file": str(Path(pointings_path).name),
+            "apt": {
+                "plan": int(row["PLAN"]),
+                "pass": int(row["PASS"]),
+                "segment": int(row["SEGMENT"]),
+                "observation": int(row["OBSERVATION"]),
+                "visit": int(row["VISIT"]),
+                "exposure": int(row["EXPOSURE"]),
+                "ma_table_number": int(row["MA_TABLE_NUMBER"]),
+            },
+        }
 
         pointing_dir = output_dir / name
         process_pointing(
             pipeline,
-            pointing["ra"], pointing["dec"], pointing["pa"],
+            float(row["RA"]), float(row["DEC"]), float(row["PA"]),
             str(pointing_dir),
             cone_radius=cone_radius,
             exptime=exptime,
             pointing_key=pointing_key,
             seed=seed,
             verbose=verbose,
+            extra_headers=extra_headers,
+            extra_meta=extra_meta,
         )
 
     total = time.time() - t_all
@@ -1216,8 +1335,7 @@ def main():
     # Mode selection
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--config", type=str,
-                      help="YAML config file for batch mode "
-                           "(multiple pointings/SCAs)")
+                      help="YAML config file for batch mode")
     mode.add_argument("--pointing-ra", type=float,
                       help="Pointing RA in degrees (quick mode)")
     mode.add_argument("--generate-config", type=str, metavar="FILE",
@@ -1225,6 +1343,10 @@ def main():
     mode.add_argument("--mosaic", type=str, metavar="DIR",
                       help="Generate mosaic PNG from a pointing directory "
                            "containing grism_*_detSCA*.fits files")
+
+    # Batch mode: ECSV pointing table
+    parser.add_argument("--pointings", type=str,
+                        help="ECSV pointing table (required for batch mode)")
 
     # Quick mode arguments
     parser.add_argument("--pointing-dec", type=float,
@@ -1256,7 +1378,7 @@ def main():
     parser.add_argument("--seed", type=int, default=None,
                         help="RNG seed (required for quick mode)")
     parser.add_argument("--exptime", type=float, default=190.22,
-                        help="Exposure time in seconds (default: 190.22)")
+                        help="Exposure time in seconds (quick mode)")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress progress output")
     parser.add_argument("--force", action="store_true",
@@ -1281,7 +1403,10 @@ def main():
 
     # Batch mode
     if args.config:
-        run_batch(args.config, verbose=not args.quiet, force=args.force)
+        if args.pointings is None:
+            parser.error("--pointings required with --config (batch mode)")
+        run_batch(args.config, args.pointings,
+                  verbose=not args.quiet, force=args.force)
         return
 
     # Quick mode --- validate required arguments

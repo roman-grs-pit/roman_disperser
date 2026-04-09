@@ -7,7 +7,7 @@ Simulates Roman Space Telescope grism images from a unified source catalog conta
 The script has four modes:
 
 1. **Quick mode** -- single pointing, single SCA. Runs `setup_pipeline` + `process_pointing` as a convenience wrapper.
-2. **Batch mode** -- YAML config specifying multiple pointings and SCAs.
+2. **Batch mode** -- YAML config + ECSV pointing table (APT format).
 3. **`--mosaic`** -- generates a focal-plane mosaic PNG from an existing pointing directory (no dispersion).
 4. **`--generate-config`** -- writes a documented template YAML config and exits.
 
@@ -19,9 +19,10 @@ pixi run -e cuda python scripts/build_grism_image.py \
     --pointing-ra 9.5 --pointing-dec 0.95 --pointing-pa 0.0 \
     --sca 5 --output my_field.fits --seed 42
 
-# Batch mode: multiple pointings/SCAs from config
+# Batch mode: config + ECSV pointing table
 pixi run -e cuda python scripts/build_grism_image.py \
-    --config scripts/example_grism_config.yaml
+    --config scripts/example_grism_config.yaml \
+    --pointings pointings.ecsv
 
 # Generate a template config
 pixi run -e cuda python scripts/build_grism_image.py \
@@ -36,18 +37,24 @@ pixi run -e cuda python scripts/build_grism_image.py \
 
 ### Directory Structure (Batch Mode)
 
+Output directories are named from the ECSV filename and APT identifiers:
+
 ```
 output_dir/
-  pointing_name/
-    grism_pointing_name_detSCA01.fits
-    grism_pointing_name_detSCA01.png
+  {ecsv_basename}_{plan}.{pass}.{segment}.{observation}.{visit}.{exposure}/
+    grism_{dirname}_detSCA01.fits
+    grism_{dirname}_detSCA01.png
     ...
-    grism_pointing_name_detSCA18.fits
-    grism_pointing_name_detSCA18.png
-    grism_pointing_name_mosaic.png
-    grism_pointing_name_sources.parquet
-    grism_pointing_name_meta.yaml
+    grism_{dirname}_detSCA18.fits
+    grism_{dirname}_detSCA18.png
+    grism_{dirname}_mosaic.png
+    grism_{dirname}_sources.parquet
+    grism_{dirname}_meta.yaml
 ```
+
+For example, with `--pointings galacticus.ecsv` and a row with plan=1, pass=1,
+segment=1, observation=1, visit=1, exposure=1, the directory would be
+`galacticus_001.001.001.001.001.001/`.
 
 Quick mode writes a single FITS, PNG, source manifest, and metadata YAML at the user-specified path.
 
@@ -71,6 +78,14 @@ Quick mode writes a single FITS, PNG, source manifest, and metadata YAML at the 
 | SEED       | Top-level RNG seed |
 | RNDSEED0   | JAX RNG key word 0 (per-SCA) |
 | RNDSEED1   | JAX RNG key word 1 (per-SCA) |
+| GITSHA     | Git commit SHA of pipeline code (batch mode) |
+| MA_TABLE   | MA table number from APT (batch mode) |
+| PLAN       | APT plan number (batch mode) |
+| PASS       | APT pass number (batch mode) |
+| SEGMENT    | APT segment number (batch mode) |
+| OBS        | APT observation number (batch mode) |
+| VISIT      | APT visit number (batch mode) |
+| EXPOSURE   | APT exposure number (batch mode) |
 
 ### Source Manifest (Parquet)
 
@@ -115,20 +130,34 @@ Written to `grism_<name>_meta.yaml`. Fields:
 | `galaxy_npix` | Sersic image size in native pixels |
 | `oversample` | PSF oversampling factor |
 | `source_counts` | Per-SCA dict mapping order -> {stars, galaxies} counts |
+| `git_sha` | Git commit SHA of pipeline code (batch mode) |
+| `pointing_file` | ECSV filename (batch mode) |
+| `apt` | APT identifiers: plan, pass, segment, observation, visit, exposure, ma_table_number (batch mode) |
 
 ## RNG Reproducibility
 
-The seed produces a fully deterministic chain of JAX PRNG keys:
+### Batch Mode
+
+Per-pointing RNG keys are derived deterministically from three inputs:
+
+1. The top-level **seed** (from the config YAML)
+2. The **pointing filename** (basename of the ECSV file, used as salt)
+3. The **APT identifiers** (plan, pass, segment, observation, visit, exposure)
+
+This design ensures:
+- **Deterministic**: same seed + same ECSV file + same exposure → same output
+- **Slice-invariant**: processing a subset of pointings does not change any key
+- **File-isolated**: different ECSV files produce different keys even with the same seed
+
+The per-pointing key is then split into per-SCA keys for Poisson sampling:
 
 ```
-seed
-  -> jax.random.key(seed)
-  -> jax.random.split(n_pointings)     # one key per pointing
-     -> jax.random.split(n_scas)       # one key per SCA within pointing
-        -> jax.random.poisson(...)     # Poisson draw for that SCA
+make_pointing_key(seed, filename, plan, pass, segment, obs, visit, exposure)
+  -> jax.random.split(n_scas)       # one key per SCA
+     -> jax.random.poisson(...)     # Poisson draw for that SCA
 ```
 
-Same seed always produces identical output. Per-SCA keys are stored in both FITS headers (`RNDSEED0`/`RNDSEED1`) and the metadata YAML, so individual SCAs can be reproduced by reconstructing the key:
+Per-SCA keys are stored in both FITS headers (`RNDSEED0`/`RNDSEED1`) and the metadata YAML, so individual SCAs can be reproduced by reconstructing the key:
 
 ```python
 import jax
@@ -137,19 +166,23 @@ import jax.numpy as jnp
 key = jax.random.wrap_key_data(jnp.array([rndseed0, rndseed1], dtype=jnp.uint32))
 ```
 
-**Note:** Quick mode uses `jax.random.key(seed)` directly as the pointing key (no split over pointings), so quick-mode and batch-mode outputs for the same seed will differ.
+### Quick Mode
+
+Quick mode uses `jax.random.key(seed)` directly as the pointing key. Quick-mode and batch-mode outputs for the same seed will differ.
 
 ## Configuration Reference
 
-All fields for the batch-mode YAML config (see `scripts/example_grism_config.yaml`):
+Batch mode takes two input files: a YAML config (`--config`) and an ECSV pointing table (`--pointings`).
+
+### YAML Config
+
+Simulation parameters and data paths (see `scripts/example_grism_config.yaml`):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `output_dir` | str | *(required)* | Top-level output directory |
 | `seed` | int | *(required)* | RNG seed for reproducibility |
-| `exptime` | float | 190.22 | Exposure time in seconds |
 | `scas` | `"all"` or list[int] | `"all"` | SCAs to simulate (1-18) |
-| `pointings` | list | *(required)* | List of `{name, ra, dec, pa}` dicts |
 | `star_batch_size` | int | 1000 | Stars per JIT batch |
 | `galaxy_batch_size` | int | 100 | Galaxies per JIT batch |
 | `galaxy_npix` | int | 30 | Sersic image size in native pixels |
@@ -160,6 +193,25 @@ All fields for the batch-mode YAML config (see `scripts/example_grism_config.yam
 | `psf_cache_dir` | str | `data/psf_cache` | Path to PSF cache directory |
 
 **Deprecated:** `batch_size` is accepted as an alias for `star_batch_size` with a warning.
+
+### ECSV Pointing Table
+
+An astropy ECSV file with APT-format columns. Rows with `BANDPASS != 'GRISM'` are filtered out automatically. Required columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `RA` | float | Pointing RA [deg] |
+| `DEC` | float | Pointing Dec [deg] |
+| `PA` | float | Position angle [deg] |
+| `EXPOSURE_TIME` | float | Exposure time [s] (per-pointing) |
+| `PLAN` | int | APT plan number |
+| `PASS` | int | APT pass number |
+| `SEGMENT` | int | APT segment number |
+| `OBSERVATION` | int | APT observation number |
+| `VISIT` | int | APT visit number |
+| `EXPOSURE` | int | APT exposure number |
+| `BANDPASS` | str | Filter name (only `GRISM` rows are processed) |
+| `MA_TABLE_NUMBER` | int | MA table number (stored in FITS header) |
 
 ## Catalog Format
 

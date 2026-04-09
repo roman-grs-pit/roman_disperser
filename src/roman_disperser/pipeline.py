@@ -337,7 +337,8 @@ def disperse_batched_galaxies(fori_fn, spectra, xsca, ysca, images, output,
 # ---------------------------------------------------------------------------
 
 def write_fits(model_np, isim_np, output_file, pointing_ra, pointing_dec,
-               pointing_pa, sca, exptime, rng_key_data, seed):
+               pointing_pa, sca, exptime, rng_key_data, seed,
+               extra_headers=None):
     """Write the grism image to a FITS file.
 
     Primary HDU contains pointing/simulation metadata.  MODEL extension
@@ -359,6 +360,8 @@ def write_fits(model_np, isim_np, output_file, pointing_ra, pointing_dec,
         JAX RNG key data used for this SCA's Poisson draw.
     seed : int
         Top-level seed for the full run.
+    extra_headers : dict, optional
+        Additional FITS header cards as ``{keyword: (value, comment)}``.
     """
     primary = fits.PrimaryHDU()
     primary.header["WFICENRA"] = (pointing_ra, "Pointing RA [deg]")
@@ -369,6 +372,10 @@ def write_fits(model_np, isim_np, output_file, pointing_ra, pointing_dec,
     primary.header["SEED"] = (seed, "Top-level RNG seed")
     primary.header["RNDSEED0"] = (int(rng_key_data[0]), "JAX RNG key word 0")
     primary.header["RNDSEED1"] = (int(rng_key_data[1]), "JAX RNG key word 1")
+
+    if extra_headers:
+        for key, val in extra_headers.items():
+            primary.header[key] = val
 
     model_hdu = fits.ImageHDU(data=model_np, name="MODEL")
     isim_hdu = fits.ImageHDU(data=isim_np, name="ISIM")
