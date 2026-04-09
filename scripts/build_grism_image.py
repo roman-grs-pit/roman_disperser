@@ -242,7 +242,7 @@ def setup_pipeline(
     sensitivity_dir=None,
     optical_model_path=None,
     psf_cache_dir=None,
-    batch_size=1000,
+    star_batch_size=1000,
     galaxy_batch_size=100,
     galaxy_npix=30,
     verbose=True,
@@ -261,7 +261,7 @@ def setup_pipeline(
         SCA numbers to prepare (1-18).
     catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir : str, optional
         Override default data paths.
-    batch_size : int
+    star_batch_size : int
         Number of stars per JIT batch (default: 1000).
     galaxy_batch_size : int
         Number of galaxies per JIT batch (default: 100).
@@ -376,7 +376,7 @@ def setup_pipeline(
         "sca_list": sca_list,
         "sca_data": sca_data,
         "psf_cache_dir": str(psf_cache_dir),
-        "batch_size": batch_size,
+        "star_batch_size": star_batch_size,
         "galaxy_batch_size": galaxy_batch_size,
         "galaxy_npix": galaxy_npix,
         "galaxy_npix_os": galaxy_npix_os,
@@ -439,7 +439,7 @@ def process_pointing(
 
     meta = pipeline["meta"]
     sca_list = pipeline["sca_list"]
-    batch_size = pipeline["batch_size"]
+    star_batch_size = pipeline["star_batch_size"]
     galaxy_batch_size = pipeline["galaxy_batch_size"]
     galaxy_npix_os = pipeline["galaxy_npix_os"]
     oversample = pipeline["oversample"]
@@ -578,10 +578,10 @@ def process_pointing(
             (DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32,
         )
         warmup_spec = jnp.zeros(
-            (batch_size, n_wavelength), dtype=jnp.float32,
+            (star_batch_size, n_wavelength), dtype=jnp.float32,
         )
-        warmup_x = jnp.zeros(batch_size, dtype=jnp.float32)
-        warmup_y = jnp.zeros(batch_size, dtype=jnp.float32)
+        warmup_x = jnp.zeros(star_batch_size, dtype=jnp.float32)
+        warmup_y = jnp.zeros(star_batch_size, dtype=jnp.float32)
         warmup_gspec = jnp.zeros(
             (galaxy_batch_size, n_wavelength), dtype=jnp.float32,
         )
@@ -728,7 +728,7 @@ def process_pointing(
                     output = disperse_batched_stars(
                         star_fori_fns[order],
                         spec_star, x_star, y_star,
-                        output, batch_size,
+                        output, star_batch_size,
                     )
                     elapsed = time.time() - t_order
                     ms_per = elapsed / n_star_order * 1e3
@@ -880,7 +880,7 @@ def process_pointing(
         },
         "dlam_angstroms": pipeline["dlam_angstroms"],
         "cone_radius": cone_radius,
-        "batch_size": pipeline["batch_size"],
+        "star_batch_size": pipeline["star_batch_size"],
         "galaxy_batch_size": pipeline["galaxy_batch_size"],
         "galaxy_npix": pipeline["galaxy_npix"],
         "oversample": pipeline["oversample"],
@@ -916,7 +916,7 @@ def build_grism_image(
     optical_model_path=None,
     psf_cache_dir=None,
     cone_radius=0.6,
-    batch_size=1000,
+    star_batch_size=1000,
     galaxy_batch_size=100,
     galaxy_npix=30,
     verbose=True,
@@ -942,7 +942,7 @@ def build_grism_image(
         Override default data paths.
     cone_radius : float
         Cone search radius in degrees (default: 0.6).
-    batch_size : int
+    star_batch_size : int
         Stars per JIT batch (default: 1000).
     galaxy_batch_size : int
         Galaxies per JIT batch (default: 100).
@@ -970,7 +970,7 @@ def build_grism_image(
         sensitivity_dir=sensitivity_dir,
         optical_model_path=optical_model_path,
         psf_cache_dir=psf_cache_dir,
-        batch_size=batch_size,
+        star_batch_size=star_batch_size,
         galaxy_batch_size=galaxy_batch_size,
         galaxy_npix=galaxy_npix,
         verbose=verbose,
@@ -1065,7 +1065,7 @@ cone_radius: 0.6
 
 # -- Batching ----------------------------------------------------------------
 # Stars per JIT batch (larger = more GPU memory, less loop overhead).
-batch_size: 1000
+star_batch_size: 1000
 
 # Galaxies per JIT batch (smaller than stars due to larger per-source memory).
 galaxy_batch_size: 100
@@ -1095,12 +1095,31 @@ def run_batch(config_path, verbose=True, force=False):
     force : bool
         Overwrite existing pointing directories (default: skip them).
     """
+    import warnings
+
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
 
     def log(msg):
         if verbose:
             print(msg)
+
+    # Deprecation: batch_size → star_batch_size
+    if "batch_size" in cfg and "star_batch_size" not in cfg:
+        warnings.warn(
+            "Config key 'batch_size' is deprecated, use 'star_batch_size' instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        cfg["star_batch_size"] = cfg.pop("batch_size")
+    elif "batch_size" in cfg and "star_batch_size" in cfg:
+        warnings.warn(
+            "Config contains both 'batch_size' and 'star_batch_size'; "
+            "using 'star_batch_size' (ignoring deprecated 'batch_size').",
+            FutureWarning,
+            stacklevel=2,
+        )
+        cfg.pop("batch_size")
 
     # Parse SCA list
     scas = cfg.get("scas", "all")
@@ -1141,7 +1160,7 @@ def run_batch(config_path, verbose=True, force=False):
         sensitivity_dir=cfg.get("sensitivity_dir"),
         optical_model_path=cfg.get("optical_model"),
         psf_cache_dir=cfg.get("psf_cache_dir"),
-        batch_size=cfg.get("batch_size", 1000),
+        star_batch_size=cfg.get("star_batch_size", 1000),
         galaxy_batch_size=cfg.get("galaxy_batch_size", 100),
         galaxy_npix=cfg.get("galaxy_npix", 30),
         verbose=verbose,
@@ -1228,7 +1247,7 @@ def main():
                         help="Path to PSF cache directory")
     parser.add_argument("--cone-radius", type=float, default=0.6,
                         help="Cone search radius in degrees (default: 0.6)")
-    parser.add_argument("--batch-size", type=int, default=1000,
+    parser.add_argument("--star-batch-size", type=int, default=1000,
                         help="Stars per JIT batch (default: 1000)")
     parser.add_argument("--galaxy-batch-size", type=int, default=100,
                         help="Galaxies per JIT batch (default: 100)")
@@ -1288,7 +1307,7 @@ def main():
         optical_model_path=args.optical_model,
         psf_cache_dir=args.psf_cache_dir,
         cone_radius=args.cone_radius,
-        batch_size=args.batch_size,
+        star_batch_size=args.star_batch_size,
         galaxy_batch_size=args.galaxy_batch_size,
         galaxy_npix=args.galaxy_npix,
         verbose=not args.quiet,

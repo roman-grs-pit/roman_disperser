@@ -44,7 +44,7 @@ cone_radius: 0.6
 
 # -- Batching ----------------------------------------------------------------
 # Stars per JIT batch (larger = more GPU memory, less loop overhead).
-batch_size: 1000
+star_batch_size: 1000
 
 # Galaxies per JIT batch (smaller than stars due to larger per-source memory).
 galaxy_batch_size: 100

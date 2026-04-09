@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy. Seven main components:
+JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy. Main components:
 - **Class-based** (`optical_model.py`): Reference implementation using NumPy
 - **JAX functional** (`optical_model_jax.py`): JIT-compilable, vectorized implementation
 - **Disperser** (`disperser.py`): Legacy 2D+1D galaxy disperser (replaced by `galaxy_disperser.py`)
@@ -12,6 +12,8 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
 - **Galaxy disperser** (`galaxy_disperser.py`): Extended source dispersion with Jacobian-based shape warping + PSF convolution
 - **PSF model** (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation
 - **Sérsic profiles** (`sersic.py`): JAX/vmap Sérsic profile generator for galaxy morphologies
+- **Pipeline** (`pipeline.py`): Shared utilities for grism simulation (I/O, batching, sensitivity loading)
+- **Unified pipeline script** (`scripts/build_grism_image.py`): Full-field grism simulation from a unified star+galaxy catalog
 
 ## Design Documents
 
@@ -22,7 +24,8 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
  - @docs/star_dispersion.md : Star dispersion design phases and PSF interpolation approach.
  - @docs/psf_phase1_plan.md : PSF data model implementation plan with validation results.
  - @docs/galaxy_dispersion_plan.md : Design for the new galaxy disperser using Jacobian-based shape warping + PSF convolution.
- - @docs/star_grism_pipeline.md : User guide for `scripts/build_star_grism_image.py` (output format, config, catalog assumptions).
+ - @docs/grism_pipeline.md : User guide for `scripts/build_grism_image.py` (unified stars+galaxies pipeline, output format, config, catalog).
+ - @docs/star_grism_pipeline.md : Legacy star-only pipeline (deprecated, see grism_pipeline.md).
 
 ## Commands
 
@@ -168,11 +171,23 @@ Key functions: `trace_beam_sca`, `trace_beam_sca_with_jacobian`, `disperse_galax
 
 ### Catalog Pipeline
 
-The `catalog` module provides utilities for assigning sources to detectors:
+The `catalog` module provides source selection for detectors:
 
 - **`select_sources(payload, xfpa, yfpa, ...)`**: Returns boolean mask of sources whose dispersed trace overlaps the padded detector region. JIT-compilable. Traces at multiple wavelengths to capture curvature.
 
-**TODO:** Expand catalog module documentation as more functions are added.
+The `pipeline` module (`src/roman_disperser/pipeline.py`) provides shared utilities used by the grism simulation scripts:
+
+- **Source selection**: `cone_search()`, `select_sources_per_order()` — haversine cone search and per-order trace overlap detection.
+- **Sensitivity**: `load_sensitivities()` — load per-SCA, per-order sensitivity curves.
+- **Batched dispersion**: `make_batched_star_fori()`, `make_batched_galaxy_fori()`, `disperse_batched_stars()`, `disperse_batched_galaxies()` — JIT-compiled fori_loop wrappers for batch processing.
+- **I/O**: `write_fits()`, `write_png()`, `write_mosaic_png()`, `write_mosaic_from_directory()` — output file generation.
+- **Config**: `resolve_paths()` — resolve default data paths.
+
+The unified source catalog format is documented in `data/catalogs/README.md`.
+
+### JIT Disk Cache
+
+The unified pipeline (`build_grism_image.py`) sets `JAX_COMPILATION_CACHE_DIR=/tmp/jax-cache-grism` to persist compiled functions across runs. This avoids recompilation (~10s/fn) on subsequent runs (~2.5s/fn from cache). JIT functions are built per-SCA and released after processing to keep memory bounded.
 
 ## Coding Guidelines
 

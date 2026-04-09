@@ -1,3 +1,6 @@
+# DEPRECATED: Use scripts/example_grism_config.yaml with build_grism_image.py instead.
+# This config is for the legacy star-only pipeline (build_star_grism_image.py).
+#
 # Star grism image builder configuration
 #
 # This file defines one or more telescope pointings and the set of

@@ -11,7 +11,7 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
 | **PSF Model** | `psf_model.py` | STPSF grids with trilinear interpolation |
 | **Star Disperser** | `star_disperser.py` | Point sources with wavelength-dependent PSFs |
 | **Galaxy Disperser** | `galaxy_disperser.py` | Extended sources with Jacobian warping + PSF convolution |
-| **Catalog Pipeline** | `catalog.py` + `scripts/build_star_grism_image.py` | Source selection, full-field star grism simulation |
+| **Catalog Pipeline** | `catalog.py` + `pipeline.py` + `scripts/build_grism_image.py` | Source selection, full-field grism simulation (stars + galaxies) |
 | **Sérsic Profiles** | `sersic.py` | JAX/vmap Sérsic profile generator for galaxy morphologies |
 | **Reference Data** | `refdata.py` | Bundled F158 bandpass and spectral templates |
 
@@ -100,13 +100,15 @@ pytest -v tests/test_psf_model.py           # PSF model tests
 
 - [Installation Guide](INSTALL.md) — Pixi/pip setup, GPU support, data files
 - [Optical Model API](docs/optical_model.md) — JAX optical model functions and examples
-- [Star Grism Pipeline](docs/star_grism_pipeline.md) — User guide for `build_star_grism_image.py`
+- [Grism Pipeline](docs/grism_pipeline.md) — User guide for `build_grism_image.py` (stars + galaxies)
+- [Star Grism Pipeline](docs/star_grism_pipeline.md) — Legacy star-only pipeline (deprecated)
 - [Disperser Design](docs/disperser_design.md) — Legacy disperser implementation details
 - [JIT Compilation Strategy](docs/jit_compilation.md) — Closure pattern for non-traceable payloads
 - [STPSF Quick Reference](docs/stpsf.md) — Roman WFI grism PSF generation
 - [Star Dispersion](docs/star_dispersion.md) — Star dispersion design phases and PSF interpolation
 - [PSF Phase 1 Plan](docs/psf_phase1_plan.md) — PSF data model implementation and validation results
 - [Galaxy Dispersion Plan](docs/galaxy_dispersion_plan.md) — Galaxy disperser design (Jacobian-based)
+- [Catalog Format](data/catalogs/README.md) — Unified source catalog format specification
 
 ## Notebooks
 
@@ -140,6 +142,7 @@ roman_disperser/
 │   ├── psf_utils.py               # STPSF ↔ disperser coordinate conversion
 │   ├── sersic.py                  # Sérsic profile generator (JAX/vmap)
 │   ├── catalog.py                 # Source selection for detector fields
+│   ├── pipeline.py                # Shared pipeline utilities (I/O, batching, sensitivity)
 │   ├── refdata.py                 # Bundled synphot reference data
 │   └── demo_utils.py              # Synthetic galaxy/spectrum helpers
 ├── tests/
@@ -149,15 +152,19 @@ roman_disperser/
 │   ├── demos/                     # Legacy galaxy demo notebooks
 │   └── archive/                   # Legacy notebooks
 ├── scripts/
-│   ├── build_star_grism_image.py  # Full-field star grism image pipeline
+│   ├── build_grism_image.py       # Unified grism pipeline (stars + galaxies)
+│   ├── build_star_grism_image.py  # Legacy star-only pipeline (deprecated)
 │   ├── download_psf_caches.py     # Download pre-generated PSF caches
+│   ├── download_source_catalog.py # Download unified source catalog
 │   ├── generate_psf_caches.py     # Regenerate PSF caches from STPSF
-│   └── example_star_config.yaml   # Documented batch pipeline config
+│   ├── example_grism_config.yaml  # Documented batch pipeline config
+│   └── example_star_config.yaml   # Legacy star-only config
 ├── data/
 │   ├── Roman_grism_OpticalModel_v0.8.yaml
+│   ├── catalogs/                  # Unified source catalog (Parquet + Zarr)
 │   ├── sensitivities/             # Per-SCA sensitivity curves
-│   ├── stars/                     # Star catalog and SED templates
-│   ├── synphot/                   # Bundled F158 bandpass and templates
+│   ├── stars/                     # Legacy star catalog and SED templates
+│   ├── synphot/                   # Bundled F158/F184 bandpass and templates
 │   └── psf_cache/                 # Pre-generated PSF grids (36 files, ~4.3 GB)
 ├── docs/
 ├── pixi.toml

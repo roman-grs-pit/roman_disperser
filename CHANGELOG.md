@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-09
+
+### Added
+- Unified grism simulation pipeline (`scripts/build_grism_image.py`): disperses both stars and galaxies from a single catalog
+  - Parquet+Zarr unified source catalog format (see `data/catalogs/README.md`)
+  - Per-source Sérsic morphology generation via `sersic.py`
+  - Galaxy dispersion with Jacobian-based shape warping + PSF convolution via `galaxy_disperser`
+  - Separate `star_batch_size` and `galaxy_batch_size` configuration
+  - Per-pointing source manifest (Parquet) with source type, position, flux, and F158 mag
+  - Per-pointing metadata YAML with RNG keys and per-SCA/order source counts
+- JAX Sérsic profile generator (`sersic.py`) for galaxy morphology pipeline
+- Shared pipeline utilities (`pipeline.py`): cone search, source selection, batched dispersion, I/O
+- Unified pipeline documentation (`docs/grism_pipeline.md`)
+- Catalog format specification (`data/catalogs/README.md`)
+- Catalog download and extraction scripts
+
+### Changed
+- Memory-efficient per-SCA processing: PSF payloads, dispersers, and JIT functions built per-SCA and released after use (~2-3 GB vs ~18+ GB for all 18 SCAs)
+- Galaxy SEDs loaded per-SCA instead of per-pointing to avoid OOM with large catalogs
+- On-disk JAX compilation cache (`/tmp/jax-cache-grism`) persists compiled functions across runs (~2.5s vs ~10s per function)
+- `batch_size` config key renamed to `star_batch_size` (old key accepted with deprecation warning)
+
+### Deprecated
+- `scripts/build_star_grism_image.py`: use `scripts/build_grism_image.py` instead
+- `scripts/example_star_config.yaml`: use `scripts/example_grism_config.yaml` instead
+
 ## [0.6.0] - 2026-03-11
 
 ### Added

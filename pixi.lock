@@ -4162,8 +4162,8 @@ packages:
   requires_python: '>=3.9'
 - pypi: ./
   name: roman-disperser
-  version: 0.6.0
-  sha256: b20cef7da306a206d5e55cc0b01011dc7a8b3b460eb807dcf06907e324f28562
+  version: 0.7.0
+  sha256: 0fdbf5acf9e754ba754a6e7155b009715f41a4c64c3324fa50f585cc1d020b0f
   requires_dist:
   - numpy>=2.0
   - jax>=0.7
@@ -4178,7 +4178,6 @@ packages:
   - synphot>=1.6.1,<2 ; extra == 'full'
   - pytest>=9.0.2,<10 ; extra == 'full'
   requires_python: '>=3.12'
-  editable: true
 - pypi: https://files.pythonhosted.org/packages/4d/a1/bca7fd3d452b272e13335db8d6b0b3ecde0f90ad6f16f3328c6fb150c889/rpds_py-0.30.0-cp312-cp312-macosx_11_0_arm64.whl
   name: rpds-py
   version: 0.30.0
