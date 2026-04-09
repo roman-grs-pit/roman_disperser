@@ -1,5 +1,9 @@
 #!/usr/bin/env python
 """
+**DEPRECATED:** This script disperses stars only.  For the unified pipeline
+supporting both stars and galaxies, use ``scripts/build_grism_image.py``
+(see ``docs/grism_pipeline.md``).
+
 Build simulated Roman grism images from a stellar catalog.
 
 Supports two modes:

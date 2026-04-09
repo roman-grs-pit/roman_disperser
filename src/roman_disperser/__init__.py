@@ -10,6 +10,7 @@ from . import psf_utils
 from . import psf_model
 from . import catalog
 from . import refdata
+from . import sersic
 
 __all__ = [
     "RomanOpticalModel",
@@ -22,4 +23,5 @@ __all__ = [
     "psf_model",
     "catalog",
     "refdata",
+    "sersic",
 ]

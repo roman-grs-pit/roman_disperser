@@ -1,5 +1,8 @@
 # Star Grism Pipeline (`scripts/build_star_grism_image.py`)
 
+> **Deprecated:** This documents the star-only pipeline. For the unified pipeline
+> supporting both stars and galaxies, see [`docs/grism_pipeline.md`](grism_pipeline.md).
+
 Simulates Roman Space Telescope grism images from a stellar catalog. Disperses point sources through the optical model with wavelength-dependent PSFs, applies per-SCA sensitivity curves, and produces noiseless and Poisson-sampled FITS images.
 
 ## Overview

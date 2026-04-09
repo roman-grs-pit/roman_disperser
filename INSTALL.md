@@ -37,10 +37,11 @@ A minimal install (`pip install -e .`) is also available — it includes only th
 core library (optical model, dispersers, pre-cached PSF loading) without astropy,
 synphot, or pytest.
 
-**3. Download PSF caches** (~4.3 GB)
+**3. Download data assets**
 
 ```bash
-python scripts/download_psf_caches.py
+python scripts/download_psf_caches.py        # PSF caches (~4.3 GB)
+python scripts/download_source_catalog.py     # Source catalog (~155 MB)
 ```
 
 **4. Verify**
@@ -78,9 +79,30 @@ python -c "import jax; print(f'Backend: {jax.default_backend()}'); print(jax.dev
 | Data | Location | Notes |
 |------|----------|-------|
 | Optical model, sensitivity curves, star catalog | `data/` (in repo) | Included |
-| Synphot reference spectra (F158 bandpass, templates) | `data/synphot/` (in repo) | Included (~60 KB) |
+| Synphot reference spectra (F158/F184 bandpass, templates) | `data/synphot/` (in repo) | Included (~90 KB) |
+| Source catalog (~155 MB) | `data/catalogs/` | `python scripts/download_source_catalog.py` |
 | PSF caches (~4.3 GB) | `data/psf_cache/` | `python scripts/download_psf_caches.py` |
 | STPSF reference data | `~/data/stpsf-data` | Only for PSF cache regeneration (~1-2 GB) |
+
+### Source catalog
+
+The source catalog contains galaxy and star metadata (Parquet) and SEDs (Zarr)
+for grism simulations. See `data/catalogs/README.md` for the format specification.
+
+```bash
+python scripts/download_source_catalog.py          # skip if exists
+python scripts/download_source_catalog.py --force  # re-download
+```
+
+This downloads ~155 MB from a public GitHub release. No authentication required.
+
+To rebuild the catalog from scratch (requires access to the Galacticus 4 deg²
+mock at `~/data/Roman/galacticus_4deg2_mock/`):
+
+```bash
+pixi run python scripts/build_source_catalog.py --sims 1
+pixi run python scripts/verify_source_catalog.py   # validate the build
+```
 
 ### PSF caches
 
@@ -113,12 +135,12 @@ Once installed with PSF caches downloaded:
 
 - **Batch pipeline** — generate a config, edit it, and run:
   ```bash
-  python scripts/build_star_grism_image.py --generate-config my_config.yaml
+  python scripts/build_grism_image.py --generate-config my_config.yaml
   # Edit my_config.yaml (pointings, SCAs, output directory, etc.)
-  python scripts/build_star_grism_image.py --config my_config.yaml
+  python scripts/build_grism_image.py --config my_config.yaml
   ```
-  See `scripts/example_star_config.yaml` for a fully commented example and
-  `docs/star_grism_pipeline.md` for details.
+  See `scripts/example_grism_config.yaml` for a fully commented example and
+  `docs/grism_pipeline.md` for details.
 
   **Note:** The batch pipeline processes all 18 SCAs per pointing and benefits
   significantly from a GPU. On CPU, expect ~30 min per SCA; on GPU (e.g., RTX 4090),

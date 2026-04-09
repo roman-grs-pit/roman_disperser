@@ -13,6 +13,7 @@ python = ">=3.12, <3.13"
 
 [pypi-dependencies]
 roman_disperser = { path = ".", editable = true, extras = ["full"] }
+h5py = "*"
 stsynphot = ">=1.5.0, <2"
 stpsf = ">=2.1.0, <3"
 ipykernel = "*"
