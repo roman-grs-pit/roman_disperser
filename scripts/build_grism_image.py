@@ -37,15 +37,28 @@ compilation cache (``/tmp/jax-cache-grism``) makes subsequent runs fast
 
 import argparse
 import os
+import sys
 import tempfile
 import time
 from pathlib import Path
 
-# Enable JAX compilation cache in a tmpdir (cleared on reboot)
-os.environ.setdefault(
-    "JAX_COMPILATION_CACHE_DIR",
-    os.path.join(tempfile.gettempdir(), "jax-cache-grism"),
-)
+# -- Early CLI pre-parse for flags that must be set before JAX import --------
+# --gpu sets CUDA_VISIBLE_DEVICES; --cache-dir sets JAX_COMPILATION_CACHE_DIR.
+# We parse these before importing JAX so the env vars take effect.
+_pre = argparse.ArgumentParser(add_help=False)
+_pre.add_argument("--gpu", type=int, default=None)
+_pre.add_argument("--cache-dir", type=str, default=None)
+_pre_args, _ = _pre.parse_known_args()
+if _pre_args.gpu is not None:
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(_pre_args.gpu)
+# Cache dir precedence: CLI --cache-dir > env var > default
+if _pre_args.cache_dir is not None:
+    os.environ["JAX_COMPILATION_CACHE_DIR"] = _pre_args.cache_dir
+else:
+    os.environ.setdefault(
+        "JAX_COMPILATION_CACHE_DIR",
+        os.path.join(tempfile.gettempdir(), "jax-cache-grism"),
+    )
 
 import hashlib
 import subprocess
@@ -1120,6 +1133,12 @@ galaxy_batch_size: 100
 # 30 native pixels = 120 oversampled pixels at 4x oversampling.
 galaxy_npix: 30
 
+# -- JAX compilation cache (optional) ----------------------------------------
+# Directory for JAX's persistent compilation cache.  Defaults to
+# /tmp/jax-cache-grism (cleared on reboot).  Set to a persistent path to
+# keep compiled functions across reboots.  CLI --cache-dir overrides this.
+# cache_dir: /tmp/jax-cache-grism
+
 # -- Data paths (optional, defaults shown) -----------------------------------
 # Uncomment to override:
 # catalog_dir: data/catalogs
@@ -1140,7 +1159,170 @@ def _pointing_dir_name(prefix, row):
             f".{int(row['EXPOSURE']):03d}")
 
 
-def run_batch(config_path, pointings_path, verbose=True, force=False):
+def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
+    """Compile JIT functions for all SCAs and exit (no catalog needed).
+
+    Populates the JAX compilation cache so subsequent batch runs start fast.
+    Can be parallelized across GPUs by partitioning SCAs with
+    ``--worker-index`` / ``--num-workers``.
+
+    Parameters
+    ----------
+    config_path : str
+        Path to YAML config file (for batch sizes, data paths, SCA list).
+    verbose : bool
+        Print progress.
+    worker_index : int, optional
+        This worker's index for SCA partitioning.
+    num_workers : int, optional
+        Total number of workers.  SCAs are assigned round-robin.
+    """
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+
+    # Cache dir from config (CLI already wins via pre-parse)
+    if _pre_args.cache_dir is None and "cache_dir" in cfg:
+        os.environ["JAX_COMPILATION_CACHE_DIR"] = cfg["cache_dir"]
+
+    def log(msg):
+        if verbose:
+            print(msg)
+
+    # Parse SCA list and apply worker partitioning
+    scas = cfg.get("scas", "all")
+    if scas == "all":
+        sca_list = list(range(1, 19))
+    else:
+        sca_list = [int(s) for s in scas]
+
+    if num_workers is not None:
+        sca_list = [s for i, s in enumerate(sca_list)
+                    if i % num_workers == worker_index]
+
+    if not sca_list:
+        log("No SCAs assigned to this worker.")
+        return
+
+    log(f"Warmup: compiling JIT functions for SCAs {sca_list}")
+    log(f"Cache dir: {os.environ.get('JAX_COMPILATION_CACHE_DIR', '(default)')}")
+
+    # Batch sizes (affect compiled function shapes)
+    star_batch_size = cfg.get("star_batch_size", 1000)
+    galaxy_batch_size = cfg.get("galaxy_batch_size", 100)
+    galaxy_npix = cfg.get("galaxy_npix", 30)
+
+    # Resolve data paths (catalog_dir needed for wavelength grid)
+    catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir = \
+        resolve_paths(cfg.get("catalog_dir"), cfg.get("sensitivity_dir"),
+                      cfg.get("optical_model"),
+                      cfg.get("psf_cache_dir"))
+
+    # Read wavelength grid from catalog (must match what setup_pipeline uses)
+    store = zarr.open(str(Path(catalog_dir) / "seds.zarr"), mode="r")
+    wavelengths_full = np.array(store["wavelengths"])
+    wavelengths_ang, _, dlam_angstroms = trim_wavelength_grid(wavelengths_full)
+    wavelengths_um = (wavelengths_ang / 1e4).astype(np.float32)
+    wavelengths_jax = jnp.array(wavelengths_um)
+    n_wavelength = len(wavelengths_um)
+    log(f"Wavelength grid: {LAM_MIN}-{LAM_MAX} um, "
+        f"{dlam_angstroms:.1f} A spacing, {n_wavelength} samples")
+
+    # Load optical model
+    model = RomanOpticalModel(config_file=str(optical_model_path))
+
+    # Determine oversample from first PSF payload
+    first_psf = psf_model.get_or_make_psf_payload(
+        detector=f"WFI{sca_list[0]:02d}", order="1",
+        cache_dir=str(psf_cache_dir), verbose=False,
+    )
+    oversample = int(first_psf["oversample"])
+    galaxy_npix_os = galaxy_npix * oversample
+
+    t_total = time.time()
+    for sca_num in sca_list:
+        t_sca = time.time()
+        detector_name = f"WFI{sca_num:02d}"
+        log(f"\n  SCA {sca_num} ({detector_name}):")
+
+        # Load PSF payloads
+        psf_payloads = {}
+        for psf_order in ["0", "1"]:
+            psf_payloads[psf_order] = psf_model.get_or_make_psf_payload(
+                detector=detector_name, order=psf_order,
+                cache_dir=str(psf_cache_dir), verbose=False,
+            )
+        psf_payloads["2"] = psf_payloads["1"]
+
+        # Build optical payloads and sensitivities
+        optical_payloads = {
+            order: omj.make_sca_payload(model, sca=sca_num, order=order)
+            for order in ORDERS
+        }
+        sensitivities = load_sensitivities(
+            sensitivity_dir, sca_num, wavelengths_um,
+        )
+
+        # Build dispersers and JIT-compile
+        star_fori_fns = {}
+        galaxy_fori_fns = {}
+        for order in ORDERS:
+            sd_fn = star_disperser.make_star_disperser(
+                psf_payloads[order], optical_payloads[order],
+            )
+            star_fori_fns[order] = make_batched_star_fori(
+                sd_fn, sensitivities[order],
+                wavelengths_jax, dlam_angstroms,
+            )
+            gd_fn = galaxy_disperser.make_galaxy_disperser(
+                psf_payloads[order], optical_payloads[order],
+            )
+            galaxy_fori_fns[order] = make_batched_galaxy_fori(
+                gd_fn, sensitivities[order],
+                wavelengths_jax, dlam_angstroms,
+            )
+
+        t_jit = time.time()
+        log(f"    Build dispersers: {t_jit - t_sca:.1f}s")
+
+        # JIT warmup calls
+        warmup_output = jnp.zeros(
+            (DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32,
+        )
+        warmup_spec = jnp.zeros(
+            (star_batch_size, n_wavelength), dtype=jnp.float32,
+        )
+        warmup_x = jnp.zeros(star_batch_size, dtype=jnp.float32)
+        warmup_y = jnp.zeros(star_batch_size, dtype=jnp.float32)
+        warmup_gspec = jnp.zeros(
+            (galaxy_batch_size, n_wavelength), dtype=jnp.float32,
+        )
+        warmup_gx = jnp.zeros(galaxy_batch_size, dtype=jnp.float32)
+        warmup_gy = jnp.zeros(galaxy_batch_size, dtype=jnp.float32)
+        warmup_imgs = jnp.zeros(
+            (galaxy_batch_size, galaxy_npix_os, galaxy_npix_os),
+            dtype=jnp.float32,
+        )
+        for order in ORDERS:
+            star_fori_fns[order](
+                1, warmup_spec, warmup_x, warmup_y, warmup_output,
+            ).block_until_ready()
+            galaxy_fori_fns[order](
+                1, warmup_gspec, warmup_gx, warmup_gy,
+                warmup_imgs, warmup_output,
+            ).block_until_ready()
+
+        # Release compiled functions and PSF payloads
+        del star_fori_fns, galaxy_fori_fns, psf_payloads
+        del warmup_output, warmup_spec, warmup_x, warmup_y
+        del warmup_gspec, warmup_gx, warmup_gy, warmup_imgs
+        log(f"    JIT warmup: {time.time() - t_jit:.1f}s")
+
+    log(f"\nWarmup complete: {len(sca_list)} SCAs in {time.time() - t_total:.1f}s")
+    log(f"Cache dir: {os.environ.get('JAX_COMPILATION_CACHE_DIR')}")
+
+
+def run_batch(config_path, pointings_path, verbose=True, force=False,
+              worker_index=None, num_workers=None):
     """Run the pipeline from a YAML config + ECSV pointing table.
 
     Parameters
@@ -1153,6 +1335,11 @@ def run_batch(config_path, pointings_path, verbose=True, force=False):
         Print progress.
     force : bool
         Overwrite existing pointing directories (default: skip them).
+    worker_index : int, optional
+        This worker's index (0-based) for parallel runs.
+    num_workers : int, optional
+        Total number of parallel workers.  When set, this worker processes
+        only pointings where ``index % num_workers == worker_index``.
     """
     import warnings
     from astropy.table import Table
@@ -1163,6 +1350,10 @@ def run_batch(config_path, pointings_path, verbose=True, force=False):
     def log(msg):
         if verbose:
             print(msg)
+
+    # Cache dir from config (CLI already wins via pre-parse)
+    if _pre_args.cache_dir is None and "cache_dir" in cfg:
+        os.environ["JAX_COMPILATION_CACHE_DIR"] = cfg["cache_dir"]
 
     # Deprecation: batch_size → star_batch_size
     if "batch_size" in cfg and "star_batch_size" not in cfg:
@@ -1212,7 +1403,10 @@ def run_batch(config_path, pointings_path, verbose=True, force=False):
 
     # Check which pointings need processing before expensive setup.
     pointings_todo = []
-    for row in ptable:
+    for idx, row in enumerate(ptable):
+        # Worker partitioning: round-robin over filtered pointing list
+        if num_workers is not None and idx % num_workers != worker_index:
+            continue
         name = _pointing_dir_name(pointing_filename, row)
         pointing_dir = output_dir / name
         if force or not pointing_dir.exists():
@@ -1223,6 +1417,8 @@ def run_batch(config_path, pointings_path, verbose=True, force=False):
     log(f"SCAs: {sca_list}")
     log(f"Seed: {seed}")
     log(f"Git SHA: {git_sha}")
+    if num_workers is not None:
+        log(f"Worker: {worker_index}/{num_workers}")
     log(f"Pointings: {len(ptable)} total, "
         f"{len(pointings_todo)} to process")
 
@@ -1384,7 +1580,42 @@ def main():
     parser.add_argument("--force", action="store_true",
                         help="Overwrite existing output directories/files")
 
+    # Multi-GPU / parallel worker arguments
+    parser.add_argument("--gpu", type=int, default=None,
+                        help="GPU device index (sets CUDA_VISIBLE_DEVICES)")
+    parser.add_argument("--cache-dir", type=str, default=None,
+                        help="JAX compilation cache directory "
+                             "(default: /tmp/jax-cache-grism)")
+    parser.add_argument("--worker-index", type=int, default=None,
+                        help="This worker's index (0-based) for parallel runs")
+    parser.add_argument("--num-workers", type=int, default=None,
+                        help="Total number of parallel workers")
+    parser.add_argument("--warmup-only", action="store_true",
+                        help="Compile JIT functions for all SCAs and exit "
+                             "(no catalog or pointings needed)")
+    parser.add_argument("--log-file", type=str, default=None,
+                        help="Redirect all output to this file "
+                             "(useful for parallel workers)")
+
     args = parser.parse_args()
+
+    # Validate worker flags
+    if (args.worker_index is None) != (args.num_workers is None):
+        parser.error("--worker-index and --num-workers must be used together")
+    if args.num_workers is not None and args.num_workers < 1:
+        parser.error("--num-workers must be >= 1")
+    if args.worker_index is not None and (
+        args.worker_index < 0 or args.worker_index >= args.num_workers
+    ):
+        parser.error("--worker-index must be in [0, num-workers)")
+
+    # Redirect output to log file if requested
+    if args.log_file:
+        log_path = Path(args.log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_fh = open(log_path, "w", buffering=1)  # line-buffered
+        sys.stdout = log_fh
+        sys.stderr = log_fh
 
     # Generate config mode
     if args.generate_config:
@@ -1401,12 +1632,23 @@ def main():
         )
         return
 
+    # Warmup-only mode (requires --config)
+    if args.warmup_only:
+        if args.config is None:
+            parser.error("--warmup-only requires --config")
+        run_warmup(args.config, verbose=not args.quiet,
+                   worker_index=args.worker_index,
+                   num_workers=args.num_workers)
+        return
+
     # Batch mode
     if args.config:
         if args.pointings is None:
             parser.error("--pointings required with --config (batch mode)")
         run_batch(args.config, args.pointings,
-                  verbose=not args.quiet, force=args.force)
+                  verbose=not args.quiet, force=args.force,
+                  worker_index=args.worker_index,
+                  num_workers=args.num_workers)
         return
 
     # Quick mode --- validate required arguments

@@ -4,12 +4,13 @@ Simulates Roman Space Telescope grism images from a unified source catalog conta
 
 ## Overview
 
-The script has four modes:
+The script has five modes:
 
 1. **Quick mode** -- single pointing, single SCA. Runs `setup_pipeline` + `process_pointing` as a convenience wrapper.
 2. **Batch mode** -- YAML config + ECSV pointing table (APT format).
-3. **`--mosaic`** -- generates a focal-plane mosaic PNG from an existing pointing directory (no dispersion).
-4. **`--generate-config`** -- writes a documented template YAML config and exits.
+3. **`--warmup-only`** -- compile JIT functions for all SCAs and exit (no dispersion).
+4. **`--mosaic`** -- generates a focal-plane mosaic PNG from an existing pointing directory (no dispersion).
+5. **`--generate-config`** -- writes a documented template YAML config and exits.
 
 ## Quick Start
 
@@ -27,6 +28,11 @@ pixi run -e cuda python scripts/build_grism_image.py \
 # Generate a template config
 pixi run -e cuda python scripts/build_grism_image.py \
     --generate-config my_config.yaml
+
+# Warmup JIT cache (single GPU)
+pixi run -e cuda python scripts/build_grism_image.py \
+    --config scripts/example_grism_config.yaml \
+    --warmup-only --gpu 0 --cache-dir /path/to/jax-cache
 
 # Generate mosaic from existing pointing directory
 pixi run -e cuda python scripts/build_grism_image.py \
@@ -187,6 +193,7 @@ Simulation parameters and data paths (see `scripts/example_grism_config.yaml`):
 | `galaxy_batch_size` | int | 100 | Galaxies per JIT batch |
 | `galaxy_npix` | int | 30 | Sersic image size in native pixels |
 | `cone_radius` | float | 0.6 | Initial cone search radius [deg] |
+| `cache_dir` | str | `/tmp/jax-cache-grism` | JAX compilation cache directory |
 | `catalog_dir` | str | `data/catalogs` | Path to unified catalog directory |
 | `sensitivity_dir` | str | `data/sensitivities` | Path to sensitivity FITS files |
 | `optical_model` | str | `data/Roman_grism_OpticalModel_v0.8.yaml` | Optical model YAML |
@@ -228,7 +235,7 @@ See `data/catalogs/README.md` for the full format specification.
 
 PSF payloads, dispersers, and JIT-compiled functions are built per-SCA and released after processing, so only one SCA's compiled code lives in memory at a time (~2-3 GB vs ~18+ GB for all 18 SCAs). Galaxy SEDs are also loaded per-SCA to avoid OOM with large catalogs.
 
-The on-disk JAX compilation cache (`/tmp/jax-cache-grism`) makes subsequent runs fast (~2.5s/fn vs ~10s first compile). The cache is cleared on reboot.
+The on-disk JAX compilation cache (default `/tmp/jax-cache-grism`, configurable via `--cache-dir`) makes subsequent runs fast (~2.5s/fn vs ~10s first compile). The default cache is cleared on reboot; set a persistent path to keep it.
 
 ### `setup_pipeline(sca_list, ...)`
 
@@ -263,6 +270,84 @@ Per-pointing processing:
 ### JIT Compilation Strategy
 
 Each `(SCA, order)` combination gets a `fori_loop` compiled with a fixed batch array shape. The loop body captures the disperser, sensitivity curve, wavelength array, and `dlam` in a closure. Compilation happens once per SCA (cached to disk); all subsequent pointings reuse compiled code. See `docs/jit_compilation.md` for the general closure pattern.
+
+## Multi-GPU and Parallel Execution
+
+The pipeline supports parallel execution across multiple GPUs on the same machine. Work is distributed at the pointing level: each worker processes every Nth pointing in round-robin order.
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--gpu N` | Select GPU device (sets `CUDA_VISIBLE_DEVICES` before JAX init) |
+| `--worker-index I` | This worker's index (0-based) |
+| `--num-workers K` | Total number of workers |
+| `--warmup-only` | Compile JIT functions and exit (no catalog or pointings needed) |
+| `--cache-dir PATH` | JAX compilation cache directory |
+| `--log-file PATH` | Redirect all output to a file |
+
+`--worker-index` and `--num-workers` must be used together. In batch mode they partition pointings (`index % K == I`); in warmup mode they partition SCAs.
+
+### Workflow
+
+A typical multi-GPU run has two steps:
+
+**Step 1: Warm up the JIT cache.** Each GPU compiles a subset of SCAs in parallel, writing to a shared cache directory. This avoids redundant compilation when all workers start simultaneously.
+
+```bash
+CACHE=/path/to/jax-cache
+
+for i in 0 1 2 3; do
+  pixi run -e cuda python scripts/build_grism_image.py \
+    --config cfg.yaml --warmup-only \
+    --gpu $i --worker-index $i --num-workers 4 \
+    --cache-dir $CACHE \
+    --log-file logs/warmup_gpu$i.log &
+done
+wait
+```
+
+**Step 2: Run the simulation.** Each GPU processes its share of pointings, reusing the warm cache.
+
+```bash
+for i in 0 1 2 3; do
+  pixi run -e cuda python scripts/build_grism_image.py \
+    --config cfg.yaml --pointings pointings.ecsv \
+    --gpu $i --worker-index $i --num-workers 4 \
+    --cache-dir $CACHE \
+    --log-file logs/run_gpu$i.log &
+done
+wait
+```
+
+### Cache Directory
+
+The JAX compilation cache stores compiled XLA functions on disk. Precedence:
+
+1. CLI `--cache-dir`
+2. YAML config `cache_dir`
+3. Environment variable `JAX_COMPILATION_CACHE_DIR`
+4. Default: `/tmp/jax-cache-grism` (cleared on reboot)
+
+For multi-GPU runs, use a shared path (all workers on the same machine share the filesystem). For persistence across reboots, point to a non-`/tmp` directory.
+
+### Timing Reference
+
+Per-SCA JIT compilation (3 orders x 2 functions = 6 compilations):
+
+| Scenario | Time per SCA | 18 SCAs |
+|----------|-------------|---------|
+| Cold (no cache) | ~60s | ~18 min |
+| Warm (from cache) | ~15s | ~4.5 min |
+
+With 4-GPU parallel warmup, cold compile drops to ~5 min.
+
+### Notes
+
+- Workers can exceed GPUs: `--num-workers 8 --gpu 0` runs 8 sequential slices on GPU 0.
+- `--worker-index` / `--num-workers` are independent of `--gpu` -- you can partition work without selecting a GPU, or vice versa.
+- Output directories are named by APT identifiers, so workers never collide on output files.
+- RNG keys are derived from APT identifiers, so results are identical regardless of how pointings are partitioned across workers.
 
 ## Hardcoded Assumptions
 
