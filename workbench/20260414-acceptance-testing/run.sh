@@ -227,12 +227,17 @@ du -sh "$RAMDISK"/*
 #
 echo "=== Step 5: Config ==="
 
-POINTINGS="$REPO_DIR/workbench/20260414-acceptance-testing/pointings.ecsv"
+POINTINGS="$REPO_DIR/workbench/20260414-acceptance-testing/acceptance-testing.sim.ecsv"
 OUTPUT_DIR="$WORK_DIR/output"
 CACHE_DIR="$RAMDISK/jax-cache"
 LOG_DIR="$WORK_DIR/logs"
 
 mkdir -p "$OUTPUT_DIR" "$LOG_DIR"
+
+# Copy pointings file into the working directory for provenance.
+# Keep the same filename -- the ECSV basename is used for directory naming
+# and RNG key derivation, so renaming would change output paths and seeds.
+cp -n "$POINTINGS" "$WORK_DIR/"
 
 CONFIG="$WORK_DIR/config.yaml"
 cat > "$CONFIG" <<EOF
@@ -342,6 +347,9 @@ echo "Pointing directories: $n_dirs (expected 32)"
 echo ""
 echo "To inspect a single pointing:"
 echo "  ls $OUTPUT_DIR/acceptance-testing.sim_001.001.001.001.001.001/"
+echo ""
+echo "The ECSV basename (acceptance-testing.sim) is used for directory naming"
+echo "and RNG key derivation -- do not rename the pointing file."
 echo ""
 echo "Ramdisk cleanup (automatic on job exit, or manual):"
 echo "  rm -rf $RAMDISK"
