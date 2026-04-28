@@ -115,9 +115,12 @@ def pad_catalog(input_dir, output_dir, ra_min, ra_max, ra_box_min, ra_box_max):
     table = pa.Table.from_pandas(padded, schema=schema, preserve_index=False)
     pq.write_table(table, output_dir / "metadata.parquet")
 
-    # Symlink seds.zarr to original
+    # Symlink seds.zarr to the original. Use a path relative to the link's
+    # parent so the input/output pair is relocatable as long as their
+    # relative layout is preserved.
     zarr_link = output_dir / "seds.zarr"
-    zarr_target = (input_dir / "seds.zarr").resolve()
+    zarr_target_abs = (input_dir / "seds.zarr").resolve()
+    zarr_target = os.path.relpath(zarr_target_abs, output_dir.resolve())
     if zarr_link.exists() or zarr_link.is_symlink():
         zarr_link.unlink()
     os.symlink(zarr_target, zarr_link)
