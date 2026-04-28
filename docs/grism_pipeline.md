@@ -108,7 +108,7 @@ Per-pointing Parquet file listing every source dispersed onto each SCA. One row 
 | ra             | float  | Source RA [deg] |
 | dec            | float  | Source Dec [deg] |
 | flux_scale     | float  | Flux scaling factor |
-| F158           | float  | F158 AB magnitude |
+| F158           | float  | F158 apparent flux (maggies; `mag = -2.5·log10(F158)`) |
 
 ### PNG Quicklook Images
 

@@ -83,7 +83,8 @@ def make_parquet_schema():
         pa.field("ba", pa.float32(),
                  metadata={"unit": "", "description": "Minor-to-major axis ratio (1 for PSF)"}),
         pa.field("F158", pa.float32(),
-                 metadata={"unit": "ABmag", "description": "F158 apparent magnitude"}),
+                 metadata={"unit": "maggies",
+                           "description": "F158 apparent flux (maggies; mag = -2.5*log10(F158))"}),
         pa.field("z_obs", pa.float32(),
                  metadata={"description": "Observed redshift (0 for stars)"}),
         pa.field("z_cosmo", pa.float32(),
@@ -188,7 +189,9 @@ def process_stars(star_dir, wavelengths):
 
     # Map each star's template index to row in star_seds array
     sed_indices = np.array([index_map[t] for t in catalog["temp_idx"]], dtype=np.int32)
-    flux_scales = 10.0 ** (-0.4 * catalog["mag"])
+    # F158 is stored in maggies (linear flux); for stars this also serves as the
+    # SED multiplier since templates are normalized to 0 ABmag F158 (1 maggie).
+    f158_maggies = (10.0 ** (-0.4 * catalog["mag"])).astype(np.float32)
 
     # Build metadata
     star_table = pa.table(
@@ -200,11 +203,11 @@ def process_stars(star_dir, wavelengths):
             "half_light_radius": np.zeros(n_stars, dtype=np.float32),
             "pa": np.zeros(n_stars, dtype=np.float32),
             "ba": np.ones(n_stars, dtype=np.float32),
-            "F158": catalog["mag"],
+            "F158": f158_maggies,
             "z_obs": np.zeros(n_stars, dtype=np.float32),
             "z_cosmo": np.zeros(n_stars, dtype=np.float32),
             "sed_index": sed_indices,
-            "flux_scale": flux_scales.astype(np.float32),
+            "flux_scale": f158_maggies,
             "sim": np.zeros(n_stars, dtype=np.int16),
             "src_index": np.arange(n_stars, dtype=np.int32),
         },
@@ -382,6 +385,7 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
 
     # Build metadata table
     n = n_kept
+    f158_maggies = (10.0 ** (-0.4 * mag_f158)).astype(np.float32)
     galaxy_table = pa.table(
         {
             "ra": ra,
@@ -391,7 +395,7 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
             "half_light_radius": np.full(n, GALAXY_HALF_LIGHT_RADIUS, dtype=np.float32),
             "pa": np.full(n, GALAXY_PA, dtype=np.float32),
             "ba": np.full(n, GALAXY_BA, dtype=np.float32),
-            "F158": mag_f158,
+            "F158": f158_maggies,
             "z_obs": z_obs,
             "z_cosmo": z_cosmo,
             "sed_index": np.arange(n, dtype=np.int32),

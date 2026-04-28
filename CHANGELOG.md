@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Source catalog `F158` column now stores **maggies** (linear AB flux) instead of AB magnitudes, matching the romanisim catalog convention. Conversion: `maggies = 10^(-0.4 * mag)`. For stars, `flux_scale` equals `F158` numerically. The disperser math is unchanged (it reads `flux_scale`, not `F158`); detector outputs are bit-identical to prior runs. Catalog release bumped to `catalog-v2`. Updated `build_source_catalog.py`, `verify_source_catalog.py`, `data/catalogs/README.md`, `docs/grism_pipeline.md`, and `download_source_catalog.py`. The verifier reports F158 errors in mag space (`-2.5·log10(F158)`) for human-readable diagnostics.
+
 ## [0.7.0] - 2026-04-09
 
 ### Added

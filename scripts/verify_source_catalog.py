@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 """Verify a source catalog built by build_source_catalog.py.
 
+The catalog stores F158 in maggies (linear flux); this verifier converts to
+AB magnitudes for human-readable comparisons (`mag = -2.5*log10(maggies)`).
+
 Checks:
 1. Metadata consistency (sed_index ranges, flux_scale, types, src_index, etc.)
 2. Round-trip F158 magnitude (integrate SED through F158 bandpass, compare to catalog mag)
@@ -28,6 +31,11 @@ def bandpass_mag(sed, weights, norm, mf0):
     if mean_flam <= 0:
         return np.nan
     return -2.5 * np.log10(mean_flam / mf0)
+
+
+def mag_from_maggies(maggies):
+    """Convert maggies (linear flux, AB) to AB magnitude."""
+    return -2.5 * np.log10(maggies)
 
 
 def precompute_bandpass(band, wavelengths):
@@ -69,8 +77,10 @@ def check_metadata_consistency(df, store):
     if len(stars) > 0:
         if not (stars["sim"] == 0).all():
             issues.append("Some stars have sim != 0")
-        expected_fs = (10.0 ** (-0.4 * stars["F158"])).astype(np.float32)
-        fs_err = np.abs(stars["flux_scale"] - expected_fs) / expected_fs
+        # For stars, flux_scale equals F158 (maggies): the template is normalized
+        # to 0 ABmag F158 (= 1 maggie), so the per-source flux scale is the F158
+        # flux in maggies.
+        fs_err = np.abs(stars["flux_scale"] - stars["F158"]) / stars["F158"]
         if fs_err.max() > 1e-5:
             issues.append(f"Star flux_scale mismatch: max rel error = {fs_err.max():.2e}")
         else:
@@ -144,7 +154,8 @@ def check_f158_roundtrip(df, store, n_check=500):
         errors = []
         for _, row in star_sample.iterrows():
             sed = np.array(store["star_seds"][row["sed_index"]]) * row["flux_scale"]
-            errors.append(bandpass_mag(sed, w158, n158, mf0_158) - row["F158"])
+            errors.append(bandpass_mag(sed, w158, n158, mf0_158)
+                          - mag_from_maggies(row["F158"]))
         err = np.array(errors)
         print(f"  Stars:    median Δmag = {np.median(err):+.4f}, "
               f"max |Δmag| = {np.abs(err).max():.4f}, std = {np.std(err):.4f}")
@@ -161,7 +172,8 @@ def check_f158_roundtrip(df, store, n_check=500):
         for _, row in gal_sample.iterrows():
             key = f"galaxy_seds/sim_{row['sim']:03d}"
             sed = np.array(store[key][row["sed_index"]]) * row["flux_scale"]
-            errors.append(bandpass_mag(sed, w158, n158, mf0_158) - row["F158"])
+            errors.append(bandpass_mag(sed, w158, n158, mf0_158)
+                          - mag_from_maggies(row["F158"]))
         err = np.array(errors)
         print(f"  Galaxies: median Δmag = {np.median(err):+.4f}, "
               f"max |Δmag| = {np.abs(err).max():.4f}, std = {np.std(err):.4f}")
@@ -234,8 +246,9 @@ def check_f184_color(df, store, galacticus_dir, n_check=500):
         if np.isnan(mag184_synth):
             continue
 
-        color_ref = row["F158"] - ref_f184
-        color_synth = row["F158"] - mag184_synth
+        cat_mag158 = mag_from_maggies(row["F158"])
+        color_ref = cat_mag158 - ref_f184
+        color_synth = cat_mag158 - mag184_synth
         color_errors.append(color_synth - color_ref)
 
     if not color_errors:
@@ -332,7 +345,8 @@ def check_source_provenance(df, galacticus_dir, star_dir):
                     continue
                 max_ra_err = max(max_ra_err, abs(row["ra"] - ref_ra[match][0]))
                 max_dec_err = max(max_dec_err, abs(row["dec"] - ref_dec[match][0]))
-                max_mag_err = max(max_mag_err, abs(row["F158"] - ref_mag[match][0]))
+                max_mag_err = max(max_mag_err,
+                                  abs(mag_from_maggies(row["F158"]) - ref_mag[match][0]))
                 n_checked += 1
 
         print(f"  Galaxies: checked {n_checked} against FITS index")
@@ -364,7 +378,8 @@ def check_source_provenance(df, galacticus_dir, star_dir):
             idx = row["src_index"]
             max_ra_err = max(max_ra_err, abs(row["ra"] - cat_ra[idx]))
             max_dec_err = max(max_dec_err, abs(row["dec"] - cat_dec[idx]))
-            max_mag_err = max(max_mag_err, abs(row["F158"] - cat_mag[idx]))
+            max_mag_err = max(max_mag_err,
+                              abs(mag_from_maggies(row["F158"]) - cat_mag[idx]))
 
         print(f"  Stars: checked {len(stars)} against text catalog")
         print(f"    max |ΔRA| = {max_ra_err:.2e} deg, max |ΔDec| = {max_dec_err:.2e} deg, "
@@ -433,7 +448,8 @@ def check_synphot_integration(df, store, galacticus_dir, n_check=10):
                     syn.Empirical1D, points=wl_slice,
                     lookup_table=raw_fnu * u.Jy,
                 )
-                norm_sp = sp.normalize(float(row["F158"]) * u.ABmag, band=f158_band)
+                cat_mag158 = mag_from_maggies(float(row["F158"]))
+                norm_sp = sp.normalize(cat_mag158 * u.ABmag, band=f158_band)
                 synphot_sed = norm_sp(wl_qty, flux_unit=syn.units.FLAM).value
 
                 # Our catalog SED
@@ -455,7 +471,7 @@ def check_synphot_integration(df, store, galacticus_dir, n_check=10):
                 )
                 obs158 = syn.Observation(cat_sp, f158_band)
                 mag158_synphot = obs158.effstim(u.ABmag).value
-                mag_err = abs(mag158_synphot - row["F158"])
+                mag_err = abs(mag158_synphot - cat_mag158)
                 max_mag_err = max(max_mag_err, mag_err)
 
         print(f"  sim {sim_num}: {len(sample)} galaxies, "

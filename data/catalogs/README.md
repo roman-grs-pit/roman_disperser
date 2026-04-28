@@ -45,13 +45,13 @@ expected by the grism disperser: the count rate in a detector pixel is
 where sensitivity is the grism sensitivity curve and Δλ is the wavelength bin
 width in Angstroms.
 
-- **Star SEDs:** Normalized to 0 AB magnitude in the F158 band. The per-source
-  `flux_scale` in the metadata applies the actual magnitude:
-  `flux_scale = 10^(−0.4 × mag_F158)`. After scaling, the SED is in FLAM.
+- **Star SEDs:** Normalized to 0 AB magnitude in the F158 band (i.e. 1 maggie
+  in F158). The per-source `flux_scale` in the metadata applies the actual
+  flux: `flux_scale = F158` (in maggies). After scaling, the SED is in FLAM.
 
-- **Galaxy SEDs:** Apparent f_λ (FLAM) in the observer frame, normalized to
-  the catalog F158 apparent magnitude. `flux_scale = 1.0` for all galaxies —
-  no further scaling needed.
+- **Galaxy SEDs:** Apparent f_λ (FLAM) in the observer frame, normalized so
+  the integrated F158 flux equals the catalog `F158` value (in maggies).
+  `flux_scale = 1.0` for all galaxies — no further scaling needed.
 
 ## Metadata (Parquet)
 
@@ -72,7 +72,7 @@ These columns are consumed directly by the grism simulation pipeline:
 | `pa` | float32 | deg | Position angle (E of N). 0 for point sources |
 | `ba` | float32 | — | Minor-to-major axis ratio (0–1). 1 for point sources |
 | `sed_index` | int32 | — | Row index into the SED Zarr array (per `type` and `sim`) |
-| `flux_scale` | float32 | — | SED multiplier. Galaxy SEDs: 1.0. Star SEDs: `10^(−0.4 × F158)` |
+| `flux_scale` | float32 | — | SED multiplier. Galaxy SEDs: 1.0. Star SEDs: equal to `F158` (maggies) |
 | `sim` | int16 | — | Partition number for galaxy SED lookup. 0 for stars |
 
 ### Ancillary columns (not used by the disperser)
@@ -82,7 +82,7 @@ they will be ignored by the simulation pipeline.
 
 | Column | Type | Units | Description |
 |--------|------|-------|-------------|
-| `F158` | float32 | AB mag | F158 apparent magnitude |
+| `F158` | float32 | maggies | F158 apparent flux (linear AB units; `mag = -2.5·log10(F158)`) |
 | `z_obs` | float32 | — | Observed redshift (includes peculiar velocity). 0 for stars |
 | `z_cosmo` | float32 | — | Cosmological redshift. 0 for stars |
 | `src_index` | int32 | — | Row index in original source file (for provenance) |
@@ -100,7 +100,8 @@ all galaxies in a single partition (`sim=1`) is valid.
 
 The column structure follows the
 [romanisim catalog convention](https://romanisim.readthedocs.io/en/latest/romanisim/catalog.html),
-extended with SED lookup columns.
+extended with SED lookup columns. In particular, per-bandpass flux columns
+(here `F158`) are stored in **maggies** (linear AB flux), matching romanisim.
 
 ### Reconstructing a source spectrum
 
@@ -129,9 +130,9 @@ else:
 **Path:** `seds.zarr/star_seds`
 **Shape:** `(N_templates, N_wavelengths)`
 
-Templates are normalized to 0 AB magnitude in the F158 band. The per-source
-`flux_scale` in the metadata applies the actual magnitude:
-`flux_scale = 10^(−0.4 × mag_F158)`.
+Templates are normalized to 0 AB magnitude in the F158 band (1 maggie). The
+per-source `flux_scale` in the metadata applies the actual F158 flux in
+maggies (so `flux_scale = F158`).
 
 Multiple stars may share the same `sed_index` (template).
 
@@ -332,7 +333,8 @@ sub-sample); each sub-sample covers the entire 4 deg² field, so `sim` values
 1–100 correspond to independent random sub-samples of the same volume, not
 spatial tiles.
 
-- **Magnitude cut:** F158 ≤ 26 AB. At mag 26, a flat AB source yields
+- **Magnitude cut:** F158 ≤ 26 AB (i.e. F158 ≥ 10^(−0.4·26) ≈ 3.98e−11
+  maggies). At mag 26, a flat AB source yields
   ~2.5 counts/s integrated over the full 1st-order grism trace, corresponding
   to SNR/resolution-element ~0.3 in the deep survey (32 exposures) and ~0.1
   in the wide survey (8 exposures). This is sufficient for contamination
@@ -345,7 +347,8 @@ spatial tiles.
   The raw Galacticus SEDs are f_ν in internal absolute units, sampled on a
   wavelength grid; the extraction script converts to apparent FLAM by
   applying the f_ν → f_λ transformation and normalizing to the catalog F158
-  apparent magnitude via synphot.
+  apparent magnitude via synphot. The catalog `F158` column is then stored
+  as maggies (`10^(-0.4·mag)`).
   See `Readme_4sqdeg.txt` in the raw data for full details.
 
 - **Star catalog:** `data/stars/sim_star_cat_galacticus.txt` with Pickles
@@ -355,6 +358,7 @@ spatial tiles.
 
 - **Verification script:** `scripts/verify_source_catalog.py` — validates the
   built catalog against the original source files. Checks metadata consistency,
-  F158 magnitude round-trip, SED normalization against per-source synphot, and
+  F158 magnitude round-trip (compares synthesized SED magnitude to
+  `-2.5·log10(F158)`), SED normalization against per-source synphot, and
   provenance (RA, Dec, magnitudes traced back to original files). Requires
   access to the raw Galacticus data.
