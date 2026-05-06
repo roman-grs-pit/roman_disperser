@@ -1,0 +1,23 @@
+# Spectro acceptance test, AWS rerun (2026-05-05)
+#
+# Local fix for the catalog SED corruption that caused 3 of 5 NERSC failures
+# is in build_grism_image.py:load_galaxy_seds (commit 29e0f6e). The remaining
+# 2 NERSC failures were SLURM wall-time kills from a 4-worker x 8-pointing
+# layout; AWS uses 1 pointing per task so they cannot recur.
+#
+# Catalog and ECSV live on /mnt/roman-science (S3-Files NFS) for shareability;
+# project data (sensitivities, optical model, PSF cache) are on /data/npadman
+# (EBS) for read latency. JAX compile cache lives on /data so it persists
+# across the 32-task array.
+output_dir: /mnt/roman-science/grs/acceptance-testing-20260430/spectro/2026-05-05/acceptance/output
+seed: 42
+scas: all
+cone_radius: 0.6
+star_batch_size: 1000
+galaxy_batch_size: 100
+galaxy_npix: 30
+cache_dir: /data/npadman/jax-cache-grism
+catalog_dir: /mnt/roman-science/grs/acceptance-testing-20260430/catalogs_padded
+sensitivity_dir: /data/npadman/1-Projects/roman_disperser/data/sensitivities
+optical_model: /data/npadman/1-Projects/roman_disperser/data/Roman_grism_OpticalModel_v0.8.yaml
+psf_cache_dir: /data/npadman/1-Projects/roman_disperser/data/psf_cache
