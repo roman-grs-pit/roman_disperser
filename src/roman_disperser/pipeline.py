@@ -401,9 +401,15 @@ def write_png(output_np, png_file, linear_width=0.01):
         ny_trim // bf, bf, nx_trim // bf, bf
     ).mean(axis=(1, 3))
 
-    # Asinh stretch + inferno colormap via matplotlib's normalizer and cmap
-    vmax = small.max()
-    if vmax == 0:
+    # Asinh stretch + inferno colormap via matplotlib's normalizer and cmap.
+    # Guard against non-finite pixels (a single NaN/Inf would propagate through
+    # `.max()` and crash AsinhNorm with "Invalid vmin or vmax").  Replace
+    # non-finite with 0 for display; the upstream disperser should never
+    # produce these, but matplotlib must not be the thing that fails.
+    if not np.isfinite(small).all():
+        small = np.where(np.isfinite(small), small, 0.0)
+    vmax = float(small.max()) if small.size else 0.0
+    if not np.isfinite(vmax) or vmax <= 0:
         vmax = 1.0
     norm = AsinhNorm(linear_width=linear_width, vmin=0, vmax=vmax)
     cmap = matplotlib.colormaps["inferno"]
@@ -448,12 +454,20 @@ def write_mosaic_png(sca_images, sca_list, model, png_file,
     fig_height = fig_width * (y_range + 2 * thumb_size) / (x_range + 2 * thumb_size)
     fig = plt.figure(figsize=(fig_width, fig_height))
 
-    # Global vmax across all images for consistent scaling
+    # Global vmax across all images for consistent scaling. Guard against
+    # any single SCA that contains non-finite pixels — see write_png.
+    def _finite_max(a):
+        a = np.asarray(a)
+        if a.size == 0:
+            return 0.0
+        finite = a[np.isfinite(a)]
+        return float(finite.max()) if finite.size else 0.0
+
     global_max = max(
-        (np.array(sca_images[s]).max() for s in sca_list if s in sca_images),
+        (_finite_max(sca_images[s]) for s in sca_list if s in sca_images),
         default=1.0,
     )
-    if global_max == 0:
+    if not np.isfinite(global_max) or global_max <= 0:
         global_max = 1.0
     norm = AsinhNorm(linear_width=linear_width, vmin=0, vmax=global_max)
 
@@ -476,6 +490,8 @@ def write_mosaic_png(sca_images, sca_list, model, png_file,
 
         if sca_num in sca_images:
             img = np.array(sca_images[sca_num])
+            if not np.isfinite(img).all():
+                img = np.where(np.isfinite(img), img, 0.0)
             # Downsample for thumbnails: block-average by 8x -> 511x511
             bf = 8
             ny, nx = img.shape

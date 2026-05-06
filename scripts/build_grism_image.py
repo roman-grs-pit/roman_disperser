@@ -252,6 +252,16 @@ def trim_wavelength_grid(wavelengths):
     return wavelengths_trimmed, wl_mask, dlam_angstroms
 
 
+# Catalog SED sanity limit. Empirically, the Galacticus catalog
+# `catalogs_padded` has p99.999 max(SED) ~ 9e-15, with a 31-order-of-magnitude
+# gap to a handful of pathological SEDs containing isolated single-bin spikes
+# (e.g. sim_071/sed[555] = 3.5e28). Those spikes overflow float32 during the
+# galaxy disperser's FFT convolution and produce NaN/Inf along the source's
+# spectral trace. This threshold is far above any plausible physical SED in
+# the existing catalog and below the smallest known pathological value.
+_GALAXY_SED_VALUE_LIMIT = 1e-12
+
+
 def load_galaxy_seds(store, galaxy_meta, wl_mask):
     """Load galaxy SEDs from Zarr, grouping by sim partition for efficient I/O.
 
@@ -274,6 +284,9 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
     n_wl = int(wl_mask.sum())
     spectra = np.zeros((n_galaxies, n_wl), dtype=np.float32)
 
+    bad_total = 0
+    bad_galaxies = []  # (sim, sed_index, n_bins, max_val)
+
     # Group by sim partition for sequential Zarr access
     for sim_val, group in galaxy_meta.groupby("sim"):
         key = f"galaxy_seds/sim_{sim_val:03d}"
@@ -285,10 +298,36 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
         seds_full = np.array(arr[indices])  # [N_group, N_wl_full]
         seds_trimmed = seds_full[:, wl_mask]
 
+        # Scrub catalog SED corruption: zero any non-finite or out-of-range
+        # bins. Only flagged bins are zeroed; the rest of the SED is preserved.
+        bad_mask = ~np.isfinite(seds_trimmed) | (
+            np.abs(seds_trimmed) > _GALAXY_SED_VALUE_LIMIT
+        )
+        if bad_mask.any():
+            for j, idx in enumerate(indices):
+                row_bad = bad_mask[j]
+                if row_bad.any():
+                    bad_galaxies.append((
+                        int(sim_val), int(idx), int(row_bad.sum()),
+                        float(np.abs(seds_trimmed[j, row_bad]).max()),
+                    ))
+                    bad_total += int(row_bad.sum())
+            seds_trimmed = np.where(bad_mask, 0.0, seds_trimmed)
+
         # Scale and place into output array (preserving original row order)
         iloc_positions = [galaxy_meta.index.get_loc(idx) for idx in group.index]
         for j, pos in enumerate(iloc_positions):
             spectra[pos] = seds_trimmed[j] * scales[j]
+
+    if bad_galaxies:
+        # Deduplicate by (sim, sed_index) — same SED may appear multiple times
+        # via RA padding replication.
+        unique = {(s, i): (s, i, n, m) for s, i, n, m in bad_galaxies}
+        print(f"  WARNING: scrubbed {bad_total} pathological SED bins in "
+              f"{len(unique)} unique catalog SED template(s):")
+        for s, i, n, m in sorted(unique.values()):
+            print(f"    sim_{s:03d}/sed[{i}]: {n} bin(s) zeroed, "
+                  f"max abs value was {m:.3e}")
 
     return spectra
 
@@ -886,6 +925,19 @@ def process_pointing(
         isim_np = np.array(isim)
         t_transfer = time.time() - t0
         sca_model_np[sca_num] = output_np
+
+        # Safety net: warn if any non-finite pixels slipped through. The
+        # disperser should produce only finite values when fed sane SEDs;
+        # the load-time scrubber in load_galaxy_seds enforces that. A non-zero
+        # count here means either a new pathological input the scrubber didn't
+        # catch, or a numerical regression in the disperser itself.
+        n_nan = int(np.isnan(output_np).sum())
+        n_inf = int(np.isinf(output_np).sum())
+        if n_nan or n_inf:
+            ys, xs = np.where(~np.isfinite(output_np))
+            log(f"    WARNING: SCA {sca_num} MODEL has {n_nan} NaN + "
+                f"{n_inf} Inf pixels in bbox "
+                f"x[{xs.min()},{xs.max()}] y[{ys.min()},{ys.max()}]")
 
         # Write per-SCA outputs
         t0 = time.time()
