@@ -12,7 +12,7 @@ Fixes: load-time SED scrubber in `build_grism_image.py:load_galaxy_seds`
 | File | Purpose |
 |---|---|
 | `slurm_warmup_grism.sh` | 5-task array, parallel JIT cache warmup. |
-| `slurm_run_grism.sh`    | 32-task production array (one pointing per task, max 5 concurrent). |
+| `slurm_run_grism.sh`    | 5-task production array. Each task is one long-running Python process owning ~6-7 pointings via `--num-workers 5` round-robin partitioning. |
 | `config.yaml`           | Pipeline config consumed by both drivers. |
 
 Verbatim runtime copies live at
@@ -31,17 +31,19 @@ ACCEPT=/mnt/roman-science/grs/acceptance-testing-20260430/spectro/2026-05-05/acc
 # 1. Parallel JIT warmup (~12 min, 5 a10g, ~$0.35).
 bash $ACCEPT/scripts/slurm_warmup_grism.sh
 
-# 2. Optional single-pointing sanity check (~1h40, ~$0.60).
-#    SUBSET=N picks ECSV row N; row 31 is 016.001 (was a NERSC failure).
-SUBSET=31 MAX_CONCURRENT=1 bash $ACCEPT/scripts/slurm_run_grism.sh
-
-# 3. Full 32-pointing array (~11h wall on 5 a10g, ~$19).
+# 2. Production run (5 a10g, ~10-11 h wall, ~$19).
 bash $ACCEPT/scripts/slurm_run_grism.sh
+
+# Sanity check on a single pointing: use a one-row ECSV (copy the row
+# of interest into a new file alongside the full ECSV, change the
+# driver's ECSV path or symlink, and run with NUM_WORKERS=1).
 ```
 
-Step 3 is safely re-runnable: each pointing dir is skipped if it
-already exists (`build_grism_image.py:1464`), so re-submitting after a
-partial completion just fills in the missing pointings.
+The production run is safely re-runnable: each pointing dir is
+skipped if it already exists (`build_grism_image.py:1464`), so
+re-submitting after a partial completion just fills in the missing
+pointings — useful when a long-running worker hits a wall-time limit
+or transient failure.
 
 Both drivers expect:
 - The SED scrubber commit (`29e0f6e`) on the active branch — the
