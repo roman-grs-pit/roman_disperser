@@ -52,6 +52,42 @@ pytest -q tests -m "not slow"
 
 **5. Run a demo** — see [Getting started](#getting-started) below.
 
+## romanisim wrapping (spectro acceptance)
+
+A separate `romanisim` pixi environment wraps the
+[roman-grs-pit/romanisim](https://github.com/roman-grs-pit/romanisim) fork
+on the `extra_counts` branch (the `--extra-counts` patch is unmerged
+upstream as of 2026-05-07). Linux-only and isolated from the JAX/CUDA
+disperser env so dep trees don't collide.
+
+The CRDS and STPSF caches are kept **outside** the repo so they can be
+shared with other projects. Set these in your shell (e.g. add to
+`~/.bashrc`) before installing the env:
+
+```bash
+export STPSF_PATH=/data/npadman/refdata/stpsf-data
+export CRDS_PATH=/data/npadman/refdata/crds
+export CRDS_SERVER_URL=https://roman-crds.stsci.edu
+# CRDS_CONTEXT intentionally unset → operational context
+```
+
+Then:
+
+```bash
+pixi install -e romanisim
+pixi run -e romanisim hydrate-romanisim   # CRDS sync + STPSF status
+```
+
+`hydrate-romanisim` runs `crds sync` against the operational context
+(unless you've pinned `CRDS_CONTEXT`) and reports STPSF data status.
+STPSF reference data (~1-2 GB) is a separate one-time manual download;
+the task prints the URL and target path if `$STPSF_PATH/WFI/` is
+missing.
+
+When the upstream PR merges, replace the `git`/`branch` pin in
+`[feature.romanisim.pypi-dependencies]` with a normal `romanisim` PyPI
+spec.
+
 ## GPU support
 
 With pixi, use the `cuda` environment: `pixi install -e cuda`. This handles everything automatically.
