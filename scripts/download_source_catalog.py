@@ -21,11 +21,11 @@ from pathlib import Path
 #   # Create tarball:
 #   cd data/catalogs && tar czf /tmp/source_catalog_sim001.tar.gz metadata.parquet seds.zarr/
 #   # Upload:
-#   gh release create catalog-v1 --repo roman-grs-pit/roman_disperser_data \
-#     --title "Source catalog v1 (sim 1)" \
-#     --notes "Galaxy + star catalog (1 sim, F158 ≤ 26). See data/catalogs/README.md for format." \
+#   gh release create catalog-v2 --repo roman-grs-pit/roman_disperser_data \
+#     --title "Source catalog v2 (sim 1, F158 in maggies)" \
+#     --notes "Galaxy + star catalog (1 sim, F158 ≤ 26). F158 column stored as maggies (linear AB flux) per romanisim convention. See data/catalogs/README.md for format." \
 #     /tmp/source_catalog_sim001.tar.gz
-CATALOG_RELEASE = "catalog-v1"
+CATALOG_RELEASE = "catalog-v2"
 BASE_URL = f"https://github.com/roman-grs-pit/roman_disperser_data/releases/download/{CATALOG_RELEASE}"
 TARBALL = "source_catalog_sim001.tar.gz"
 

@@ -18,3 +18,5 @@ Large data files go in a `data/` subdirectory within each study (ignored by git)
 | `20260323-batch-tuning/` | Batch size and performance optimization |
 | `20260324-benchmarks/` | GPU scaling and compilation benchmarks |
 | `20260326-spectral-lookup/` | Input SED lookup and self-extraction consistency check |
+| `20260414-acceptance-testing/` | NERSC acceptance test driver (single 4xA100 node, ramdisk-staged) |
+| `20260505-acceptance-testing-aws/` | AWS rerun after catalog SED scrubber fix; SLURM-array on gpu-med a10g |

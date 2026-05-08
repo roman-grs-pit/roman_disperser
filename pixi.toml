@@ -23,6 +23,7 @@ jupyterlab = "*"
 [environments]
 default = ["cpu"]
 cuda = ["cuda"]
+romanisim = { features = ["romanisim"], no-default-feature = true }
 
 # --- FEATURES ---
 
@@ -36,3 +37,33 @@ system-requirements = { cuda = "12" }
 [feature.cuda.dependencies]
 jax = ">=0.7"
 jaxlib = { version = "*", build = "cuda12*" }
+
+# romanisim wrapping environment. Isolated from the JAX/CUDA pipeline:
+# the disperser produces grism images, romanisim consumes them via
+# `--extra-counts`. Pinned to the roman-grs-pit fork on `extra_counts`
+# until those patches land upstream. Linux-only (crds & friends are not
+# packaged for osx-arm64 on conda-forge).
+#
+# Reference data caches (CRDS, STPSF) live OUTSIDE the repo. Set
+# CRDS_PATH, CRDS_SERVER_URL, and STPSF_PATH in your shell (e.g. via
+# ~/.bashrc) before invoking pixi — see INSTALL.md.
+[feature.romanisim]
+platforms = ["linux-64"]
+
+[feature.romanisim.dependencies]
+# Keep this list lean: only the binary libs we want pinned for consistency
+# with how galsim/stpsf/crds are usually built. Everything else is pulled
+# in transitively by romanisim's own pyproject.
+python = ">=3.12, <3.13"
+fftw = "*"
+
+[feature.romanisim.pypi-dependencies]
+# stpsf and crds are PyPI-only (not on conda-forge); listed explicitly so
+# their versions are visible / pinnable here rather than buried in a
+# transitive dep tree.
+crds = ">=13.0.2"
+stpsf = ">=2.1.0"
+romanisim = { git = "https://github.com/roman-grs-pit/romanisim.git", branch = "extra_counts" }
+
+[feature.romanisim.tasks]
+hydrate-romanisim = "python scripts/hydrate_romanisim.py"

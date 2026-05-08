@@ -1,42 +1,27 @@
 # Unified grism image builder configuration
 #
 # Disperses both stars and galaxies from the unified Parquet+Zarr catalog.
+# Pointings are supplied separately as an ECSV file (APT format).
 #
 # Usage:
-#   pixi run -e cuda python scripts/build_grism_image.py --config this_file.yaml
+#   pixi run -e cuda python scripts/build_grism_image.py \
+#       --config this_file.yaml --pointings pointings.ecsv
 
 # -- Output -----------------------------------------------------------------
-# Top-level output directory.  Each pointing creates a subdirectory
-# containing per-SCA FITS/PNG files and a focal-plane mosaic PNG.
+# Top-level output directory.  Each pointing creates a subdirectory named
+# {ecsv_basename}_{plan}.{pass}.{segment}.{observation}.{visit}.{exposure}/
 output_dir: output/grism-fields
 
 # -- RNG seed (required) ----------------------------------------------------
-# Integer seed for reproducible Poisson noise.  Split deterministically
-# into per-pointing and per-SCA keys.
+# Integer seed for reproducible Poisson noise.  Combined with the pointing
+# filename and APT identifiers to derive per-pointing keys, so results are
+# deterministic and independent of pointing order or slicing.
 seed: 42
-
-# -- Exposure time -----------------------------------------------------------
-# Exposure time in seconds.  The noiseless model (counts/s) is multiplied
-# by exptime before Poisson sampling.
-exptime: 190.22
 
 # -- Detectors ---------------------------------------------------------------
 # Which SCAs to simulate.  Use "all" for 1-18, or list specific numbers.
 scas: all
 # scas: [1, 5, 12]
-
-# -- Pointings ---------------------------------------------------------------
-# Each entry becomes a subdirectory under output_dir.
-pointings:
-  - name: ra10_dec0_pa0
-    ra: 10.0
-    dec: 0.0
-    pa: 0.0
-
-  # - name: ra10_dec0_pa10
-  #   ra: 10.0
-  #   dec: 0.0
-  #   pa: 10.0
 
 # -- Source selection --------------------------------------------------------
 # Initial cone search radius around the pointing center (degrees).
