@@ -78,3 +78,14 @@ Per-SCA timing observed on a10g (validation run, warm cache):
 ~5 min/SCA, ~1h40/pointing wall (18 SCAs serialized). Full-pipeline
 JIT compile is ~36 s/SCA on a warm cache vs ~75 s cold — NFS read
 of 6 x 111 MB cache files dominates the residual cost on warm hits.
+
+## Downstream
+
+The disperser FITS produced by this run feed the post-processing chain
+under `workbench/20260508-romanisim-wrap/`:
+
+1. Wrap to L2 ASDF via romanisim (`scripts/wrap_with_romanisim.py`).
+2. Render per-pointing RA/Dec mosaic PNGs from the L2 ASDFs.
+3. Sync the full run + pointing ECSV to the staging S3 bucket.
+
+See `workbench/20260508-romanisim-wrap/README.md` for that chain.

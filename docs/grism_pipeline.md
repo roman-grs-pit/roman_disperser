@@ -99,16 +99,16 @@ Per-pointing Parquet file listing every source dispersed onto each SCA. One row 
 
 | Column         | Type   | Description |
 |----------------|--------|-------------|
-| catalog_index  | int    | Index into the source catalog |
+| catalog_index  | int    | Row index into the unified source catalog (`metadata.parquet`) |
 | sca            | int    | SCA number (1-18) |
 | order          | str    | Spectral order ("0", "1", "2") |
 | type           | str    | "PSF" (star) or "SER" (galaxy/Sersic) |
-| xsca           | float  | Undispersed SCA x position |
-| ysca           | float  | Undispersed SCA y position |
+| xsca           | float  | Undispersed SCA x position [pixels, 1-indexed FITS] |
+| ysca           | float  | Undispersed SCA y position [pixels, 1-indexed FITS] |
 | ra             | float  | Source RA [deg] |
 | dec            | float  | Source Dec [deg] |
-| flux_scale     | float  | Flux scaling factor |
-| F158           | float  | F158 apparent flux (maggies; `mag = -2.5·log10(F158)`) |
+| flux_scale     | float  | SED multiplier applied at dispersion. Stars: equals `F158` (the SED template is unit-normalized in F158). Galaxies: always 1.0 (per-source SED is already F158-normalized). See `data/catalogs/README.md` for the SED scaling convention. |
+| F158           | float  | F158 apparent flux in maggies (linear AB units; `mag = -2.5·log10(F158)`). Same value for all rows belonging to one source. |
 
 ### PNG Quicklook Images
 
