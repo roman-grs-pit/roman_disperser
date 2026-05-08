@@ -7,8 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-08
+
+### Added
+- Romanisim L2 wrap (`scripts/wrap_with_romanisim.py`): produces L2 ASDF outputs from disperser FITS via header-driven `romanisim-make-image` invocations
+  - Header-driven argument derivation: `WFICENRA/DEC` → `--radec`, `WFICENPA-60` → `--roll`, `DETNUM` → `--sca`, `MA_TABLE` → `--ma_table_number`, `RNDSEED0 ^ RNDSEED1` → `--rng_seed`
+  - `ThreadPoolExecutor` pool of `--num-threads` subprocesses; deterministic round-robin partitioning via `--worker-index/--num-workers`; SHA-256 manifest hash logged per worker for cross-node drift detection
+  - Idempotent: skips files whose `_l2.asdf` already exists, so resubmits cheaply fill in gaps after partial completion
+- Isolated `[feature.romanisim]` pixi env (linux-64, no default feature) pinned to the `roman-grs-pit/romanisim @ extra_counts` fork
+  - `scripts/hydrate_romanisim.py` syncs the operational CRDS context (~140 GB) and reports STPSF status; monkey-patches around two CRDS 13.1.16 bugs that crash bulk Roman sync
+- APT pointing tables: batch mode now consumes ECSV pointing tables with full APT identifiers (plan/pass/segment/observation/visit/exposure)
+  - Per-pointing output dirs named from APT IDs; identifiers stored in FITS headers and meta YAML
+  - Per-pointing RNG keys derived deterministically from `(seed, ECSV basename, APT IDs)` — slice-invariant and file-isolated
+- Multi-GPU + parallel-worker support
+  - `--gpu N` selects a GPU device; `--worker-index I --num-workers K` partitions pointings round-robin across SLURM tasks
+  - `--warmup-only` mode compiles JIT functions for a SCA subset for use as a JIT-cache prewarm pass
+  - Configurable JAX compilation cache directory (`--cache-dir`, YAML `cache_dir`, or `JAX_COMPILATION_CACHE_DIR` env)
+- Catalog tooling: `scripts/pad_catalog.py` for RA-periodic replication of a unified catalog (workaround for narrow source catalogs near pointing edges)
+- Acceptance-test workbenches under `workbench/`:
+  - `20260414-acceptance-testing/`: NERSC initial run (32 pointings × 18 SCAs on 4 GPUs)
+  - `20260505-acceptance-testing-aws/`: AWS rerun after the NERSC SED-related failures
+  - `20260508-romanisim-wrap/`: post-dispersion chain (romanisim wrap, RA/Dec mosaic renderer, S3 archive)
+- `workbench/20260508-romanisim-wrap/render_l2_pointing_mosaic.py`: per-pointing RA/Dec mosaic PNG that reads each detector's GWCS, rebins in detector space, and reprojects pixel centers onto a tangent-plane canvas
+- `workbench/20260508-romanisim-wrap/s3_archive.sh`: idempotent `aws s3 sync` of an acceptance run + pointing ECSV to the staging S3 bucket
+
 ### Changed
-- Source catalog `F158` column now stores **maggies** (linear AB flux) instead of AB magnitudes, matching the romanisim catalog convention. Conversion: `maggies = 10^(-0.4 * mag)`. For stars, `flux_scale` equals `F158` numerically. The disperser math is unchanged (it reads `flux_scale`, not `F158`); detector outputs are bit-identical to prior runs. Catalog release bumped to `catalog-v2`. Updated `build_source_catalog.py`, `verify_source_catalog.py`, `data/catalogs/README.md`, `docs/grism_pipeline.md`, and `download_source_catalog.py`. The verifier reports F158 errors in mag space (`-2.5·log10(F158)`) for human-readable diagnostics.
+- Source catalog `F158` column now stores **maggies** (linear AB flux) instead of AB magnitudes, matching the romanisim catalog convention. Conversion: `maggies = 10^(-0.4 * mag)`. For stars, `flux_scale` equals `F158` numerically; for galaxies, `flux_scale` is always 1.0. The disperser math is unchanged (reads `flux_scale`, not `F158`); detector outputs are bit-identical to prior runs. Catalog release bumped to `catalog-v2`. Updated `build_source_catalog.py`, `verify_source_catalog.py`, `data/catalogs/README.md`, `docs/grism_pipeline.md`, and `download_source_catalog.py`. The verifier reports F158 errors in mag space (`-2.5·log10(F158)`) for human-readable diagnostics.
+- Production SLURM driver switched from one-pointing-per-task to N-task arrays of long-running Python workers, each owning its round-robin share of pointings. Cuts process-startup overhead on large arrays and keeps the JAX in-memory state warm across pointings on the same node.
+
+### Fixed
+- Galaxy SED scrubber in `build_grism_image.py:load_galaxy_seds` discards SEDs containing NaN/Inf at load time. Three known-bad galaxies in the padded `catalogs_padded/seds.zarr` were crashing the 2026-04-30 NERSC dispersion run.
+- Output writers harden against non-finite pixels.
 
 ## [0.7.0] - 2026-04-09
 
