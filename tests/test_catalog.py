@@ -12,13 +12,14 @@ import pytest
 import roman_disperser.optical_model_jax as omj
 from roman_disperser.catalog import select_sources
 from roman_disperser.optical_model import RomanOpticalModel
+from roman_disperser.pipeline import LAM_MIN, LAM_MAX
 
 
 @pytest.fixture(scope="module")
 def optical_model():
     """Load optical model once for all tests."""
     pixi_root_path = os.environ.get("PIXI_PROJECT_ROOT", ".")
-    fn = os.path.join(pixi_root_path, "data/Roman_grism_OpticalModel_v0.8.yaml")
+    fn = os.path.join(pixi_root_path, "data/Roman_prism_OpticalModel_v0.8.yaml")
     return RomanOpticalModel(fn)
 
 
@@ -50,7 +51,7 @@ def brute_force_select(payload, xfpa, yfpa, wl_min=0.9, wl_max=2.0,
 class TestSelectSources:
     """Test select_sources against brute-force validation."""
 
-    @pytest.mark.parametrize("order", ["1", "0", "2"])
+    @pytest.mark.parametrize("order", ["1"])
     def test_center_sources_selected(self, optical_model, order):
         """Sources near detector center should be selected for all orders."""
         payload = omj.make_sca_payload(optical_model, sca=5, order=order)
@@ -61,7 +62,7 @@ class TestSelectSources:
         mask = select_sources(payload, xfpa, yfpa)
         assert mask[0]
 
-    @pytest.mark.parametrize("order", ["1", "0", "2"])
+    @pytest.mark.parametrize("order", ["1"])
     def test_far_away_sources_rejected(self, optical_model, order):
         """Sources far from detector should be rejected for all orders."""
         payload = omj.make_sca_payload(optical_model, sca=5, order=order)
@@ -78,7 +79,7 @@ class TestSelectSources:
             select_sources(payload, jnp.array([]), jnp.array([]))
 
     @pytest.mark.parametrize("sca", [1, 5, 10, 18])
-    @pytest.mark.parametrize("order", ["1", "0", "2"])
+    @pytest.mark.parametrize("order", ["1"])
     def test_vs_brute_force(self, optical_model, sca, order):
         """select_sources should be conservative: never miss a source that
         the brute-force check finds on-detector.
@@ -95,8 +96,15 @@ class TestSelectSources:
         ysca = np.random.uniform(-500, 5000, size=n_sources)
         xfpa, yfpa = omj.sca_to_fpa(payload, xsca, ysca)
 
-        mask_fast = np.asarray(select_sources(payload, xfpa, yfpa))
-        mask_brute = brute_force_select(payload, xfpa, yfpa)
+        # Use the prism band so the bbox cull is exercised across the actual
+        # wavelength range; with default 0.9-2.0 the blue edge (0.75-0.9) is
+        # silently undersampled and produces false negatives.
+        mask_fast = np.asarray(
+            select_sources(payload, xfpa, yfpa, wl_min=LAM_MIN, wl_max=LAM_MAX)
+        )
+        mask_brute = brute_force_select(
+            payload, xfpa, yfpa, wl_min=LAM_MIN, wl_max=LAM_MAX
+        )
 
         # No false negatives: every source found by brute force must be in fast mask
         false_negatives = mask_brute & ~mask_fast
@@ -105,7 +113,7 @@ class TestSelectSources:
             f"out of {mask_brute.sum()} brute-force positives"
         )
 
-    @pytest.mark.parametrize("order", ["1", "0", "2"])
+    @pytest.mark.parametrize("order", ["1"])
     def test_multiple_scas(self, optical_model, order):
         """Sources on one SCA should not be selected on a distant SCA."""
         payload_5 = omj.make_sca_payload(optical_model, sca=5, order=order)
@@ -121,7 +129,7 @@ class TestSelectSources:
         assert mask_5[0]
         assert not mask_1[0]
 
-    @pytest.mark.parametrize("order", ["1", "0", "2"])
+    @pytest.mark.parametrize("order", ["1"])
     def test_padding_effect(self, optical_model, order):
         """Larger padding should select at least as many sources."""
         payload = omj.make_sca_payload(optical_model, sca=5, order=order)
@@ -147,7 +155,7 @@ class TestSelectSources:
         assert isinstance(mask, jnp.ndarray)
         assert mask.dtype == jnp.bool_
 
-    @pytest.mark.parametrize("order", ["1", "0", "2"])
+    @pytest.mark.parametrize("order", ["1"])
     def test_jit_compilation(self, optical_model, order):
         """Verify select_sources is JIT-compilable via closure."""
         payload = omj.make_sca_payload(optical_model, sca=5, order=order)

@@ -14,7 +14,7 @@ from roman_disperser.optical_model import RomanOpticalModel
 def optical_model():
     """Load optical model once for all tests."""
     pixi_root_path = os.environ.get("PIXI_PROJECT_ROOT", ".")
-    fn = os.path.join(pixi_root_path, "data/Roman_grism_OpticalModel_v0.8.yaml")
+    fn = os.path.join(pixi_root_path, "data/Roman_prism_OpticalModel_v0.8.yaml")
     return RomanOpticalModel(fn)
 
 

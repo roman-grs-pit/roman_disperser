@@ -1,0 +1,60 @@
+# Prism sensitivity file mapping
+# Maps each SCA (1-18) to a sensitivity FITS file.
+# All files are relative to this directory.
+#
+# Per-SCA calibrations: SCA1 from 12/05/2024, SCAs 2-18 from 05/05/2025.
+# Source: /data/npadman/3-Resources/prism-conf/prism_latest_conf/
+
+SCA1:
+  "1": SCA1_prism_sens_12052024.fits
+
+SCA2:
+  "1": SCA2_prism_sens_05052025.fits
+
+SCA3:
+  "1": SCA3_prism_sens_05052025.fits
+
+SCA4:
+  "1": SCA4_prism_sens_05052025.fits
+
+SCA5:
+  "1": SCA5_prism_sens_05052025.fits
+
+SCA6:
+  "1": SCA6_prism_sens_05052025.fits
+
+SCA7:
+  "1": SCA7_prism_sens_05052025.fits
+
+SCA8:
+  "1": SCA8_prism_sens_05052025.fits
+
+SCA9:
+  "1": SCA9_prism_sens_05052025.fits
+
+SCA10:
+  "1": SCA10_prism_sens_05052025.fits
+
+SCA11:
+  "1": SCA11_prism_sens_05052025.fits
+
+SCA12:
+  "1": SCA12_prism_sens_05052025.fits
+
+SCA13:
+  "1": SCA13_prism_sens_05052025.fits
+
+SCA14:
+  "1": SCA14_prism_sens_05052025.fits
+
+SCA15:
+  "1": SCA15_prism_sens_05052025.fits
+
+SCA16:
+  "1": SCA16_prism_sens_05052025.fits
+
+SCA17:
+  "1": SCA17_prism_sens_05052025.fits
+
+SCA18:
+  "1": SCA18_prism_sens_05052025.fits

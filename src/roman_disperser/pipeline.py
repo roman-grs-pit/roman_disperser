@@ -31,9 +31,9 @@ import roman_disperser.optical_model_jax as omj
 # Constants
 # ---------------------------------------------------------------------------
 DETECTOR_SIZE = 4088
-ORDERS = ["0", "1", "2"]
-LAM_MIN = 0.9   # microns
-LAM_MAX = 2.0   # microns
+ORDERS = ["1"]
+LAM_MIN = 0.75  # microns
+LAM_MAX = 1.85  # microns
 SENSITIVITY_MAP_FILE = "sensitivity_map.yaml"
 
 
@@ -50,9 +50,9 @@ def resolve_paths(catalog_dir=None, sensitivity_dir=None,
     catalog_dir : str or Path, optional
         Default: ``data/catalogs``.
     sensitivity_dir : str or Path, optional
-        Default: ``data/sensitivities``.
+        Default: ``data/sensitivities_prism``.
     optical_model_path : str or Path, optional
-        Default: ``data/Roman_grism_OpticalModel_v0.8.yaml``.
+        Default: ``data/Roman_prism_OpticalModel_v0.8.yaml``.
     psf_cache_dir : str or Path, optional
         Default: ``data/psf_cache``.
     """
@@ -60,10 +60,10 @@ def resolve_paths(catalog_dir=None, sensitivity_dir=None,
     if catalog_dir is None:
         catalog_dir = project_root / "data" / "catalogs"
     if sensitivity_dir is None:
-        sensitivity_dir = project_root / "data" / "sensitivities"
+        sensitivity_dir = project_root / "data" / "sensitivities_prism"
     if optical_model_path is None:
         optical_model_path = (
-            project_root / "data" / "Roman_grism_OpticalModel_v0.8.yaml"
+            project_root / "data" / "Roman_prism_OpticalModel_v0.8.yaml"
         )
     if psf_cache_dir is None:
         psf_cache_dir = project_root / "data" / "psf_cache"

@@ -228,7 +228,7 @@ def validate_catalog(meta, store, wavelengths):
 
 
 def trim_wavelength_grid(wavelengths):
-    """Trim the catalog wavelength grid to the grism range [9000, 20000] A.
+    """Trim the catalog wavelength grid to the prism range [7500, 18500] A.
 
     Parameters
     ----------
@@ -244,8 +244,8 @@ def trim_wavelength_grid(wavelengths):
     dlam_angstroms : float
         Wavelength spacing in Angstroms.
     """
-    wl_min_ang = LAM_MIN * 1e4  # 9000
-    wl_max_ang = LAM_MAX * 1e4  # 20000
+    wl_min_ang = LAM_MIN * 1e4  # 7500
+    wl_max_ang = LAM_MAX * 1e4  # 18500
     wl_mask = (wavelengths >= wl_min_ang) & (wavelengths <= wl_max_ang)
     wavelengths_trimmed = wavelengths[wl_mask]
     dlam_angstroms = float(wavelengths_trimmed[1] - wavelengths_trimmed[0])
@@ -656,12 +656,11 @@ def process_pointing(
         detector_name = f"WFI{sca_num:02d}"
 
         psf_payloads = {}
-        for psf_order in ["0", "1"]:
+        for psf_order in ORDERS:
             psf_payloads[psf_order] = psf_model.get_or_make_psf_payload(
                 detector=detector_name, order=psf_order,
                 cache_dir=psf_cache_dir, verbose=False,
             )
-        psf_payloads["2"] = psf_payloads["1"]
 
         star_fori_fns = {}
         galaxy_fori_fns = {}
@@ -1298,12 +1297,11 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
 
         # Load PSF payloads
         psf_payloads = {}
-        for psf_order in ["0", "1"]:
+        for psf_order in ORDERS:
             psf_payloads[psf_order] = psf_model.get_or_make_psf_payload(
                 detector=detector_name, order=psf_order,
                 cache_dir=str(psf_cache_dir), verbose=False,
             )
-        psf_payloads["2"] = psf_payloads["1"]
 
         # Build optical payloads and sensitivities
         optical_payloads = {
@@ -1427,16 +1425,16 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
     # Load pointing table
     ptable = Table.read(pointings_path, format="ascii.ecsv")
 
-    # Filter to GRISM pointings only
+    # Filter to PRISM pointings only
     if "BANDPASS" in ptable.colnames:
-        grism_mask = ptable["BANDPASS"] == "GRISM"
-        n_filtered = len(ptable) - grism_mask.sum()
+        prism_mask = ptable["BANDPASS"] == "PRISM"
+        n_filtered = len(ptable) - prism_mask.sum()
         if n_filtered > 0:
-            log(f"Filtered {n_filtered} non-GRISM rows from pointing table")
-        ptable = ptable[grism_mask]
+            log(f"Filtered {n_filtered} non-PRISM rows from pointing table")
+        ptable = ptable[prism_mask]
 
     if len(ptable) == 0:
-        log("No GRISM pointings found in pointing table.")
+        log("No PRISM pointings found in pointing table.")
         return
 
     # Parse SCA list

@@ -239,7 +239,7 @@ def snr_per_resel(source_rate, n_pix, zodi_rate, read_noise, exptime):
 
 def main():
     project_root = Path(__file__).resolve().parent.parent
-    sensitivity_dir = project_root / "data" / "sensitivities"
+    sensitivity_dir = project_root / "data" / "sensitivities_prism"
 
     # Load 1st-order sensitivities for all SCAs
     print("Loading 1st-order sensitivity curves...")

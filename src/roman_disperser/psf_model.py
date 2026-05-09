@@ -89,17 +89,17 @@ def get_cache_filename(
 
     Examples
     --------
-    >>> wavelengths = np.arange(0.9, 2.01, 0.02)  # microns
+    >>> wavelengths = np.arange(0.75, 1.86, 0.02)  # microns
     >>> spatial_grid = {'x': np.linspace(1, 4088, 4), 'y': np.linspace(1, 4088, 4)}
     >>> get_cache_filename('WFI05', '1', wavelengths, spatial_grid, 5.0, 4)
-    'psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4.npz'
+    'psf_WFI05_PRISM_4x4x56_0.75-1.85um_fov5.0_os4.npz'
     """
     wavelengths = np.asarray(wavelengths)
     x_grid = np.asarray(spatial_grid['x'])
     y_grid = np.asarray(spatial_grid['y'])
 
     # Map order to filter name
-    filter_map = {'0': 'GRISM0', '1': 'GRISM1'}
+    filter_map = {'1': 'PRISM'}
     filter_name = filter_map.get(order, f'ORDER{order}')
 
     # Grid dimensions
@@ -365,9 +365,9 @@ def _make_psf_payload_with_progress(
     warnings.filterwarnings('ignore', message='.*outside the range.*')
 
     # Map order to STPSF filter name
-    filter_map = {'0': 'GRISM0', '1': 'GRISM1'}
+    filter_map = {'1': 'PRISM'}
     if order not in filter_map:
-        raise ValueError(f"Invalid order '{order}'. Must be '0' or '1'.")
+        raise ValueError(f"Invalid order '{order}'. Must be '1'.")
 
     wfi = stpsf.roman.WFI()
     wfi.filter = filter_map[order]
@@ -446,7 +446,7 @@ def generate_all_psf_caches(
     detectors : list, optional
         List of detector names (default: all 18 WFI detectors)
     wavelengths : array_like, optional
-        Wavelengths in **microns** (default: 0.9-2.0 μm at 0.02 μm spacing)
+        Wavelengths in **microns** (default: 0.75-1.85 μm at 0.02 μm spacing)
     spatial_grid : dict, optional
         {'x': x_array, 'y': y_array} (default: 4×4 grid)
     fov_arcsec : float, optional
@@ -494,7 +494,7 @@ def generate_all_psf_caches(
 
     # Setup defaults (wavelengths in microns)
     if wavelengths is None:
-        wavelengths = np.arange(0.9, 2.01, 0.02)
+        wavelengths = np.arange(0.75, 1.86, 0.02)
     wavelengths = np.asarray(wavelengths)
 
     if spatial_grid is None:
@@ -698,7 +698,7 @@ def get_or_make_psf_payload(
     order : str, optional
         Spectral order (default: '1')
     wavelengths : array_like, optional
-        Wavelengths in **microns** (default: 0.9-2.0 μm at 0.02 μm spacing)
+        Wavelengths in **microns** (default: 0.75-1.85 μm at 0.02 μm spacing)
     spatial_grid : dict, optional
         {'x': x_array, 'y': y_array} in SCA coordinates (default: 4×4 grid)
     fov_arcsec : float, optional
@@ -737,7 +737,7 @@ def get_or_make_psf_payload(
     """
     # Setup defaults (same as make_psf_payload) - wavelengths in microns
     if wavelengths is None:
-        wavelengths = np.arange(0.9, 2.01, 0.02)
+        wavelengths = np.arange(0.75, 1.86, 0.02)
     wavelengths = np.asarray(wavelengths)
 
     if spatial_grid is None:
@@ -839,7 +839,7 @@ def make_psf_payload(
 
     wavelengths : array_like, optional
         Wavelengths in **microns** for PSF calculations
-        Default: 56 wavelengths from 0.9 to 2.0 μm at 0.02 μm spacing
+        Default: 56 wavelengths from 0.75 to 1.85 μm at 0.02 μm spacing
         Finer wavelength sampling reduces interpolation errors in PSF wings
 
     spatial_grid : dict, optional
@@ -887,7 +887,7 @@ def make_psf_payload(
     >>> payload_0th = make_psf_payload(detector='WFI05', order='0')
 
     >>> # Custom wavelength sampling (faster for testing)
-    >>> wavelengths = np.linspace(0.9e-6, 2.0e-6, 5)  # Only 5 wavelengths
+    >>> wavelengths = np.linspace(0.75e-6, 1.85e-6, 5)  # Only 5 wavelengths
     >>> payload = make_psf_payload(order='1', wavelengths=wavelengths)
 
     >>> # Coarse spatial grid for quick tests
@@ -913,9 +913,9 @@ def make_psf_payload(
     """
     # Setup default wavelengths (in microns)
     if wavelengths is None:
-        # 56 wavelengths across full grism range (0.9 - 2.0 μm) at 0.02 μm spacing
+        # 56 wavelengths across full prism range (0.75 - 1.85 μm) at 0.02 μm spacing
         # Finer wavelength sampling reduces interpolation errors in PSF wings
-        wavelengths = np.arange(0.9, 2.01, 0.02)
+        wavelengths = np.arange(0.75, 1.86, 0.02)
 
     # Validate wavelengths are strictly increasing (required for interpolation)
     wavelengths = np.asarray(wavelengths)
@@ -1031,11 +1031,10 @@ def _compute_psf_grid_with_timing(
 
     # Map order to STPSF filter name
     filter_map = {
-        '0': 'GRISM0',  # Zeroth order (undispersed)
-        '1': 'GRISM1',  # First order (dispersed)
+        '1': 'PRISM',  # Single prism beam (labeled "1" in optical model)
     }
     if order not in filter_map:
-        raise ValueError(f"Invalid order '{order}'. Must be '0' or '1'.")
+        raise ValueError(f"Invalid order '{order}'. Must be '1'.")
 
     wfi = stpsf.roman.WFI()
     wfi.filter = filter_map[order]

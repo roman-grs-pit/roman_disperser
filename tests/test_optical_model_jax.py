@@ -21,7 +21,7 @@ ATOL = 1e-3
 def optical_model():
     """Load optical model once for all tests."""
     pixi_root_path = os.environ.get("PIXI_PROJECT_ROOT", ".")
-    fn = os.path.join(pixi_root_path, "data/Roman_grism_OpticalModel_v0.8.yaml")
+    fn = os.path.join(pixi_root_path, "data/Roman_prism_OpticalModel_v0.8.yaml")
     return RomanOpticalModel(fn)
 
 class TestSCAtoMPA:
@@ -522,7 +522,7 @@ class TestMapCoords:
     """Test polynomial coordinate mapping (get_mpa_coords)."""
 
     @pytest.mark.parametrize("sca", [1, 2, 5, 10])
-    @pytest.mark.parametrize("order", ["1", "0", "2"])
+    @pytest.mark.parametrize("order", ["1"])
     def test_compare_to_class(self, optical_model, sca, order):
         """Compare functional get_mpa_coords to class implementation."""
         payload = omj.make_sca_payload(optical_model, sca=sca, order=order)
@@ -552,7 +552,7 @@ class TestMapCoords:
         import jax
         import jax.numpy as jnp
         
-        payload = omj.make_sca_payload(optical_model, sca=5, order="2")
+        payload = omj.make_sca_payload(optical_model, sca=5, order="1")
         
         @jax.jit
         def jitted_get_mpa_coords(xfpa, yfpa):
@@ -574,7 +574,7 @@ class TestTraceCoeffs:
     """Test polynomial trace coefficient computation (get_trace_coeffs)."""
 
     @pytest.mark.parametrize("sca", [1, 2, 5, 10])
-    @pytest.mark.parametrize("order", ["1", "0", "2"])
+    @pytest.mark.parametrize("order", ["1"])
     def test_compare_to_class(self, optical_model, sca, order):
         """Compare functional get_trace_coeffs to class implementation."""
         payload = omj.make_sca_payload(optical_model, sca=sca, order=order)
@@ -621,7 +621,7 @@ class TestTraceCoeffs:
         import jax
         import jax.numpy as jnp
         
-        payload = omj.make_sca_payload(optical_model, sca=5, order="2")
+        payload = omj.make_sca_payload(optical_model, sca=5, order="1")
         
         @jax.jit
         def jitted_get_trace_coeffs(xfpa, yfpa):
@@ -643,7 +643,7 @@ class TestTraceBeam:
     """Test beam tracing (trace_beam)."""
 
     @pytest.mark.parametrize("sca", [1, 2, 5, 10])
-    @pytest.mark.parametrize("order", ["1", "0", "2"])
+    @pytest.mark.parametrize("order", ["1"])
     def test_compare_to_class(self, optical_model, sca, order):
         """Compare functional trace_beam to class implementation."""
         payload = omj.make_sca_payload(optical_model, sca=sca, order=order)
@@ -705,7 +705,7 @@ class TestTraceBeam:
         import jax
         import jax.numpy as jnp
         
-        payload = omj.make_sca_payload(optical_model, sca=5, order="2")
+        payload = omj.make_sca_payload(optical_model, sca=5, order="1")
         
         @jax.jit
         def jitted_trace_beam(xfpa, yfpa, wavelength):

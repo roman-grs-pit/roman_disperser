@@ -3,8 +3,8 @@
 Generate PSF caches for all detectors and orders.
 
 This script pre-generates all PSF payloads needed for full-field validation.
-With default settings (4×4×56 grid, 18 SCAs × 2 orders = 36 payloads),
-this takes approximately 3-4 hours with 1 worker, or ~30-40 minutes with 8 workers.
+For prism, with default settings (4×4×56 grid, 18 SCAs × 1 order = 18 payloads),
+this takes approximately 1.5-2 hours with 1 worker, or ~15-20 minutes with 8 workers.
 
 Usage:
     pixi run python scripts/generate_psf_caches.py
@@ -12,7 +12,7 @@ Usage:
 
 Options:
     --cache-dir PATH    Cache directory (default: data/psf_cache)
-    --orders ORDERS     Comma-separated orders (default: 0,1)
+    --orders ORDERS     Comma-separated orders (default: 1)
     --detectors DETS    Comma-separated detectors (default: all 18)
     --workers N         Number of parallel workers (default: 1)
     --no-skip           Regenerate even if cache exists
@@ -48,8 +48,8 @@ def main():
         help='Cache directory (default: data/psf_cache)'
     )
     parser.add_argument(
-        '--orders', type=str, default='0,1',
-        help='Comma-separated orders to generate (default: 0,1)'
+        '--orders', type=str, default='1',
+        help='Comma-separated orders to generate (default: 1)'
     )
     parser.add_argument(
         '--detectors', type=str, default=None,

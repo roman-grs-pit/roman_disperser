@@ -13,18 +13,15 @@ import argparse
 import urllib.request
 from pathlib import Path
 
-# To upload/update PSF caches:
-#   gh release create psf-v1 --repo roman-grs-pit/roman_disperser_data \
-#     --title "PSF caches v1" \
-#     --notes "PSF grid caches (4x4x56, 0.90-2.00um, 4x oversample, 5\" FOV). Generated with STPSF v2.2.0." \
-#     data/psf_cache/*.npz
-PSF_RELEASE = "psf-v1"
+# NOTE: Prism PSF caches have not yet been uploaded to a public release.
+# Until the release exists, this script will 404; generate caches locally with
+# scripts/generate_psf_caches.py instead.
+PSF_RELEASE = "psf-prism-v1"
 BASE_URL = f"https://github.com/roman-grs-pit/roman_disperser_data/releases/download/{PSF_RELEASE}"
 
 PSF_FILES = [
-    f"psf_WFI{sca:02d}_{grism}_4x4x56_0.90-2.00um_fov5.0_os4.npz"
+    f"psf_WFI{sca:02d}_PRISM_4x4x56_0.75-1.85um_fov5.0_os4.npz"
     for sca in range(1, 19)
-    for grism in ["GRISM0", "GRISM1"]
 ]
 
 

@@ -55,9 +55,9 @@ import roman_disperser.optical_model_jax as omj
 # Constants
 # ---------------------------------------------------------------------------
 DETECTOR_SIZE = 4088
-ORDERS = ["0", "1", "2"]
-LAM_MIN = 0.9   # microns
-LAM_MAX = 2.0   # microns
+ORDERS = ["1"]
+LAM_MIN = 0.75  # microns
+LAM_MAX = 1.85  # microns
 SENSITIVITY_MAP_FILE = "sensitivity_map.yaml"
 
 
@@ -607,7 +607,7 @@ def resolve_paths(catalog_dir=None, sensitivity_dir=None,
     if catalog_dir is None:
         catalog_dir = project_root / "data" / "stars"
     if sensitivity_dir is None:
-        sensitivity_dir = project_root / "data" / "sensitivities"
+        sensitivity_dir = project_root / "data" / "sensitivities_prism"
     if optical_model_path is None:
         optical_model_path = (
             project_root / "data" / "Roman_grism_OpticalModel_v0.8.yaml"
@@ -723,13 +723,11 @@ def setup_pipeline(
 
         # PSF payloads
         psf_payloads = {}
-        for psf_order in ["0", "1"]:
+        for psf_order in ORDERS:
             psf_payloads[psf_order] = psf_model.get_or_make_psf_payload(
                 detector=detector_name, order=psf_order,
                 cache_dir=str(psf_cache_dir), verbose=False,
             )
-        # STPSF only provides GRISM0 and GRISM1; reuse order 1 PSF for order 2
-        psf_payloads["2"] = psf_payloads["1"]
         log(f"    PSF payloads loaded")
 
         # Star dispersers
