@@ -92,6 +92,7 @@ def cone_search(ra, dec, pointing_ra, pointing_dec, radius_deg):
 
 def select_sources_per_order(
     optical_payloads, xfpa, yfpa, orders=ORDERS,
+    wl_min=LAM_MIN, wl_max=LAM_MAX,
 ):
     """For each order, determine which sources have traces on the detector.
 
@@ -100,6 +101,11 @@ def select_sources_per_order(
     optical_payloads : dict mapping order str -> payload
     xfpa, yfpa : jnp.ndarray [N]
     orders : list of str
+    wl_min, wl_max : float
+        Wavelength range (microns) for the trace bbox cull. Defaults to the
+        pipeline's LAM_MIN/LAM_MAX so the cull always covers the active band;
+        relying on catalog.select_sources defaults silently undersamples if
+        the active band differs from those defaults.
 
     Returns
     -------
@@ -114,7 +120,10 @@ def select_sources_per_order(
             masks[order] = any_mask.copy()
         return masks, any_mask
     for order in orders:
-        mask = catalog.select_sources(optical_payloads[order], xfpa, yfpa)
+        mask = catalog.select_sources(
+            optical_payloads[order], xfpa, yfpa,
+            wl_min=wl_min, wl_max=wl_max,
+        )
         masks[order] = np.asarray(mask)
         any_mask |= masks[order]
     return masks, any_mask
