@@ -17,6 +17,9 @@ __pycache__/
 # PSF cache files (large, machine-generated)
 data/psf_cache/
 
+# SLURM per-submission audit trails (local provenance, not source)
+scripts/slurm-meta-psf/
+
 # Source catalog artifacts (large, downloaded as assets)
 data/catalogs/metadata.parquet
 data/catalogs/seds.zarr/
