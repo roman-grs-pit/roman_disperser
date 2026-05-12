@@ -875,8 +875,8 @@ class TestPSFCaching:
             oversample=4,
         )
 
-        # Check filename structure
-        assert filename.startswith('psf_WFI05_GRISM1_')
+        # Check filename structure (prism: order '1' maps to PRISM filter)
+        assert filename.startswith('psf_WFI05_PRISM_')
         assert '4x4x56' in filename
         assert '0.90-2.00um' in filename
         assert 'fov5.0' in filename
@@ -896,8 +896,11 @@ class TestPSFCaching:
             'WFI05', '1', wavelengths, spatial_grid, 5.0, 4
         )
 
-        assert 'GRISM0' in filename_0
-        assert 'GRISM1' in filename_1
+        # Prism: order '1' -> PRISM, other orders fall through to ORDER<n>.
+        # Order '0' isn't a real prism order but the filename builder is generic;
+        # this test only exercises that builder, so we just check token mapping.
+        assert 'ORDER0' in filename_0
+        assert 'PRISM' in filename_1
         assert filename_0 != filename_1
 
     def test_save_and_load_roundtrip(self, simple_payload, tmp_path):
