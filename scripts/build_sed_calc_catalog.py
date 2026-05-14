@@ -236,7 +236,8 @@ def load_galacticus_index(fits_path):
         return {
             "ra": t["RA"].astype(np.float64),
             "dec": t["DEC"].astype(np.float64),
-            "sim": t["SIM"].astype(np.str_),
+            "sim_id": t["sim_id"].astype(np.str_),
+            "sim": t["SIM"].astype(np.int32),
             "idx": t["IDX"].astype(np.int32),
             "mag_F158": t["mag_F158_Av1.6523"].astype(np.float32),
             "z": t["Z"].astype(np.float32),
@@ -334,7 +335,7 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices):
 
 
 def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
-                             fnu_to_flam):
+                             fnu_to_flam, hdf5_path):
     """Process one galaxy partition (one HDF5 sub-file).
 
     Uses vectorized f_ν → FLAM conversion instead of per-source synphot calls.
@@ -346,7 +347,6 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
     """
 
     galacticus_dir = Path(galacticus_dir)
-    hdf5_path = galacticus_dir / f"galacticus_FOV_EVERY100_sub_{sim_num}.hdf5"
 
     # Select sources for this sim from FITS index
     mask_sim = fits_index["sim"] == sim_num
@@ -607,7 +607,7 @@ def main():
     # Process and write galaxy partitions incrementally
     n_partitions = 0
     for sim_num in sim_numbers:
-        hdf5_path = galacticus_dir / f"galacticus_FOV_EVERY100_sub_{sim_num}.hdf5"
+        hdf5_path = galacticus_dir / f"romanUNIT-{fits_index["sim_id"][fits_index["sim"] == sim_num]}_2Deg.hdf5"
         if not hdf5_path.exists():
             print(f"  sim {sim_num:3d}: SKIPPED (file not found: {hdf5_path.name})")
             continue
