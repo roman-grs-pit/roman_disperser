@@ -33,7 +33,7 @@ from zarr.codecs import BloscCodec
 
 # Wavelength range (Angstroms)
 # Covers grism range (0.9–2.0 μm) plus margin to fully contain the F184 bandpass
-WL_MIN = 9000.0
+WL_MIN = 7000.0
 WL_MAX = 21000.0
 WL_STEP = 2.0  # Angstroms
 N_WL = int((WL_MAX - WL_MIN) / WL_STEP) + 1  # 6001
@@ -42,7 +42,7 @@ N_WL = int((WL_MAX - WL_MIN) / WL_STEP) + 1  # 6001
 # "The data array is saved with a step size of 2 Angstroms, you can get the
 # wavelength by np.linspace(2000, 40000, 19001) in units of Angstroms."
 # Not stored in the HDF5 files — no attributes anywhere.
-GALACTICUS_WL = np.linspace(2000, 40000, 19001)  # Angstroms
+GALACTICUS_WL = np.arange(WL_MIN, WL_MAX, N_WL)  # Angstroms
 GRISM_SLICE = slice(3500, 9501)  # indices for 9000-21000 Å
 
 # Magnitude cut
@@ -241,6 +241,7 @@ def load_galacticus_index(fits_path):
             "idx": t["IDX"].astype(np.int32),
             "mag_F158": t["mag_F158_Av1.6523"].astype(np.float32),
             "z": t["Z"].astype(np.float32),
+            "z_cosmo": t["z_cosmo"].astype(np.float32)
         }
 
 
@@ -304,34 +305,30 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices):
         from galacticus_sed_calculator import SEDCalculator
     except ImportError:
         import sys
-        sys.path.insert(0, "/path/to/galacticus_sed_calculator")
+        sys.path.insert(0, os.path.join(os.getenv("github_dir"), "galacticus_sed_calculator"))
         from galacticus_sed_calculator import SEDCalculator
 
-    lsun_s_mpc2_to_flam = (1 * u.solMass / (u.Hz * u.Mpc**2)).to(u.erg / (u.s * u.cm**2))
+    # lsun_s_mpc2_to_fnu = (1 * u.solLum / (u.Hz * u.Mpc**2)).to(u.erg / (u.s * u.cm**2) / u.Hz)
 
-    calc = SED_Calculator(sed_template_fn)
-
-    wavelengths = np.linspace(7000, 21000, 2) * u.AA
+    calc = SEDCalculator(sed_template_fn)
 
     sed_list = []
 
     for idx in hdf5_indices:
-        _, flux = calc.evaluate_component_spectrum(
+        spec = calc.evaluate_component_spectrum(
             hdf5_path,
             galIndex=idx,
             component='disk',
-            obs_wavelengths=wavelengths,
+            obs_wavelengths=GALACTICUS_WL * u.AA, 
             include_emission_lines=True,
             use_synphot=False  # Enable fast path
         )
 
-        sed_list.append([flux])
+        sed_list.append(spec(GALACTICUS_WL, flux_units='flam'))
 
-    sed_list = np.asarray(sed_list)
+    sed_list = np.asarray(sed_list, dtype=np.float32)
 
-    sed_list_fnu = sed_list * lsun_s_mpc2_to_flam
-
-    return sed_list_fnu
+    return sed_list
 
 
 def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
@@ -363,7 +360,7 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
     ra = fits_index["ra"][mask]
     dec = fits_index["dec"][mask]
     mag_f158 = fits_index["mag_F158"][mask]
-    z_obs = fits_index["z_obs"][mask]
+    z_obs = fits_index["z"][mask]
     z_cosmo = fits_index["z_cosmo"][mask]
     hdf5_indices = fits_index["idx"][mask]
 
@@ -371,7 +368,7 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
     # SEDs are f_ν in unknown absolute units, on the Galacticus wavelength grid
     # (2 Å spacing). Our output grid is a subset of their grid.
     
-    raw_seds_fnu = compute_raw_seds_fnu(hdf5_path, hdf5_indices)
+    galaxy_seds = compute_raw_seds_fnu(hdf5_path, hdf5_indices)
 
     # Vectorized f_ν → FLAM conversion with F158 normalization:
     # 1. Convert f_ν to f_λ (arbitrary units): f_λ_raw = f_ν × c/λ²
@@ -387,7 +384,7 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
     #    scale = 10^(-0.4 * (mag_catalog - mag_raw))
 
     # Step 1: f_ν → f_λ (all sources at once)
-    galaxy_seds = raw_seds_fnu * fnu_to_flam[np.newaxis, :]  # [N, N_wl]
+    # galaxy_seds = raw_seds_fnu * fnu_to_flam[np.newaxis, :]  # [N, N_wl]
 
     # Build metadata table
     n = n_kept
@@ -598,8 +595,7 @@ def main():
     print(f"  Loaded {len(fits_index['ra'])} total sources in {time.time() - t0:.1f}s")
 
     # Precompute bandpass integration weights (once)
-    fnu_to_flam, bandpass_weights = compute_f158_normalization(wavelengths)
-    bandpass_norm = bandpass_weights.sum()
+    fnu_to_flam, _ = compute_f158_normalization(wavelengths)
 
     # Initialize Zarr store (wavelengths + stars)
     zarr_store = init_zarr_store(output_dir, wavelengths, star_seds)
@@ -609,13 +605,13 @@ def main():
     for sim_num in sim_numbers:
         hdf5_path = galacticus_dir / f"romanUNIT-{fits_index["sim_id"][fits_index["sim"] == sim_num][0]}_2Deg.hdf5"
         if not hdf5_path.exists():
-            print(f"  sim {sim_num:3d}: SKIPPED (file not found: {hdf5_path.name})")
+            print(f"  sim {sim_num:3d}: SKIPPED (file not found: {hdf5_path})")
             continue
 
         t0 = time.time()
         galaxy_table, galaxy_seds = process_galaxy_partition(
             sim_num, galacticus_dir, fits_index,
-            fnu_to_flam, bandpass_weights, bandpass_norm,
+            fnu_to_flam, hdf5_path,
         )
         dt = time.time() - t0
 
