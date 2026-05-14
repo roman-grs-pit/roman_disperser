@@ -236,7 +236,7 @@ def load_galacticus_index(fits_path):
         return {
             "ra": t["RA"].astype(np.float64),
             "dec": t["DEC"].astype(np.float64),
-            "sim": t["SIM"].astype(np.int16),
+            "sim": t["SIM"].astype(np.str_),
             "idx": t["IDX"].astype(np.int32),
             "mag_F158": t["mag_F158_Av1.6523"].astype(np.float32),
             "z": t["Z"].astype(np.float32),
@@ -315,7 +315,7 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices):
     sed_list = []
 
     for idx in hdf5_indices:
-        wav, flux = calc.evaluate_component_spectrum(
+        _, flux = calc.evaluate_component_spectrum(
             hdf5_path,
             galIndex=idx,
             component='disk',
@@ -324,7 +324,7 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices):
             use_synphot=False  # Enable fast path
         )
 
-        sed_list.append([wav, flux])
+        sed_list.append([flux])
 
     sed_list = np.asarray(sed_list)
 
@@ -334,7 +334,7 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices):
 
 
 def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
-                             fnu_to_flam, bandpass_weights, bandpass_norm):
+                             fnu_to_flam):
     """Process one galaxy partition (one HDF5 sub-file).
 
     Uses vectorized f_ν → FLAM conversion instead of per-source synphot calls.
@@ -387,37 +387,7 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
     #    scale = 10^(-0.4 * (mag_catalog - mag_raw))
 
     # Step 1: f_ν → f_λ (all sources at once)
-    seds_flam_raw = raw_seds_fnu * fnu_to_flam[np.newaxis, :]  # [N, N_wl]
-
-    # Step 2: synthetic F158 flux for each source
-    # <f_λ> = Σ(f_λ × T × λ × dλ) / Σ(T × λ × dλ)
-    synth_flux = seds_flam_raw @ bandpass_weights / bandpass_norm  # [N]
-
-    # Step 3: target flux from catalog magnitude
-    # AB mag definition: mag = -2.5 log10(f_ν) - 48.6 (f_ν in erg/s/cm²/Hz)
-    # <f_λ>_target for the bandpass mean flux at mag_catalog
-    # f_ν = 10^(-0.4*(mag+48.6)) erg/s/cm²/Hz
-    # <f_λ> = f_ν × c / λ_pivot² ... but we need the bandpass-averaged version
-    #
-    # Actually simpler: the scale factor is just target/synthetic
-    # target_flux = <f_λ> for a source at mag_catalog
-    # We know f_ν [erg/s/cm²/Hz] = 10^(-0.4*(m+48.6))
-    # and <f_λ> = ∫ f_λ T λ dλ / ∫ T λ dλ
-    # For AB: f_ν = const, f_λ = f_ν × c/λ², so
-    # <f_λ>_AB = f_ν × ∫ (c/λ²) T λ dλ / ∫ T λ dλ = f_ν × c × ∫ T/λ dλ / ∫ T λ dλ
-    #
-    # Let's just compute it directly for mag=0 reference:
-    # f_ν(0 AB) = 10^(-0.4*48.6) = 3.6308e-20 erg/s/cm²/Hz
-    fnu_0ab = 10.0**(-0.4 * 48.6)  # erg/s/cm²/Hz
-    flam_0ab = fnu_0ab * fnu_to_flam  # f_λ at 0 AB, per wavelength
-    synth_flux_0ab = flam_0ab @ bandpass_weights / bandpass_norm  # scalar
-
-    # Target mean flux for each source
-    target_flux = synth_flux_0ab * 10.0**(-0.4 * mag_f158)  # [N]
-
-    # Scale each SED
-    scale = (target_flux / synth_flux).astype(np.float32)  # [N]
-    galaxy_seds = (seds_flam_raw * scale[:, np.newaxis]).astype(np.float32)
+    galaxy_seds = raw_seds_fnu * fnu_to_flam[np.newaxis, :]  # [N, N_wl]
 
     # Build metadata table
     n = n_kept
@@ -590,11 +560,16 @@ def main():
         "--no-stars", action="store_true",
         help="Skip star processing (galaxies only)",
     )
+    parser.add_argument(
+        "--galaxy-fits-catalog", default="Euclid_Roman_4deg2_radec.fits",
+        help="Name of fits file cataloging galaxies & their properties"
+    )
     args = parser.parse_args()
 
     sim_numbers = parse_sims(args.sims)
     output_dir = Path(args.output_dir)
     galacticus_dir = Path(args.galacticus_dir)
+    galaxy_fits_catalog = Path(args.galaxy_fits_catalog)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Building source catalog")
@@ -616,7 +591,7 @@ def main():
 
     # --- Galaxies ---
     print("\n--- Galaxies ---")
-    fits_path = galacticus_dir / "Euclid_Roman_4deg2_radec.fits"
+    fits_path = galacticus_dir / galaxy_fits_catalog
     print(f"  Loading FITS index: {fits_path}")
     t0 = time.time()
     fits_index = load_galacticus_index(fits_path)
