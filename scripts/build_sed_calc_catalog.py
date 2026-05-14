@@ -607,7 +607,7 @@ def main():
     # Process and write galaxy partitions incrementally
     n_partitions = 0
     for sim_num in sim_numbers:
-        hdf5_path = galacticus_dir / f"romanUNIT-{fits_index["sim_id"][fits_index["sim"] == sim_num]}_2Deg.hdf5"
+        hdf5_path = galacticus_dir / f"romanUNIT-{fits_index["sim_id"][fits_index["sim"] == sim_num][0]}_2Deg.hdf5"
         if not hdf5_path.exists():
             print(f"  sim {sim_num:3d}: SKIPPED (file not found: {hdf5_path.name})")
             continue
