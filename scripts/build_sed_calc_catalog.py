@@ -21,6 +21,7 @@ import sys, os
 import time
 from pathlib import Path
 from functools import cache
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 import pyarrow as pa
@@ -451,7 +452,46 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
         },
         schema=make_parquet_schema(),
     )
-    return galaxy_table, galaxy_seds
+    return galaxy_table, galaxy_seds, sim_num
+
+
+def process_sim_worker(sim_num, galacticus_dir, fits_index, fnu_to_flam, 
+                       galaxy_fits_catalog, sed_component, wavelengths):
+    """Worker function: process a single sim completely.
+    
+    Each worker process has its own HDF5 file handle (no contention).
+    Returns metadata and SEDs for one sim.
+    """
+    import time
+    
+    galacticus_dir = Path(galacticus_dir)
+    
+    # Find the HDF5 file for this sim
+    sim_id_match = fits_index["sim_id"][fits_index["sim"] == sim_num]
+    if len(sim_id_match) == 0:
+        return None, None, sim_num
+    
+    hdf5_path = galacticus_dir / f"romanUNIT-{sim_id_match[0]}_2Deg.hdf5"
+    if not hdf5_path.exists():
+        print(f"  sim {sim_num:3d}: SKIPPED (file not found: {hdf5_path})")
+        return None, None, sim_num
+    
+    t0 = time.time()
+    try:
+        galaxy_table, galaxy_seds = process_galaxy_partition(
+            sim_num, galacticus_dir, fits_index,
+            fnu_to_flam, hdf5_path, sed_component=sed_component
+        )
+        dt = time.time() - t0
+        
+        if galaxy_table is not None:
+            print(f"           Processed in {dt:.1f}s")
+            return galaxy_table, galaxy_seds, sim_num
+        
+    except Exception as e:
+        print(f"  sim {sim_num:3d}: ERROR - {e}")
+    
+    return None, None, sim_num
 
 
 # ---------------------------------------------------------------------------
@@ -650,24 +690,56 @@ def main():
 
     # Process and write galaxy partitions incrementally
     n_partitions = 0
-    for sim_num in sim_numbers:
-        hdf5_path = galacticus_dir / f"romanUNIT-{fits_index["sim_id"][fits_index["sim"] == sim_num][0]}_2Deg.hdf5"
-        if not hdf5_path.exists():
-            print(f"  sim {sim_num:3d}: SKIPPED (file not found: {hdf5_path})")
-            continue
 
-        t0 = time.time()
-        galaxy_table, galaxy_seds = process_galaxy_partition(
-            sim_num, galacticus_dir, fits_index,
-            fnu_to_flam, hdf5_path, sed_component=sed_component
-        )
-        dt = time.time() - t0
-
-        if galaxy_table is not None:
+    # Use ProcessPoolExecutor for cleaner API
+    with ProcessPoolExecutor(max_workers=80) as executor:
+        # Submit all sim jobs
+        future_to_sim = {
+            executor.submit(
+                process_sim_worker,
+                sim_num,
+                galacticus_dir,
+                fits_index,
+                fnu_to_flam,
+                args.galaxy_fits_catalog,
+                args.sed_component,
+                wavelengths
+            ): sim_num
+            for sim_num in sim_numbers
+        }
+        
+        # Collect results as they complete (order doesn't matter)
+        sim_results = {}
+        for future in as_completed(future_to_sim):
+            galaxy_table, galaxy_seds, sim_num = future.result()
+            if galaxy_table is not None:
+                sim_results[sim_num] = (galaxy_table, galaxy_seds)
+        
+        # Write results to zarr in order (main process only)
+        for sim_num in sorted(sim_results.keys()):
+            galaxy_table, galaxy_seds = sim_results[sim_num]
             metadata_tables.append(galaxy_table)
             write_galaxy_partition(zarr_store, sim_num, galaxy_seds)
             n_partitions += 1
-            print(f"           Processed in {dt:.1f}s")
+        
+    # for sim_num in sim_numbers:
+    #     hdf5_path = galacticus_dir / f"romanUNIT-{fits_index["sim_id"][fits_index["sim"] == sim_num][0]}_2Deg.hdf5"
+    #     if not hdf5_path.exists():
+    #         print(f"  sim {sim_num:3d}: SKIPPED (file not found: {hdf5_path})")
+    #         continue
+
+    #     t0 = time.time()
+    #     galaxy_table, galaxy_seds = process_galaxy_partition(
+    #         sim_num, galacticus_dir, fits_index,
+    #         fnu_to_flam, hdf5_path, sed_component=sed_component
+    #     )
+    #     dt = time.time() - t0
+
+    #     if galaxy_table is not None:
+    #         metadata_tables.append(galaxy_table)
+    #         write_galaxy_partition(zarr_store, sim_num, galaxy_seds)
+    #         n_partitions += 1
+    #         print(f"           Processed in {dt:.1f}s")
 
     # --- Write outputs ---
     if not metadata_tables:
