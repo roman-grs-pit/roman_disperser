@@ -452,7 +452,7 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
         },
         schema=make_parquet_schema(),
     )
-    return galaxy_table, galaxy_seds, sim_num
+    return galaxy_table, galaxy_seds
 
 
 def process_sim_worker(sim_num, galacticus_dir, fits_index, fnu_to_flam, 
@@ -692,25 +692,25 @@ def main():
     n_partitions = 0
 
     # Use ProcessPoolExecutor for cleaner API
-    with ProcessPoolExecutor(max_workers=80) as executor:
+    with ProcessPoolExecutor(max_workers=35) as executor:
         # Submit all sim jobs
-        future_to_sim = {
+        futures = [
             executor.submit(
                 process_sim_worker,
                 sim_num,
                 galacticus_dir,
                 fits_index,
                 fnu_to_flam,
-                args.galaxy_fits_catalog,
-                args.sed_component,
+                galaxy_fits_catalog,
+                sed_component,
                 wavelengths
-            ): sim_num
+            )
             for sim_num in sim_numbers
-        }
+        ]
         
         # Collect results as they complete (order doesn't matter)
         sim_results = {}
-        for future in as_completed(future_to_sim):
+        for future in as_completed(futures):
             galaxy_table, galaxy_seds, sim_num = future.result()
             if galaxy_table is not None:
                 sim_results[sim_num] = (galaxy_table, galaxy_seds)
