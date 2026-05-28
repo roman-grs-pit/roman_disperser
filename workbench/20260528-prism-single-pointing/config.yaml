@@ -1,0 +1,26 @@
+# Prism single-pointing test (2026-05-28)
+#
+# One PRISM pointing at RA,Dec=(10,0) -- dead-center of the prism-testing
+# catalog footprint (RA [9,11], Dec [-1,1]). The prism branch runs a single
+# order "1" over 0.75-1.85 um; those defaults are baked into pipeline.py, so
+# this config only sets paths + run parameters.
+#
+# Path strategy (see README):
+#   - catalog_dir is on EBS; run.sh stages it from /mnt (S3-Files) first,
+#     because S3-Files reads ~2.8x slower than EBS for the many small SED
+#     chunks (project_s3_vs_ebs_seds).
+#   - output_dir is on /mnt for shareability -- FITS/PNG are plain writes,
+#     so the zarr/hardlink limitation of the S3 mount does not apply.
+#   - cache_dir (JAX compile cache) is on EBS so it persists and reads fast.
+output_dir: /mnt/roman-science/grs/prism-testing-20260527/spectro/2026-05-28/output
+seed: 42
+scas: all
+cone_radius: 0.6
+star_batch_size: 1000
+galaxy_batch_size: 100
+galaxy_npix: 30
+cache_dir: /data/npadman/jax-cache-prism
+catalog_dir: /data/npadman/1-Projects/roman_disperser_prism/workbench/20260528-prism-single-pointing/data/catalogs
+sensitivity_dir: /data/npadman/1-Projects/roman_disperser_prism/data/sensitivities_prism
+optical_model: /data/npadman/1-Projects/roman_disperser_prism/data/Roman_prism_OpticalModel_v0.8.yaml
+psf_cache_dir: /data/npadman/1-Projects/roman_disperser_prism/data/psf_cache
