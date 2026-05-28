@@ -423,7 +423,7 @@ def check_synphot_integration(df, store, galacticus_dir, n_check=10):
     # Galacticus wavelength grid (from Readme_4sqdeg.txt)
     wl_galacticus = np.linspace(2000, 40000, 19001) * u.AA
     # Slice matching our output grid
-    grism_slice = slice(3500, 3500 + len(wavelengths))
+    grism_slice = slice(2750, 2750 + len(wavelengths))
 
     galaxies = df[df["type"] == "SER"]
     ok = True
