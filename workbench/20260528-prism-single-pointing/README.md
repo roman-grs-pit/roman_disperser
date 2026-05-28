@@ -56,9 +56,13 @@ worth it for a single pointing.
 
 ## Path strategy
 
-- **Catalog on EBS:** `run.sh` rsyncs the catalog from `/mnt` (S3-Files) to
-  `data/catalogs` first. S3-Files reads ~2.8x slower than EBS for the many
-  small SED chunks. The rsync is incremental, so re-runs are cheap.
+- **Catalog read directly from /mnt** (S3-Files). For a single pointing the
+  S3 read penalty (~2.8x; a few min total across 18 SCAs, since galaxy SEDs
+  are read per-SCA for the on-detector subset) is smaller than the ~5 min
+  cost of staging the 19 GB catalog to EBS, so direct is simpler and no
+  slower end-to-end. This matches the acceptance run. **Stage to EBS only
+  for multi-pointing runs**, where the one-time copy amortizes
+  (project_s3_vs_ebs_seds).
 - **Outputs on /mnt:** `output_dir` is under
   `/mnt/roman-science/grs/prism-testing-20260527/spectro/2026-05-28/`. FITS/PNG
   are plain writes -- the zarr/hardlink limitation of the S3 mount (which

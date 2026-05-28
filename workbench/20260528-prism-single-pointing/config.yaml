@@ -6,9 +6,12 @@
 # this config only sets paths + run parameters.
 #
 # Path strategy (see README):
-#   - catalog_dir is on EBS; run.sh stages it from /mnt (S3-Files) first,
-#     because S3-Files reads ~2.8x slower than EBS for the many small SED
-#     chunks (project_s3_vs_ebs_seds).
+#   - catalog_dir reads directly from /mnt (S3-Files). For a SINGLE pointing
+#     the S3 read penalty (~2.8x; a few min total across 18 SCAs, since
+#     galaxy SEDs are read per-SCA for the on-detector subset) is smaller
+#     than the ~5 min cost of staging the 19 GB catalog to EBS -- so direct
+#     is simpler and no slower end-to-end. This matches the acceptance run.
+#     Stage to EBS only for multi-pointing runs (project_s3_vs_ebs_seds).
 #   - output_dir is on /mnt for shareability -- FITS/PNG are plain writes,
 #     so the zarr/hardlink limitation of the S3 mount does not apply.
 #   - cache_dir (JAX compile cache) is on EBS so it persists and reads fast.
@@ -20,7 +23,7 @@ star_batch_size: 1000
 galaxy_batch_size: 100
 galaxy_npix: 30
 cache_dir: /data/npadman/jax-cache-prism
-catalog_dir: /data/npadman/1-Projects/roman_disperser_prism/workbench/20260528-prism-single-pointing/data/catalogs
+catalog_dir: /mnt/roman-science/grs/prism-testing-20260527/catalogs
 sensitivity_dir: /data/npadman/1-Projects/roman_disperser_prism/data/sensitivities_prism
 optical_model: /data/npadman/1-Projects/roman_disperser_prism/data/Roman_prism_OpticalModel_v0.8.yaml
 psf_cache_dir: /data/npadman/1-Projects/roman_disperser_prism/data/psf_cache

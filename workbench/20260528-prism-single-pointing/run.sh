@@ -12,9 +12,9 @@
 #   # ... then on the node:  bash run.sh 5   (smoke) ;  bash run.sh   (full)
 #   # scancel the allocation when done -- a10g is ~$1.2/h on-demand.
 #
-# Steps:
-#   1. Stage the catalog from /mnt (S3-Files) to EBS for fast SED reads.
-#   2. Disperse the single PRISM pointing through build_grism_image.py.
+# The catalog is read directly from /mnt (S3-Files) -- see config.yaml. For a
+# single pointing that's simpler and no slower than staging to EBS; stage only
+# for multi-pointing runs.
 #
 # Smoke runs go to a SEPARATE output dir because the per-pointing
 # skip-if-exists is directory-level (build_grism_image.py:1462): a smoke
@@ -28,21 +28,11 @@ CONFIG="$STUDY/config.yaml"
 ECSV="$STUDY/prism-single.sim.ecsv"
 CACHE_DIR=/data/npadman/jax-cache-prism
 
-# Catalog staging: /mnt (authoritative) -> EBS (fast reads). Must match
-# catalog_dir in config.yaml.
-SRC_CATALOG=/mnt/roman-science/grs/prism-testing-20260527/catalogs
-EBS_CATALOG="$STUDY/data/catalogs"
-
 SCAS="${1:-all}"
 
 [ -f "$CONFIG" ] || { echo "missing $CONFIG"; exit 1; }
 [ -f "$ECSV" ]   || { echo "missing $ECSV"; exit 1; }
-mkdir -p "$CACHE_DIR" "$EBS_CATALOG"
-
-echo "=== Staging catalog: $SRC_CATALOG -> $EBS_CATALOG ==="
-rsync -a --info=progress2 "$SRC_CATALOG/" "$EBS_CATALOG/"
-[ -f "$EBS_CATALOG/metadata.parquet" ] || { echo "stage failed: no metadata.parquet"; exit 1; }
-echo "Catalog staged."
+mkdir -p "$CACHE_DIR" "$STUDY/data"
 
 if [ "$SCAS" = "all" ]; then
     RUN_CONFIG="$CONFIG"
