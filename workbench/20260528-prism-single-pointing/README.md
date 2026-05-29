@@ -3,8 +3,10 @@
 First end-to-end PRISM (P127) grism simulation: one pointing at
 RA,Dec = (10, 0), the center of the `prism-testing-20260527` catalog
 footprint. Produces the disperser output files (FITS + PNG + mosaic +
-sources.parquet + meta.yaml) for downstream use. The romanisim L2 wrap is
-deferred (see `workbench/20260508-romanisim-wrap/` for that chain).
+sources.parquet + meta.yaml) and then wraps them through romanisim to
+L2 ASDF -- both steps stay in this directory rather than spinning off
+a separate romanisim-wrap workbench (the grism acceptance run did that
+at scale; for one pointing it's overkill).
 
 Built in analogy to `20260505-acceptance-testing-aws/`, but a single
 pointing run interactively on one a10g rather than a SLURM array.
@@ -86,3 +88,101 @@ worth it for a single pointing.
 `prism-single_001.001.001.001.001.001/`: up to 18 FITS + 18 PNG + mosaic PNG
 + `*_sources.parquet` + `*_meta.yaml`. FITS/parquet schema in
 `docs/grism_pipeline.md`.
+
+## Step 2: romanisim L2 wrap (interactive, head node)
+
+After the dispersion run is on disk, wrap the 18 FITS through romanisim
+to produce L2 ASDF products. The wrap is CPU-only (no JAX/GPU), so it
+runs in the `romanisim` pixi env on whatever node you happen to be on
+-- no SLURM array, no separate workbench dir. For 18 files this is
+trivially small (~1-2 hours on a 2-core head node at N=2 threads).
+
+`scripts/wrap_with_romanisim.py` is the underlying tool; it walks the
+input dir for `grism_*_detSCA*.fits`, reads pointing + RNG headers,
+and shells out to `romanisim-make-image --extra-counts <fits> ISIM`
+per file via a `ThreadPoolExecutor`. Per-file skip-if-exists makes
+restarts cheap.
+
+Header-to-romanisim argument mapping (see `scripts/wrap_with_romanisim.py`
+docstring for the full list):
+
+| FITS header        | Romanisim arg |
+|--------------------|---|
+| `WFICENRA, WFICENDEC` | `--radec` |
+| `WFICENPA - 60`       | `--roll`  (focal-plane vs spacecraft) |
+| `DETNUM`              | `--sca` |
+| `MA_TABLE`            | `--ma_table_number` |
+| `RNDSEED0 ^ RNDSEED1` | `--rng_seed` (XOR fold to 32-bit) |
+
+Static args: `--bandpass PRISM` (prism branch default; flipped from
+`GRISM` in `wrap_with_romanisim.py`), `--usecrds`, `--stpsf`, `--nobj 0`,
+`--date 2026-01-01T12:00:00.000`, `--level 2`.
+
+### How to run
+
+```bash
+RUN=/mnt/roman-science/grs/prism-testing-20260527/spectro/2026-05-28
+mkdir -p $RUN/logs/romanisim
+cd /data/npadman/1-Projects/roman_disperser_prism
+
+pixi run -e romanisim python scripts/wrap_with_romanisim.py \
+    --input-dir  $RUN/output \
+    --output-dir $RUN/output_l2 \
+    --log-dir    $RUN/logs/romanisim/per-file \
+    --num-threads 2 \
+    > $RUN/logs/romanisim/worker.log 2>&1 &
+```
+
+`--num-threads` should match available cores. On this head node (2
+cores, 30 GB) N=2 keeps memory comfortable; the acceptance run hit
+~48 GB peak at N=8 on `mem-lg` for reference.
+
+### Output layout
+
+L2 ASDFs land in a sibling tree mirroring the input dir name:
+
+```
+output_l2/prism-single.sim_001.001.001.001.001.001/
+    grism_prism-single.sim_001.001.001.001.001.001_detSCA01_l2.asdf
+    ...
+    grism_prism-single.sim_001.001.001.001.001.001_detSCA18_l2.asdf
+```
+
+Per-file size ~216 MB, total ~4 GB.
+
+### Why bandpass PRISM (not GRISM)
+
+Romanisim supports both as first-class options
+(`romanisim/models/bandpass.py:64-65`). `PRISM` maps to the SNPrism
+throughput internally and triggers the spectral STPSF path
+(`ris_make_utils.py:402`). The fork in use is
+`roman-grs-pit/romanisim @ extra_counts`, pinned via `pixi.toml`.
+
+## Step 3: L2 quick-look PNGs
+
+The romanisim wrap only writes ASDF; render quick-looks from the L2 rate
+images with `render_l2_per_sca.py` (this dir) for the 18 per-SCA PNGs and
+the grism archetype `../20260508-romanisim-wrap/render_l2_pointing_mosaic.py`
+for the sky-coordinate mosaic. Both run in the `romanisim` env (asdf +
+matplotlib come in transitively).
+
+```bash
+L2=$RUN/output_l2/prism-single.sim_001.001.001.001.001.001
+cd /data/npadman/1-Projects/roman_disperser_prism
+
+# 18 per-SCA detector-space PNGs (written alongside the ASDFs)
+pixi run -e romanisim python \
+    workbench/20260528-prism-single-pointing/render_l2_per_sca.py "$L2"
+
+# Sky-coordinate RA/Dec mosaic of the full focal plane
+pixi run -e romanisim python \
+    workbench/20260508-romanisim-wrap/render_l2_pointing_mosaic.py \
+    "$L2" "$L2/grism_prism-single.sim_001.001.001.001.001.001_l2_mosaic.png"
+```
+
+L2 prism rate images have a sky floor ~3.5 DN/s with ramp-fit negative
+outliers, so the per-SCA renderer clamps `vmin=0` and takes `vmax` from the
+p99.99 quantile of the rebinned pixels (`AsinhNorm`, `linear_width=0.5`).
+Dispersed sources show as bright vertical streaks (the single-beam prism
+signature). At 0.5"/px the mosaic reads as a footprint/layout check -- the
+streaks are too thin to pop; the per-SCA PNGs are where the spectra show.

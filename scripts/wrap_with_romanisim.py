@@ -22,7 +22,7 @@ Header-driven arguments (read per FITS):
     RNDSEED0 ^ RNDSEED1      -> --rng_seed  (XOR fold to 32-bit)
 
 Static arguments (CLI-tunable; see --help):
-    --bandpass GRISM
+    --bandpass PRISM
     --usecrds --stpsf
     --nobj 0
     --extra-counts <fits> ISIM
@@ -165,8 +165,8 @@ def main() -> None:
                    help="Total workers for round-robin partitioning")
     p.add_argument("--date", default=DEFAULT_DATE,
                    help=f"UTC date passed to romanisim --date (default: {DEFAULT_DATE})")
-    p.add_argument("--bandpass", default="GRISM",
-                   help="--bandpass to romanisim (default: GRISM)")
+    p.add_argument("--bandpass", default="PRISM",
+                   help="--bandpass to romanisim (default: PRISM)")
     p.add_argument("--level", type=int, default=2,
                    help="L1 (1) or L2 (2) output (default: 2)")
     p.add_argument("--dry-run", action="store_true",
