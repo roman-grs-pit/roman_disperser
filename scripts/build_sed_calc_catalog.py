@@ -62,7 +62,6 @@ MAG_CUT = 26.0  # F158 AB mag
 
 # Galaxy morphology defaults
 GALAXY_SERSIC_N = 1.0
-GALAXY_HALF_LIGHT_RADIUS = 0.275  # arcsec (2.5 pixels × 0.11 arcsec/pixel)
 GALAXY_PA = 0.0  # degrees
 GALAXY_BA = 1.0  # axis ratio
 
@@ -264,7 +263,9 @@ def load_galacticus_index(fits_path):
             "idx": t["IDX"].astype(np.int32),
             "mag_F158": t["mag_F158_Av1.6523"].astype(np.float32),
             "z": t["Z"].astype(np.float32),
-            "z_cosmo": t["z_cosmo"].astype(np.float32)
+            "z_cosmo": t["z_cosmo"].astype(np.float32),
+            "disk_half_light": t["disk_half_light"].astype(np.float32),
+            "spheroid_half_light": t["spheroid_half_light"].astype(np.float32)
         }
 
 
@@ -408,6 +409,11 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
     z_cosmo = fits_index["z_cosmo"][mask]
     hdf5_indices = fits_index["idx"][mask]
 
+    if sed_component=='spheroid':
+        half_light_radii = fits_index["spheroid_half_light"]
+    else:
+        half_light_radii = fits_index["disk_half_light"]
+
     # Read HDF5 SEDs for kept sources (only grism wavelength range)
     # SEDs are f_ν in unknown absolute units, on the Galacticus wavelength grid
     # (2 Å spacing). Our output grid is a subset of their grid.
@@ -439,7 +445,7 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
             "dec": dec,
             "type": ["SER"] * n,
             "n": np.full(n, GALAXY_SERSIC_N, dtype=np.float32),
-            "half_light_radius": np.full(n, GALAXY_HALF_LIGHT_RADIUS, dtype=np.float32),
+            "half_light_radius": half_light_radii,
             "pa": np.full(n, GALAXY_PA, dtype=np.float32),
             "ba": np.full(n, GALAXY_BA, dtype=np.float32),
             "F158": f158_maggies,
@@ -646,7 +652,7 @@ def main():
     )
     parser.add_argument(
         "--sed-component", default="disk",
-        help="Component of the galaxy SED to evaluate. Options: disk, spheroid, total"
+        help="Component of the galaxy SED to evaluate. Options: disk, spheroid, total, or both"
     )
     args = parser.parse_args()
 
@@ -694,19 +700,35 @@ def main():
     # Use ProcessPoolExecutor for cleaner API
     with ProcessPoolExecutor(max_workers=35) as executor:
         # Submit all sim jobs
-        futures = [
-            executor.submit(
-                process_sim_worker,
-                sim_num,
-                galacticus_dir,
-                fits_index,
-                fnu_to_flam,
-                galaxy_fits_catalog,
-                sed_component,
-                wavelengths
-            )
-            for sim_num in sim_numbers
-        ]
+        if sed_component=="both":
+            futures = [
+                executor.submit(
+                    process_sim_worker,
+                    sim_num,
+                    galacticus_dir,
+                    fits_index,
+                    fnu_to_flam,
+                    galaxy_fits_catalog,
+                    component,
+                    wavelengths
+                )
+                for sim_num in sim_numbers
+                for component in ('disk', 'spheroid')
+            ]
+        else:
+            futures = [
+                executor.submit(
+                    process_sim_worker,
+                    sim_num,
+                    galacticus_dir,
+                    fits_index,
+                    fnu_to_flam,
+                    galaxy_fits_catalog,
+                    sed_component,
+                    wavelengths
+                )
+                for sim_num in sim_numbers
+            ]
         
         # Collect results as they complete (order doesn't matter)
         sim_results = {}
