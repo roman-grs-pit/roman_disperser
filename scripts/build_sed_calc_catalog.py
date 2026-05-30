@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from functools import cache
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections import defaultdict
 
 import numpy as np
 import pyarrow as pa
@@ -97,6 +98,8 @@ def make_parquet_schema():
                  metadata={"unit": "deg", "description": "Declination (ICRS)"}),
         pa.field("type", pa.string(),
                  metadata={"description": "Source type: PSF (star) or SER (galaxy)"}),
+        pa.field("disk_spheroid", pa.string(),
+                 metadata={"description": "Disk/Spheroid component of galaxy (0 for PSF)"}),
         pa.field("n", pa.float32(),
                  metadata={"description": "Sérsic index (0 for PSF)"}),
         pa.field("half_light_radius", pa.float32(),
@@ -223,6 +226,7 @@ def process_stars(star_dir, wavelengths):
             "dec": catalog["dec"],
             "type": ["PSF"] * n_stars,
             "n": np.zeros(n_stars, dtype=np.float32),
+            "disk_spheroid": ["PSF"] * n_stars,
             "half_light_radius": np.zeros(n_stars, dtype=np.float32),
             "pa": np.zeros(n_stars, dtype=np.float32),
             "ba": np.ones(n_stars, dtype=np.float32),
@@ -410,9 +414,9 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
     hdf5_indices = fits_index["idx"][mask]
 
     if sed_component=='spheroid':
-        half_light_radii = fits_index["spheroid_half_light"]
+        half_light_radii = fits_index["spheroid_half_light"][mask]
     else:
-        half_light_radii = fits_index["disk_half_light"]
+        half_light_radii = fits_index["disk_half_light"][mask]
 
     # Read HDF5 SEDs for kept sources (only grism wavelength range)
     # SEDs are f_ν in unknown absolute units, on the Galacticus wavelength grid
@@ -445,6 +449,7 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
             "dec": dec,
             "type": ["SER"] * n,
             "n": np.full(n, GALAXY_SERSIC_N, dtype=np.float32),
+            "disk_spheroid": [sed_component] * n,
             "half_light_radius": half_light_radii,
             "pa": np.full(n, GALAXY_PA, dtype=np.float32),
             "ba": np.full(n, GALAXY_BA, dtype=np.float32),
@@ -492,12 +497,12 @@ def process_sim_worker(sim_num, galacticus_dir, fits_index, fnu_to_flam,
         
         if galaxy_table is not None:
             print(f"           Processed in {dt:.1f}s")
-            return galaxy_table, galaxy_seds, sim_num
+            return galaxy_table, galaxy_seds, sim_num, sed_component
         
     except Exception as e:
-        print(f"  sim {sim_num:3d}: ERROR - {e}")
+        print(f"  sim {sim_num:3d}/{sed_component}: ERROR - {e}")
     
-    return None, None, sim_num
+    return None, None, sim_num, sed_component
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +554,7 @@ def init_zarr_store(output_dir, wavelengths, star_seds):
     return store
 
 
-def write_galaxy_partition(store, sim_num, galaxy_seds):
+def write_galaxy_partition(store, sim_num, sed_component, galaxy_seds):
     """Write a single galaxy SED partition to an open Zarr store.
 
     Parameters
@@ -571,7 +576,7 @@ def write_galaxy_partition(store, sim_num, galaxy_seds):
         seds_padded = galaxy_seds
 
     store.create_array(
-        f"galaxy_seds/sim_{sim_num:03d}",
+        f"galaxy_seds/sim_{sim_num:03d}/{sed_component}",
         data=seds_padded,
         chunks=(INNER_CHUNK_SOURCES, n_wl),
         shards=(shard_rows, n_wl),
@@ -731,18 +736,19 @@ def main():
             ]
         
         # Collect results as they complete (order doesn't matter)
-        sim_results = {}
+        sim_results = defaultdict(dict)
         for future in as_completed(futures):
-            galaxy_table, galaxy_seds, sim_num = future.result()
+            galaxy_table, galaxy_seds, sim_num, sed_component = future.result()
             if galaxy_table is not None:
-                sim_results[sim_num] = (galaxy_table, galaxy_seds)
+                sim_results[sim_num][sed_component] = (galaxy_table, galaxy_seds)
         
         # Write results to zarr in order (main process only)
         for sim_num in sorted(sim_results.keys()):
-            galaxy_table, galaxy_seds = sim_results[sim_num]
-            metadata_tables.append(galaxy_table)
-            write_galaxy_partition(zarr_store, sim_num, galaxy_seds)
-            n_partitions += 1
+            for sed_component in sorted(sim_results[sim_num].keys()):
+                galaxy_table, galaxy_seds = sim_results[sim_num][sed_component]
+                metadata_tables.append(galaxy_table)
+                write_galaxy_partition(zarr_store, sim_num, sed_component, galaxy_seds)
+                n_partitions += 1
         
     # for sim_num in sim_numbers:
     #     hdf5_path = galacticus_dir / f"romanUNIT-{fits_index["sim_id"][fits_index["sim"] == sim_num][0]}_2Deg.hdf5"
