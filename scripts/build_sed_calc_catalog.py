@@ -46,9 +46,9 @@ except ImportError:
 
 # Wavelength range (Angstroms)
 # Covers grism range (0.9–2.0 μm) plus margin to fully contain the F184 bandpass
-WL_MIN = 7000.0
+WL_MIN = 7500.0
 WL_MAX = 21000.0
-WL_STEP = 1.0  # Angstroms
+WL_STEP = 2.0  # Angstroms
 N_WL = int((WL_MAX - WL_MIN) / WL_STEP) + 1  # 6001
 
 # Galacticus SED wavelength grid (from Readme_4sqdeg.txt):
