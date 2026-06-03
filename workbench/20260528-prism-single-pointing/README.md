@@ -11,6 +11,30 @@ at scale; for one pointing it's overkill).
 Built in analogy to `20260505-acceptance-testing-aws/`, but a single
 pointing run interactively on one a10g rather than a SLURM array.
 
+## Roll extension (2026-06-03)
+
+Extended the original PA=0 pointing with three additional roll angles at
+the same RA,Dec=(10,0): **PA = 10, 170, 180**. Each is a new row in
+`prism-single.sim.ecsv` with a distinct `OBSERVATION` id (2, 3, 4) so it
+gets its own output dir and RNG key; the original PA=0 row (OBSERVATION 1)
+is untouched and auto-skipped on re-run (directory-level skip-if-exists).
+
+| Roll | OBSERVATION | Pointing dir suffix |
+|---|---|---|
+| PA=0   | 1 | `_001.001.001.001.001.001` (original) |
+| PA=10  | 2 | `_001.001.001.002.001.001` |
+| PA=170 | 3 | `_001.001.001.003.001.001` |
+| PA=180 | 4 | `_001.001.001.004.001.001` |
+
+No catalog padding needed: the cone search is roll-invariant and the
+center is unchanged, so `cone_radius=0.6` around (10,0) stays inside the
+footprint exactly as for PA=0. Dispersion of the 3 new rolls ran
+2026-06-03 on one a10g (`gpu-int`) against the warm JAX cache: 4.0 h
+total (~67 min/roll), clean (no NaN / SED-scrubber warnings). The
+romanisim wrap + L2 quick-looks (Steps 2-3 below) then cover all four
+pointings -- the wrap globs `**/grism_*_detSCA*.fits` recursively and
+skips per-file, so the original PA=0 ASDFs are reused.
+
 ## Files
 
 | File | Purpose |
