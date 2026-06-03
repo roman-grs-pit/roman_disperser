@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-03
+
+### Fixed
+- `validate_catalog` now checks that `star_seds` and every `galaxy_seds/sim_XXX` partition have a wavelength-bin count matching the shared `wavelengths` grid (GitHub issue #11). A catalog with an off-by-one wavelength grid (e.g. galaxy SEDs built with `np.arange` while the grid used `np.linspace`) previously slipped past validation and crashed mid-dispersion with a cryptic `IndexError` from `seds_full[:, wl_mask]`. It now fails fast at startup with a clear message naming the offending array and the two sizes. The check reads only zarr array `.shape` metadata, so it adds negligible time.
+
 ## [0.8.0] - 2026-05-08
 
 ### Added
