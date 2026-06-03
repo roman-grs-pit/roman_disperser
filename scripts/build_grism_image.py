@@ -180,6 +180,19 @@ def validate_catalog(meta, store, wavelengths):
     if not np.allclose(dlam, dlam[0], rtol=1e-4):
         raise ValueError("Catalog wavelength grid is not uniformly spaced")
 
+    # SED array width must match the shared wavelength grid. All SED arrays
+    # (star_seds and every galaxy partition) are indexed by the same wavelength
+    # mask at load time, so a width mismatch is a hard error. Catching it here
+    # gives a clear message instead of a cryptic IndexError deep in dispersion
+    # (see GitHub issue #11: an off-by-one wavelength grid in a custom catalog).
+    n_wl = len(wavelengths)
+    if "star_seds" in store and store["star_seds"].shape[1] != n_wl:
+        raise ValueError(
+            f"star_seds has {store['star_seds'].shape[1]} wavelength bins but "
+            f"the catalog wavelength grid has {n_wl}. All SED arrays must share "
+            f"the 'wavelengths' grid (see data/catalogs/README.md)."
+        )
+
     # Required columns
     required = ["ra", "dec", "type", "n", "half_light_radius", "pa", "ba",
                 "sed_index", "flux_scale", "sim"]
@@ -218,6 +231,12 @@ def validate_catalog(meta, store, wavelengths):
             key = f"galaxy_seds/sim_{sim_val:03d}"
             if key not in store:
                 raise ValueError(f"Missing Zarr array for partition: {key}")
+            if store[key].shape[1] != n_wl:
+                raise ValueError(
+                    f"{key} has {store[key].shape[1]} wavelength bins but the "
+                    f"catalog wavelength grid has {n_wl}. All SED arrays must "
+                    f"share the 'wavelengths' grid (see data/catalogs/README.md)."
+                )
 
     # Morphology warnings
     if len(galaxies) > 0:
