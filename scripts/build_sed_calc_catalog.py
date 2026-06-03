@@ -55,7 +55,7 @@ N_WL = int((WL_MAX - WL_MIN) / WL_STEP) + 1  # 6001
 # "The data array is saved with a step size of 2 Angstroms, you can get the
 # wavelength by np.linspace(2000, 40000, 19001) in units of Angstroms."
 # Not stored in the HDF5 files — no attributes anywhere.
-GALACTICUS_WL = np.arange(WL_MIN, WL_MAX, WL_STEP)  # Angstroms
+GALACTICUS_WL = np.linspace(WL_MIN, WL_MAX, N_WL)  # Angstroms
 GRISM_SLICE = slice(3500, 9501)  # indices for 9000-21000 Å
 
 # Magnitude cut
