@@ -35,6 +35,19 @@ romanisim wrap + L2 quick-looks (Steps 2-3 below) then cover all four
 pointings -- the wrap globs `**/grism_*_detSCA*.fits` recursively and
 skips per-file, so the original PA=0 ASDFs are reused.
 
+**Done 2026-06-04** on `mem-lg-dy-r6i-4xlarge-1` (8 cores, 124 GB):
+the romanisim wrap processed the 54 new files (18 PA=0 ASDFs skipped)
+in **1h42m at `--num-threads 8`, 0 failed**. L2 sanity per roll
+(SCA05): `optical_element=PRISM`, `exposure.type=WFI_SPECTRAL`,
+`ma_table=1041`, no NaN/Inf, sky floor 3.49 DN/s (matches PA=0). Roll
+mapping verified: OBS2 PA10 -> `--roll` -50, OBS3 PA170 -> 110, OBS4
+PA180 -> 120. L2 quick-looks rendered for all three new rolls (18
+per-SCA PNGs + 1 sky mosaic each). The whole `prism-testing-20260527/`
+tree was re-synced to S3 (`aws s3 sync`, profile
+`spinup-003131-romanisim-l3`, `--exclude "spectro/*/output-smoke/*"`):
+284 new objects / 19.6 GiB, only OBS 2/3/4 output/ + output_l2/ +
+logs (PA=0 and catalogs untouched). Roll extension complete.
+
 ## Files
 
 | File | Purpose |
