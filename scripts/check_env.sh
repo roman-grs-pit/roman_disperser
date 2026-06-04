@@ -35,7 +35,8 @@ check_conda_kernel() {
   fi
   # The kernel.json should start with the kernel-helper argv block.
   # Read the first few lines and look for the opening brace + argv pattern.
-  if [[ "$(head -c 120 "$kernel_json" | grep "kernel-helper.sh")" == "/global/common/software/m4943/kernel-helper.sh" ]] ; then
+  if grep -q "/global/common/software/m4943/kernel-helper.sh" "$kernel_json" ; then
+    printf "${GREEN}     Conda environment ready for use in notebooks\n"
     ok "kernel.json" "${env_name} → kernel-helper.sh"
     pass=$((pass + 1))
   else
