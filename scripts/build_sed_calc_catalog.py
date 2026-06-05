@@ -359,7 +359,7 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices, sed_component='disk'):
                 **dust_model_specs
             )
 
-            sed_list.append(spec(GALACTICUS_WL, flux_units='FLAM'))
+            sed_list.append(spec(GALACTICUS_WL, flux_unit='FLAM'))
 
     else:
         for idx in hdf5_indices:
@@ -373,7 +373,7 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices, sed_component='disk'):
                 **dust_model_specs
             )
 
-            sed_list.append(spec(GALACTICUS_WL, flux_units='FLAM'))
+            sed_list.append(spec(GALACTICUS_WL, flux_unit='FLAM'))
 
     sed_list = np.asarray(sed_list, dtype=np.float32)
 
