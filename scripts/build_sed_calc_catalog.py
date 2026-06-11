@@ -77,6 +77,12 @@ FALLBACK_DUST_MODEL = {
     'random_uniform_index': None,
 }
 
+CONTINUUM_DUST = {
+    'model': 'fixed_av',
+    'params': {'A_V': 1.0},
+    'law': 'calzetti',
+}
+
 # Zarr compression
 COMPRESSOR = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
 
@@ -356,6 +362,7 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices, sed_component='disk'):
                 obs_wavelengths=GALACTICUS_WL * u.AA, 
                 include_emission_lines=True,
                 use_synphot=False,  # Enable fast path
+                continuum_dust=CONTINUUM_DUST,
                 **dust_model_specs
             )
 
@@ -370,6 +377,7 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices, sed_component='disk'):
                 obs_wavelengths=GALACTICUS_WL * u.AA, 
                 include_emission_lines=True,
                 use_synphot=False,  # Enable fast path
+                continuum_dust=CONTINUUM_DUST,
                 **dust_model_specs
             )
 

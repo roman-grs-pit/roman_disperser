@@ -12,6 +12,8 @@ hydrate = "roman-disperser-hydrate"
 
 [dependencies]
 python = ">=3.12, <3.13"
+ipykernel = ">=7.2.0,<8"
+pip = ">=26.1.1,<27"
 
 [pypi-dependencies]
 roman_disperser = { path = ".", editable = true, extras = ["full"] }
