@@ -29,6 +29,9 @@ full = [
     "pytest>=9.0.2,<10",
 ]
 
+[project.scripts]
+roman-disperser-hydrate = "roman_disperser.hydrate:main"
+
 [tool.pytest.ini_options]
 markers = [
     "slow: marks tests as slow (require STPSF PSF generation)",

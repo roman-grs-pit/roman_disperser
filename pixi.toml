@@ -7,6 +7,8 @@ version = "0.5.0"
 
 [tasks]
 check-jax = "python -c 'import jax; print(f\"Backend: {jax.default_backend()}\"); print(jax.devices())'"
+# Maintainer alias for the packaged console command (users run it directly).
+hydrate = "roman-disperser-hydrate"
 
 [dependencies]
 python = ">=3.12, <3.13"

@@ -9,6 +9,7 @@ from . import demo_utils
 from . import psf_utils
 from . import psf_model
 from . import catalog
+from . import hydrate
 from . import paths
 from . import refdata
 from . import sersic
@@ -23,6 +24,7 @@ __all__ = [
     "psf_utils",
     "psf_model",
     "catalog",
+    "hydrate",
     "paths",
     "refdata",
     "sersic",
