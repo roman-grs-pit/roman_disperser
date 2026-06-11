@@ -9,7 +9,6 @@ Not added to ``__init__.py`` — scripts import directly::
     from roman_disperser.pipeline import write_fits, load_sensitivities, ...
 """
 
-import os
 import re
 from pathlib import Path
 
@@ -24,6 +23,7 @@ from matplotlib.colors import AsinhNorm
 from PIL import Image
 
 from roman_disperser import catalog
+from roman_disperser import paths
 from roman_disperser.optical_model import RomanOpticalModel
 import roman_disperser.optical_model_jax as omj
 
@@ -43,32 +43,28 @@ SENSITIVITY_MAP_FILE = "sensitivity_map.yaml"
 
 def resolve_paths(catalog_dir=None, sensitivity_dir=None,
                   optical_model_path=None, psf_cache_dir=None):
-    """Resolve default paths relative to project root.
+    """Resolve default reference-data paths.
+
+    Each ``None`` argument falls back to its default location under the
+    vendored data directory (see :mod:`roman_disperser.paths` for how that
+    directory is resolved — ``$ROMAN_DISPERSER_DATA``, then
+    ``$PIXI_PROJECT_ROOT/data``, then ``./data``).
 
     Parameters
     ----------
     catalog_dir : str or Path, optional
-        Default: ``data/catalogs``.
+        Default: ``<data>/catalogs``.
     sensitivity_dir : str or Path, optional
-        Default: ``data/sensitivities``.
+        Default: ``<data>/sensitivities``.
     optical_model_path : str or Path, optional
-        Default: ``data/Roman_grism_OpticalModel_v0.8.yaml``.
+        Default: ``<data>/Roman_grism_OpticalModel_v0.8.yaml``.
     psf_cache_dir : str or Path, optional
-        Default: ``data/psf_cache``.
+        Default: ``<data>/psf_cache``.
     """
-    project_root = Path(os.environ.get("PIXI_PROJECT_ROOT", "."))
-    if catalog_dir is None:
-        catalog_dir = project_root / "data" / "catalogs"
-    if sensitivity_dir is None:
-        sensitivity_dir = project_root / "data" / "sensitivities"
-    if optical_model_path is None:
-        optical_model_path = (
-            project_root / "data" / "Roman_grism_OpticalModel_v0.8.yaml"
-        )
-    if psf_cache_dir is None:
-        psf_cache_dir = project_root / "data" / "psf_cache"
-    return (Path(catalog_dir), Path(sensitivity_dir),
-            Path(optical_model_path), Path(psf_cache_dir))
+    return (paths.catalog_dir(catalog_dir),
+            paths.sensitivity_dir(sensitivity_dir),
+            paths.optical_model_path(optical_model_path),
+            paths.psf_cache_dir(psf_cache_dir))
 
 
 # ---------------------------------------------------------------------------
@@ -542,11 +538,7 @@ def write_mosaic_from_directory(pointing_dir, optical_model_path=None,
         Asinh normalization parameter forwarded to ``write_mosaic_png``.
     """
     pointing_dir = Path(pointing_dir)
-    if optical_model_path is None:
-        project_root = Path(os.environ.get("PIXI_PROJECT_ROOT", "."))
-        optical_model_path = (
-            project_root / "data" / "Roman_grism_OpticalModel_v0.8.yaml"
-        )
+    optical_model_path = paths.optical_model_path(optical_model_path)
     model = RomanOpticalModel(str(optical_model_path))
 
     # Discover SCA FITS files (try new naming first, fall back to legacy)
