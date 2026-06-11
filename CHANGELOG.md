@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-06-11
+
+### Removed
+- Stale one-off development scripts under `notebooks/archive/` (`20260110-devel.py`, `quicklook_jax.ipynb`, `simple_optical_test_00.py`, `test_3d_grids.py`, `test_efficiency.py`, `test_multidim.py`, `test_vandermonde.py`, `test_vmap_fusion.py`). These were unmaintained, used stale APIs and hardcoded relative data paths, and broke bare `pytest` collection. Preserved in git history.
+
 ## [0.8.1] - 2026-06-03
 
 ### Fixed
