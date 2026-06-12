@@ -33,16 +33,44 @@ pip install -e ".[full]"  # all dependencies (pipeline, notebooks, testing)
 
 For GPU support with pip, see [GPU support](#gpu-support) below.
 
-A minimal install (`pip install -e .`) is also available — it includes only the
-core library (optical model, dispersers, pre-cached PSF loading) without astropy,
-synphot, or pytest.
+A minimal install (`pip install -e .`) omits the `[full]` extras (astropy,
+synphot, tqdm, pytest) — enough for the core JAX optical model and dispersers,
+but not the notebook/pipeline/synphot/testing stack. Reference data is vendored
+and hydrated separately (step 3) either way.
 
-**3. Download data assets**
+> The commands below run inside your installed environment — either inside a
+> `pixi shell` (or via `pixi run …`), or an activated venv/conda env.
+
+**3. Hydrate reference data**
+
+A fresh checkout ships **no** reference data. Fetch every vendored asset —
+optical model, sensitivities, synphot, PSF caches, and source catalog — from the
+public `roman_disperser_data` releases. The `roman-disperser-hydrate` command
+lives inside your environment, so invoke it through that environment:
+
+- **Pixi** — run through `pixi run` (data lands in `<repo>/data` automatically,
+  no configuration needed):
+  ```bash
+  pixi run hydrate          # all reference data (~4.5 GB)
+  ```
+  (Equivalently, call `roman-disperser-hydrate` directly from inside `pixi shell`.)
+- **pip** — with your venv/conda env activated, set a stable data dir *first* so
+  the hydrator and the runtime agree regardless of your working directory:
+  ```bash
+  export ROMAN_DISPERSER_DATA=~/roman_disperser_data   # any path; add to ~/.bashrc
+  roman-disperser-hydrate                              # all reference data (~4.5 GB)
+  ```
+
+Fetch only part of it (e.g. on a laptop) by adding flags — under pixi prefix with
+`pixi run hydrate`, e.g. `pixi run hydrate --only psf --sca 1 2`:
 
 ```bash
-python scripts/download_psf_caches.py        # PSF caches (~4.3 GB)
-python scripts/download_source_catalog.py     # Source catalog (~155 MB)
+roman-disperser-hydrate --only optical_model,sensitivities,synphot   # essentials (~2 MB)
+roman-disperser-hydrate --only psf --sca 1 2                         # a couple of PSF SCAs
 ```
+
+See [Reference data](#reference-data) below for the data directory, versions,
+and reproducibility.
 
 **4. Verify**
 
@@ -62,7 +90,8 @@ disperser env so dep trees don't collide.
 
 The CRDS and STPSF caches are kept **outside** the repo so they can be
 shared with other projects. Set these in your shell (e.g. add to
-`~/.bashrc`) before installing the env:
+`~/.bashrc`) before installing the env — the paths below are examples, adjust
+them for your system:
 
 ```bash
 export STPSF_PATH=/data/npadman/refdata/stpsf-data
@@ -110,60 +139,87 @@ Verify your GPU is visible:
 python -c "import jax; print(f'Backend: {jax.default_backend()}'); print(jax.devices())"
 ```
 
-## Data files
+## Reference data
 
-| Data | Location | Notes |
-|------|----------|-------|
-| Optical model, sensitivity curves, star catalog | `data/` (in repo) | Included |
-| Synphot reference spectra (F158/F184 bandpass, templates) | `data/synphot/` (in repo) | Included (~90 KB) |
-| Source catalog (~155 MB) | `data/catalogs/` | `python scripts/download_source_catalog.py` |
-| PSF caches (~4.3 GB) | `data/psf_cache/` | `python scripts/download_psf_caches.py` |
-| STPSF reference data | `~/data/stpsf-data` | Only for PSF cache regeneration (~1-2 GB) |
+All reference data is **vendored**: versioned independently of the code and
+fetched on demand with `roman-disperser-hydrate`. Nothing is bundled in the
+wheel, and the same data backs pixi and pip installs.
 
-### Source catalog
+| Data | Path under data dir | Size | Release tag |
+|------|---------------------|------|-------------|
+| Optical model | `Roman_grism_OpticalModel_v0.8.yaml` | 28 KB | `optical-model-*` |
+| Sensitivity curves | `sensitivities/` | 1.9 MB | `sensitivities-*` |
+| Synphot reference (F158/F184 + templates) | `synphot/` | 88 KB | `synphot-*` |
+| Source catalog | `catalogs/` | 155 MB | `catalog-*` |
+| PSF caches | `psf_cache/` | 4.3 GB | `psf-*` |
+| STPSF reference data | `~/data/stpsf-data` | 1-2 GB | (only for PSF regeneration) |
 
-The source catalog contains galaxy and star metadata (Parquet) and SEDs (Zarr)
-for grism simulations. See `data/catalogs/README.md` for the format specification.
+`data/stars/` (star catalog, ~12 MB) is a catalog-build input and stays in the
+repo. STPSF reference data is **not** fetched by `roman-disperser-hydrate` — it
+is listed only because regenerating PSF caches needs it (see
+[Regenerating from scratch](#regenerating-from-scratch)).
 
-```bash
-python scripts/download_source_catalog.py          # skip if exists
-python scripts/download_source_catalog.py --force  # re-download
-```
+### Where data lives
 
-This downloads ~155 MB from a public GitHub release. No authentication required.
+`roman-disperser-hydrate` writes into the **data directory**, resolved as:
 
-To rebuild the catalog from scratch (requires access to the Galacticus 4 deg²
-mock at `~/data/Roman/galacticus_4deg2_mock/`):
+1. `--dest DIR`,
+2. `$ROMAN_DISPERSER_DATA`,
+3. `$PIXI_PROJECT_ROOT/data` (set automatically inside a pixi env),
+4. `./data` (default).
 
-```bash
-pixi run python scripts/build_source_catalog.py --sims 1
-pixi run python scripts/verify_source_catalog.py   # validate the build
-```
+Pixi sets `PIXI_PROJECT_ROOT`, so pixi users get `<repo>/data` with no
+configuration. **pip users should set `ROMAN_DISPERSER_DATA`** to a stable path
+— otherwise the default is `./data` relative to wherever you launch, which is
+brittle (e.g. notebooks run from subdirectories). The hydrator and the runtime
+resolve from the same place, so once set, hydrated data is found automatically.
 
-### PSF caches
-
-Most users should download pre-generated PSF caches:
-
-```bash
-python scripts/download_psf_caches.py          # skip existing files
-python scripts/download_psf_caches.py --force  # re-download all
-```
-
-This downloads 36 files (~4.3 GB) from a public GitHub release. No authentication required.
-
-To regenerate caches from scratch (requires STPSF and its reference data):
+### Hydrating
 
 ```bash
-pixi run python scripts/generate_psf_caches.py --workers 2  # ~2 hours
+roman-disperser-hydrate                                              # everything (~4.5 GB)
+roman-disperser-hydrate --only optical_model,sensitivities,synphot   # essentials (~2 MB)
+roman-disperser-hydrate --only psf --sca 1 2                         # a couple of PSF SCAs
+roman-disperser-hydrate --dry-run                                    # show what would be fetched
 ```
 
-STPSF reference data is only needed for regeneration. STPSF looks for data in
-`~/data/stpsf-data` by default, or set `STPSF_PATH` to override. See
-[STPSF docs](https://stpsf.readthedocs.io) for download instructions.
+Under pixi, invoke these as `pixi run hydrate …` (or run
+`roman-disperser-hydrate` inside `pixi shell`). The legacy
+`scripts/download_psf_caches.py` / `download_source_catalog.py` still work as
+thin wrappers.
+
+### Versions and reproducibility
+
+Which version of each asset is fetched comes from a **manifest** in the
+`roman_disperser_data` repo, so data can be re-versioned without a code release.
+Every run also writes `<data>/data-versions.lock` recording the exact versions
+installed. To reproduce a specific data state:
+
+```bash
+roman-disperser-hydrate --lock <data>/data-versions.lock   # exact versions from a saved lock
+roman-disperser-hydrate --manifest <git-ref>               # use a pinned manifest revision
+```
+
+### Regenerating from scratch
+
+Most users hydrate. To rebuild instead:
+
+- **Source catalog** — requires the Galacticus 4 deg² mock at
+  `~/data/Roman/galacticus_4deg2_mock/`:
+  ```bash
+  pixi run python scripts/build_source_catalog.py --sims 1
+  pixi run python scripts/verify_source_catalog.py   # validate the build
+  ```
+- **PSF caches** — require STPSF and its reference data (in `~/data/stpsf-data`
+  by default, or set `STPSF_PATH`; ~2 hours):
+  ```bash
+  pixi run python scripts/generate_psf_caches.py --workers 2
+  ```
+  See [STPSF docs](https://stpsf.readthedocs.io) for the reference-data download.
 
 ## Getting started
 
-Once installed with PSF caches downloaded:
+Once installed and reference data hydrated:
 
 - **Interactive demo** — `notebooks/galaxy/stars_and_galaxies_demo.ipynb` (CPU) or
   `notebooks/galaxy/stars_and_galaxies_gpu_demo.ipynb` (GPU).
@@ -177,8 +233,6 @@ Once installed with PSF caches downloaded:
   python scripts/build_grism_image.py --config my_config.yaml --pointings pointings.ecsv
   ```
   See `scripts/example_grism_config.yaml` and `scripts/example_pointings.ecsv`
-  for examples, and `docs/grism_pipeline.md` for details.
+  for examples, and `docs/grism_pipeline.md` for details. The batch pipeline
+  processes all 18 SCAs per pointing and is substantially faster on a GPU.
 
-  **Note:** The batch pipeline processes all 18 SCAs per pointing and benefits
-  significantly from a GPU. On CPU, expect ~30 min per SCA; on GPU (e.g., RTX 4090),
-  ~1 min per SCA.

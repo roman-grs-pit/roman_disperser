@@ -1,6 +1,9 @@
 # Vendored reference-data plan
 
-**Status:** planning (branch `feature/vendored-refdata`)
+**Status:** implemented on `feature/vendored-refdata` (Phases 1–5 done). Releases
+`optical-model-v0.8` / `sensitivities-v1` / `synphot-v1` and `manifest.json` are
+live in `roman_disperser_data`. Remaining: rebase onto current `main` (0.8.2)
+and open the feature PR with a version bump.
 **Goal:** make `roman_disperser` fully usable from a plain `pip install` (no repo
 checkout) by treating **all** reference data as independently-versioned,
 vendored assets fetched on demand — never bundled in the wheel, never assumed
