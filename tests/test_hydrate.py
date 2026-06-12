@@ -102,6 +102,20 @@ def test_main_dry_run_writes_nothing(tmp_path, monkeypatch):
     assert not (tmp_path / "data" / hydrate.LOCK_NAME).exists()
 
 
+def test_hydrate_asset_downloads_to_destination(tmp_path, monkeypatch):
+    # Exercises the real hydrate_asset -> _download call site (a swapped
+    # url/dest there is invisible to the direct _download test).
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"payload")
+    monkeypatch.setattr(
+        hydrate, "list_release_files",
+        lambda tag: [("Roman_grism_OpticalModel_v0.8.yaml", src.as_uri())],
+    )
+    base = tmp_path / "data"
+    hydrate.hydrate_asset(hydrate.ASSETS["optical_model"], "optical-model-v0.8", base)
+    assert (base / "Roman_grism_OpticalModel_v0.8.yaml").read_bytes() == b"payload"
+
+
 def test_main_rejects_unknown_asset(tmp_path):
     try:
         main(["--only", "bogus", "--dest", str(tmp_path)])

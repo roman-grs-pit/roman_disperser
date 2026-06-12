@@ -42,22 +42,31 @@ class Asset:
     """A vendored data asset and how to install it."""
 
     key: str           # manifest key
-    subdir: str        # destination subdirectory under the data dir
+    subdir: str        # destination subdirectory under the data dir ("" = root)
     extract: bool = False     # release assets are tarballs to extract
     done_marker: str = ""     # presence check for extract assets
+    sca_filter: bool = False  # honor --sca (PSF caches only)
 
 
 # Registry of vendored assets. Versions (release tags) come from the manifest,
-# not from here. Essentials (optical_model, sensitivities, synphot) are added
-# in Phase 3 once they are published as releases.
+# not from here. The optical model lands directly in the data dir (subdir "");
+# sensitivities/synphot are tarballs extracted into their subdirs.
 ASSETS = {
-    "psf": Asset("psf", "psf_cache"),
+    "optical_model": Asset("optical_model", ""),
+    "sensitivities": Asset("sensitivities", "sensitivities", extract=True,
+                           done_marker="sensitivity_map.yaml"),
+    "synphot": Asset("synphot", "synphot", extract=True,
+                     done_marker="roman_wfi_f158.fits"),
+    "psf": Asset("psf", "psf_cache", sca_filter=True),
     "catalog": Asset("catalog", "catalogs", extract=True, done_marker="metadata.parquet"),
 }
 
 # Bootstrap fallback used only when the remote manifest is unavailable. The
 # remote manifest in roman_disperser_data is the source of truth.
 DEFAULT_MANIFEST = {
+    "optical_model": "optical-model-v0.8",
+    "sensitivities": "sensitivities-v1",
+    "synphot": "synphot-v1",
     "psf": "psf-v1",
     "catalog": "catalog-v2",
 }
@@ -143,14 +152,15 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False):
                 tmp.unlink(missing_ok=True)
         return
 
-    files = _filter_sca(files, sca)
+    if asset.sca_filter:
+        files = _filter_sca(files, sca)
     if dry_run:
         print(f"    would download {len(files)} file(s) -> {out}")
         return
     out.mkdir(parents=True, exist_ok=True)
     got = 0
     for i, (name, url) in enumerate(files, 1):
-        if _download(out / name, url, force):
+        if _download(url, out / name, force):
             got += 1
             print(f"    [{i}/{len(files)}] {name}")
     print(f"    {got} downloaded, {len(files) - got} already present -> {out}")
