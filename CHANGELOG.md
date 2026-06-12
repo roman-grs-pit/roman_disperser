@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-12
+
+> `0.9.x` is reserved for the prism line (`v0.9.0-prism`); the mainline
+> continues at `0.10.0`.
+
+All reference data is now **vendored** — fetched on demand and versioned
+independently of the code, rather than tracked in this repo.
+
+### Added
+- `roman-disperser-hydrate` console command (module `roman_disperser.hydrate`):
+  downloads vendored reference data (optical model, sensitivities, synphot, PSF
+  caches, source catalog) from the public `roman_disperser_data` releases.
+  Supports `--only`/`--sca` selection, `--dry-run`, and a manifest/lock
+  versioning model (`--manifest <ref>`, `--lock`); each run writes
+  `<data>/data-versions.lock`. `pixi run hydrate` is the pixi invocation.
+- `roman_disperser.paths`: single resolver for the data directory
+  (`--dest`/arg → `$ROMAN_DISPERSER_DATA` → `$PIXI_PROJECT_ROOT/data` →
+  `./data`).
+
+### Changed
+- `pipeline.resolve_paths()` and `refdata.py` resolve all reference data through
+  `roman_disperser.paths`. New neutral `$ROMAN_DISPERSER_DATA` override;
+  `$PIXI_PROJECT_ROOT` retained as a fallback. `refdata` synphot lookup no
+  longer walks a repo-relative `data/` (so it works from a wheel install).
+- `scripts/download_psf_caches.py` / `download_source_catalog.py` are now thin
+  back-compat wrappers around the hydrator.
+- INSTALL.md and CLAUDE.md document the vendored-data install/hydrate flow.
+
+### Removed
+- The optical model, `data/sensitivities/`, and `data/synphot/` are no longer
+  tracked in the repo — they are vendored (`optical-model-v0.8`,
+  `sensitivities-v1`, `synphot-v1`). A fresh checkout has no reference data and
+  must hydrate. `data/stars/` (catalog-build input) remains in the repo.
+
 ## [0.8.2] - 2026-06-11
 
 ### Removed

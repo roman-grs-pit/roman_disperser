@@ -1,16 +1,13 @@
-"""Pre-bundled synphot reference data for the Roman WFI grism pipeline.
+"""Synphot reference data for the Roman WFI grism pipeline.
 
 Provides the F158 bandpass and a few spectral templates without requiring
-stsynphot or a PYSYN_CDBS installation.  All data files live in
-``data/synphot/`` and were extracted from the STScI calibration database
-(see ``data/synphot/README.md`` for provenance).
+stsynphot or a PYSYN_CDBS installation.  The files are vendored reference data
+located via :func:`roman_disperser.paths.synphot_dir` (see that module for how
+the data directory is resolved); they were extracted from the STScI
+calibration database (see ``synphot/README.md`` for provenance).
 """
 
-from pathlib import Path
-
-# Resolve data directory relative to this file:
-# src/roman_disperser/refdata.py -> ../../data/synphot/
-_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "synphot"
+from roman_disperser.paths import synphot_dir
 
 # Available template names and their filenames
 _TEMPLATES = {
@@ -31,7 +28,7 @@ def get_f158_band():
     """
     import synphot as syn
 
-    path = _DATA_DIR / "roman_wfi_f158.fits"
+    path = synphot_dir() / "roman_wfi_f158.fits"
     return syn.SpectralElement.from_file(str(path))
 
 
@@ -45,7 +42,7 @@ def get_f184_band():
     """
     import synphot as syn
 
-    path = _DATA_DIR / "roman_wfi_f184.fits"
+    path = synphot_dir() / "roman_wfi_f184.fits"
     return syn.SpectralElement.from_file(str(path))
 
 
@@ -79,5 +76,5 @@ def get_template(name):
         )
     import synphot as syn
 
-    path = _DATA_DIR / _TEMPLATES[name]
+    path = synphot_dir() / _TEMPLATES[name]
     return syn.SourceSpectrum.from_file(str(path))

@@ -38,6 +38,7 @@ pixi run pytest -v tests/test_optical_model_jax.py::TestTraceBeam  # Test class
 pixi run pytest -v tests/test_optical_model_jax.py::TestTraceBeam::test_order_1_vs_class  # Single test
 pixi run pytest -m "not slow"   # Skip slow tests (STPSF generation)
 pixi run check-jax              # Check JAX backend/device
+pixi run hydrate                # Fetch vendored reference data (alias for roman-disperser-hydrate)
 
 # PSF cache generation (run once, takes ~2 hours with -j 2)
 pixi run python scripts/generate_psf_caches.py --workers 2
@@ -203,10 +204,24 @@ The unified pipeline (`build_grism_image.py`) sets `JAX_COMPILATION_CACHE_DIR=/t
 
 - JAX implementation uses modern code path only (no `old_format` legacy support)
 - Spectral orders are strings: "1", "0", "2", "m1"
-- Model config: `data/Roman_grism_OpticalModel_v0.8.yaml`
 - `demo_utils.py` provides helpers for generating synthetic galaxy profiles and spectra
-- PSF caches stored in `data/psf_cache/`; generate with `scripts/generate_psf_caches.py`
 - All `jnp.einsum` calls use `precision='highest'` for CPU/GPU numerical consistency
 - GPU tests in `test_disperser_gpu.py` verify CPU vs GPU results match
+
+### Reference data (vendored)
+
+All reference data — optical model (`Roman_grism_OpticalModel_v0.8.yaml`),
+sensitivities, synphot, PSF caches, catalogs — is **vendored**: not tracked in
+this repo, fetched on demand from `roman_disperser_data` releases by
+`roman-disperser-hydrate` (`pixi run hydrate`). See `docs/data_vendoring_plan.md`.
+
+- `roman_disperser.paths.data_dir()` is the single resolver for the data
+  directory: `--dest`/arg → `$ROMAN_DISPERSER_DATA` → `$PIXI_PROJECT_ROOT/data`
+  → `./data`. `pipeline.resolve_paths()` and `refdata.py` route through it.
+- Versions come from `manifest.json` in `roman_disperser_data`; each hydrate
+  writes `<data>/data-versions.lock` (pin with `--lock`/`--manifest`).
+- A fresh checkout has **no** reference data — run `pixi run hydrate` before
+  tests or use. The data dir is gitignored.
+- `data/stars/` (catalog-build input) is the one reference dir still in-repo.
 
 
