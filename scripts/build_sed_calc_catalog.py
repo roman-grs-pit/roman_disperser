@@ -59,7 +59,7 @@ GALACTICUS_WL = np.linspace(WL_MIN, WL_MAX, N_WL)  # Angstroms
 GRISM_SLICE = slice(3500, 9501)  # indices for 9000-21000 Å
 
 # Magnitude cut
-MAG_CUT = 26.0  # F158 AB mag
+MAG_CUT = 30  # F158 AB mag
 
 # Galaxy morphology defaults
 GALAXY_SERSIC_N = 1.0
@@ -129,6 +129,8 @@ def make_parquet_schema():
                  metadata={"description": "Partition number (0 for stars)"}),
         pa.field("src_index", pa.int32(),
                  metadata={"description": "Row index in original source file (for provenance)"}),
+        pa.field("randoms", pa.list_(pa.float32()),
+                 metadata={"description": "Randoms between 0 and 1 (for reproducability of random characteristics)"}),
     ])
 
 
@@ -225,6 +227,8 @@ def process_stars(star_dir, wavelengths):
     # SED multiplier since templates are normalized to 0 ABmag F158 (1 maggie).
     f158_maggies = (10.0 ** (-0.4 * catalog["mag"])).astype(np.float32)
 
+    rng = np.random.default_rng(42)
+
     # Build metadata
     star_table = pa.table(
         {
@@ -243,6 +247,7 @@ def process_stars(star_dir, wavelengths):
             "flux_scale": f158_maggies,
             "sim": np.zeros(n_stars, dtype=np.int16),
             "src_index": np.arange(n_stars, dtype=np.int32),
+            "randoms": list(rng.uniform(0, 1, (n_stars, 5))),
         },
         schema=make_parquet_schema(),
     )
@@ -420,6 +425,7 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
     z_obs = fits_index["z"][mask]
     z_cosmo = fits_index["z_cosmo"][mask]
     hdf5_indices = fits_index["idx"][mask]
+    randoms = fits_index["randoms"][mask]
 
     if sed_component=='spheroid':
         half_light_radii = fits_index["spheroid_half_light"][mask]
@@ -468,6 +474,7 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
             "flux_scale": np.ones(n, dtype=np.float32),
             "sim": np.full(n, sim_num, dtype=np.int16),
             "src_index": hdf5_indices,
+            "randoms": list(randoms),
         },
         schema=make_parquet_schema(),
     )
