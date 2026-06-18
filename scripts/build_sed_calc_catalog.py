@@ -61,11 +61,7 @@ GRISM_SLICE = slice(3500, 9501)  # indices for 9000-21000 Å
 # Magnitude cut
 MAG_CUT = 30  # F158 AB mag
 
-# Galaxy morphology defaults
-GALAXY_SERSIC_N = 1.0
-GALAXY_PA = 0.0  # degrees
-GALAXY_BA = 1.0  # axis ratio
-
+# Default dust model parameters
 FALLBACK_DUST_MODEL = {
     'dust_model': 'gb10_generalised',
     'dust_params': {'delta_0': 0.2772142287561473,
@@ -89,7 +85,7 @@ COMPRESSOR = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
 # Sharding: inner chunk size (sources per chunk)
 INNER_CHUNK_SOURCES = 10
 
-sed_template_fn = Path(os.getenv("github_dir")) / Path("galacticus_sed_calculator/data/nodePropertyExtractorSED_Nt50_NZ11_ageMinimum0.001.hdf5")
+SED_TEMPLATE = Path(os.getenv("github_dir")) / Path("galacticus_sed_calculator/data/nodePropertyExtractorSED_Nt50_NZ11_ageMinimum0.001.hdf5")
 
 # ---------------------------------------------------------------------------
 # Parquet schema
@@ -344,7 +340,7 @@ def get_sed_calc():
         Om0=0.3089
     )
 
-    calc = SEDCalculator(sed_template_fn, cosmology=unit_cosmo)
+    calc = SEDCalculator(SED_TEMPLATE, cosmology=unit_cosmo)
 
     return calc
 
@@ -427,10 +423,18 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
     hdf5_indices = fits_index["idx"][mask]
     randoms = fits_index["randoms"][mask]
 
+    # Set pa and ba
+    pa = randoms[:, 0] * (2 * np.pi)
+    ba = randoms[:, 2]
+    sel = ba < 0.1
+    ba[sel] = 0.1 # enfore disk height = 10% disk radius
+
     if sed_component=='spheroid':
         half_light_radii = fits_index["spheroid_half_light"][mask]
+        sersic_idx = 4
     else:
         half_light_radii = fits_index["disk_half_light"][mask]
+        sersic_idx = 1
 
     # Read HDF5 SEDs for kept sources (only grism wavelength range)
     # SEDs are f_ν in unknown absolute units, on the Galacticus wavelength grid
@@ -462,17 +466,17 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
             "ra": ra,
             "dec": dec,
             "type": ["SER"] * n,
-            "n": np.full(n, GALAXY_SERSIC_N, dtype=np.float32),
+            "n": [sersic_idx] * n,
             "disk_spheroid": [sed_component] * n,
             "half_light_radius": half_light_radii,
-            "pa": np.full(n, GALAXY_PA, dtype=np.float32),
-            "ba": np.full(n, GALAXY_BA, dtype=np.float32),
+            "pa": pa,
+            "ba": ba,
             "F158": f158_maggies,
             "z_obs": z_obs,
             "z_cosmo": z_cosmo,
             "sed_index": np.arange(n, dtype=np.int32),
             "flux_scale": np.ones(n, dtype=np.float32),
-            "sim": np.full(n, sim_num, dtype=np.int16),
+            "sim": [sim_num] * n,
             "src_index": hdf5_indices,
             "randoms": list(randoms),
         },
