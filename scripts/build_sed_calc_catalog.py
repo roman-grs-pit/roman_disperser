@@ -40,6 +40,9 @@ except ImportError:
     sys.path.insert(0, os.path.join(os.getenv("github_dir"), "galacticus_sed_calculator"))
     from galacticus_sed_calculator import SEDCalculator, read_dust_model_from_catalog
 
+import multiprocessing                                                                                                                
+multiprocessing.set_start_method('spawn', force=True) 
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -60,24 +63,6 @@ GRISM_SLICE = slice(3500, 9501)  # indices for 9000-21000 Å
 
 # Magnitude cut
 MAG_CUT = 30  # F158 AB mag
-
-# Default dust model parameters
-FALLBACK_DUST_MODEL = {
-    'dust_model': 'gb10_generalised',
-    'dust_params': {'delta_0': 0.2772142287561473,
-                    'delta_z': -1.579233727951697,
-                    'delta_M': -0.8180063760711892,
-                    'delta_Mz': -0.5287832073987419,
-                    'attenuation_scatter': 0.25},
-    'dust_law': 'calzetti',
-    'random_uniform_index': None,
-}
-
-CONTINUUM_DUST = {
-    'model': 'fixed_av',
-    'params': {'A_V': 1.0},
-    'law': 'calzetti',
-}
 
 # Zarr compression
 COMPRESSOR = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
@@ -276,7 +261,8 @@ def load_galacticus_index(fits_path):
             "z": t["Z"].astype(np.float32),
             "z_cosmo": t["z_cosmo"].astype(np.float32),
             "disk_half_light": t["disk_half_light"].astype(np.float32),
-            "spheroid_half_light": t["spheroid_half_light"].astype(np.float32)
+            "spheroid_half_light": t["spheroid_half_light"].astype(np.float32),
+            "randoms": t["randoms"].astype(np.float32)
         }
 
 
@@ -350,10 +336,7 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices, sed_component='disk'):
 
     sed_list = []
 
-    try:
-        dust_model_specs = read_dust_model_from_catalog(hdf5_path)
-    except KeyError:
-        dust_model_specs = FALLBACK_DUST_MODEL
+    dust_model_specs = read_dust_model_from_catalog(hdf5_path)
 
     if sed_component=='total':
         for idx in hdf5_indices:
@@ -363,7 +346,6 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices, sed_component='disk'):
                 obs_wavelengths=GALACTICUS_WL * u.AA, 
                 include_emission_lines=True,
                 use_synphot=False,  # Enable fast path
-                continuum_dust=CONTINUUM_DUST,
                 **dust_model_specs
             )
 
