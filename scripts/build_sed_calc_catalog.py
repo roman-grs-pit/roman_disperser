@@ -360,7 +360,6 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices, sed_component='disk'):
                 obs_wavelengths=GALACTICUS_WL * u.AA, 
                 include_emission_lines=True,
                 use_synphot=False,  # Enable fast path
-                continuum_dust=CONTINUUM_DUST,
                 **dust_model_specs
             )
 
