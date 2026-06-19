@@ -19,11 +19,13 @@ pixi run python scripts/build_source_catalog.py --sims 1-5 \
 import argparse
 import sys, os
 import time
+from glob import glob
 from pathlib import Path
 from functools import cache
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import defaultdict
 
+import h5py
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -58,11 +60,7 @@ N_WL = int((WL_MAX - WL_MIN) / WL_STEP) + 1  # 6001
 # "The data array is saved with a step size of 2 Angstroms, you can get the
 # wavelength by np.linspace(2000, 40000, 19001) in units of Angstroms."
 # Not stored in the HDF5 files — no attributes anywhere.
-GALACTICUS_WL = np.linspace(WL_MIN, WL_MAX, N_WL)  # Angstroms
-GRISM_SLICE = slice(3500, 9501)  # indices for 9000-21000 Å
-
-# Magnitude cut
-MAG_CUT = 30  # F158 AB mag
+WAVELENGTHS = np.linspace(WL_MIN, WL_MAX, N_WL)  # Angstroms
 
 # Zarr compression
 COMPRESSOR = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
@@ -241,29 +239,7 @@ def process_stars(star_dir, wavelengths):
 # ---------------------------------------------------------------------------
 
 def load_galacticus_index(fits_path):
-    """Load FITS index file with RA, Dec, magnitudes, SIM, IDX.
-
-    Returns
-    -------
-    pandas.DataFrame with columns: RA, DEC, SIM, IDX, mag_F158, z_obs, z_cosmo
-    """
-    from astropy.io import fits
-
-    with fits.open(fits_path) as hdu:
-        t = hdu[1].data
-        return {
-            "ra": t["RA"].astype(np.float64),
-            "dec": t["DEC"].astype(np.float64),
-            "sim_id": t["sim_id"].astype(np.str_),
-            "sim": t["SIM"].astype(np.int32),
-            "idx": t["IDX"].astype(np.int32),
-            "mag_F158": t["mag_F158_Av1.6523"].astype(np.float32),
-            "z": t["Z"].astype(np.float32),
-            "z_cosmo": t["z_cosmo"].astype(np.float32),
-            "disk_half_light": t["disk_half_light"].astype(np.float32),
-            "spheroid_half_light": t["spheroid_half_light"].astype(np.float32),
-            "randoms": t["randoms"].astype(np.float32)
-        }
+    return None
 
 
 def compute_f158_normalization(wavelengths_angstrom):
@@ -343,13 +319,13 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices, sed_component='disk'):
             spec = calc.evaluate_total_spectrum(
                 hdf5_path,
                 galIndex=idx,
-                obs_wavelengths=GALACTICUS_WL * u.AA, 
+                obs_wavelengths=WAVELENGTHS * u.AA, 
                 include_emission_lines=True,
                 use_synphot=False,  # Enable fast path
                 **dust_model_specs
             )
 
-            sed_list.append(spec(GALACTICUS_WL, flux_unit='FLAM'))
+            sed_list.append(spec(WAVELENGTHS, flux_unit='FLAM'))
 
     else:
         for idx in hdf5_indices:
@@ -357,21 +333,20 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices, sed_component='disk'):
                 hdf5_path,
                 galIndex=idx,
                 component=sed_component,
-                obs_wavelengths=GALACTICUS_WL * u.AA, 
+                obs_wavelengths=WAVELENGTHS * u.AA, 
                 include_emission_lines=True,
                 use_synphot=False,  # Enable fast path
                 **dust_model_specs
             )
 
-            sed_list.append(spec(GALACTICUS_WL, flux_unit='FLAM'))
+            sed_list.append(spec(WAVELENGTHS, flux_unit='FLAM'))
 
     sed_list = np.asarray(sed_list, dtype=np.float32)
 
     return sed_list
 
 
-def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
-                             fnu_to_flam, hdf5_path, sed_component='disk'):
+def process_galaxy_partition(mock, sed_component='disk'):
     """Process one galaxy partition (one HDF5 sub-file).
 
     Uses vectorized f_ν → FLAM conversion instead of per-source synphot calls.
@@ -382,128 +357,91 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
     galaxy_seds : ndarray [N_kept, N_wl] float32 in FLAM
     """
 
-    galacticus_dir = Path(galacticus_dir)
+    output = "/Lightcone/Output1/nodeData"
+    dustNode = "/Lightcone/Output1/dustAttenuatedNodeData/"
 
-    # Select sources for this sim from FITS index
-    mask_sim = fits_index["sim"] == sim_num
-    mask_mag = fits_index["mag_F158"] <= MAG_CUT
-    mask = mask_sim & mask_mag
-    n_total_sim = int(mask_sim.sum())
-    n_kept = int(mask.sum())
-    print(f"  sim {sim_num:3d}: {n_kept}/{n_total_sim} sources (F158 ≤ {MAG_CUT})")
+    with h5py.File(mock) as f:
+        # Read galaxy properties from hdf5 file
+        ra = f[output]["rightAscension"]
+        dec = f[output]["declination"]
+        z_obs = f[output]["lightconeRedshiftObserved"]
+        z_cosmo = f[output]["lightconeRedshiftCosmological"]
+        randoms = f[output]["randomUniform"]
+        
+        mag_f158 = f[dustNode]["apparentMagnitudeRomanWFI:F087"]
 
-    if n_kept == 0:
-        return None, None
+        # assign indices
+        n = len(ra)
+        hdf5_indices = np.arange(n)
 
-    # Get indices and metadata for kept sources
-    ra = fits_index["ra"][mask]
-    dec = fits_index["dec"][mask]
-    mag_f158 = fits_index["mag_F158"][mask]
-    z_obs = fits_index["z"][mask]
-    z_cosmo = fits_index["z_cosmo"][mask]
-    hdf5_indices = fits_index["idx"][mask]
-    randoms = fits_index["randoms"][mask]
+        # Set positiona_angle and ba_ratio 
+        # DO NOT use pa for position angle variable as it collides with pyarrow.parquet import
+        position_angle = randoms[:, 0] * (2 * np.pi)
+        ba_ratio = randoms[:, 2]
+        sel = ba_ratio < 0.1
+        ba_ratio[sel] = 0.1 # enfore disk height = 10% disk radius
 
-    # Set positiona_angle and ba_ratio 
-    # DO NOT use pa for position angle variable as it collides with pyarrow.parquet import
-    position_angle = randoms[:, 0] * (2 * np.pi)
-    ba_ratio = randoms[:, 2]
-    sel = ba_ratio < 0.1
-    ba_ratio[sel] = 0.1 # enfore disk height = 10% disk radius
+        if sed_component=='spheroid':
+            half_light_radii = f[output]["spheroidRadius"]
+            sersic_idx = 4
+        else:
+            half_light_radii = f[output]["diskRadius"]
+            sersic_idx = 1
 
-    if sed_component=='spheroid':
-        half_light_radii = fits_index["spheroid_half_light"][mask]
-        sersic_idx = 4
-    else:
-        half_light_radii = fits_index["disk_half_light"][mask]
-        sersic_idx = 1
+        # Compute seds using Galacticus SED Calculator    
+        galaxy_seds = compute_raw_seds_fnu(mock, hdf5_indices, sed_component=sed_component)
 
-    # Read HDF5 SEDs for kept sources (only grism wavelength range)
-    # SEDs are f_ν in unknown absolute units, on the Galacticus wavelength grid
-    # (2 Å spacing). Our output grid is a subset of their grid.
-    
-    galaxy_seds = compute_raw_seds_fnu(hdf5_path, hdf5_indices, sed_component=sed_component)
-
-    # Vectorized f_ν → FLAM conversion with F158 normalization:
-    # 1. Convert f_ν to f_λ (arbitrary units): f_λ_raw = f_ν × c/λ²
-    # 2. Compute synthetic F158 flux: <f_λ> = Σ(f_λ_raw × T × λ × dλ) / Σ(T × λ × dλ)
-    # 3. Compute target flux from catalog mag: f_target = 10^(-0.4*(mag+48.6)) × c/λ_pivot²
-    #    But since we need the ratio, we use:
-    #    scale = 10^(-0.4*mag) × ABMAG_ZEROPOINT_FLAM / <f_λ_raw>
-    #
-    # Simpler: normalize so that the synthetic F158 mag equals the catalog mag.
-    # The AB magnitude of the raw f_λ is:
-    #    mag_raw = -2.5 log10(<f_λ_raw> / f_AB_ref)
-    # We want the output to have mag = mag_catalog, so:
-    #    scale = 10^(-0.4 * (mag_catalog - mag_raw))
-
-    # Step 1: f_ν → f_λ (all sources at once)
-    # galaxy_seds = raw_seds_fnu * fnu_to_flam[np.newaxis, :]  # [N, N_wl]
-
-    # Build metadata table
-    n = n_kept
-    f158_maggies = (10.0 ** (-0.4 * mag_f158)).astype(np.float32)
-    galaxy_table = pa.table(
-        {
-            "ra": ra,
-            "dec": dec,
-            "type": ["SER"] * n,
-            "n": [sersic_idx] * n,
-            "disk_spheroid": [sed_component] * n,
-            "half_light_radius": half_light_radii,
-            "pa": position_angle,
-            "ba": ba_ratio,
-            "F158": f158_maggies,
-            "z_obs": z_obs,
-            "z_cosmo": z_cosmo,
-            "sed_index": np.arange(n, dtype=np.int32),
-            "flux_scale": np.ones(n, dtype=np.float32),
-            "sim": [sim_num] * n,
-            "src_index": hdf5_indices,
-            "randoms": list(randoms),
-        },
-        schema=make_parquet_schema(),
-    )
+        # Build metadata table
+        f158_maggies = (10.0 ** (-0.4 * mag_f158)).astype(np.float32)
+        galaxy_table = pa.table(
+            {
+                "ra": ra,
+                "dec": dec,
+                "type": ["SER"] * n,
+                "n": [sersic_idx] * n,
+                "disk_spheroid": [sed_component] * n,
+                "half_light_radius": half_light_radii,
+                "pa": position_angle,
+                "ba": ba_ratio,
+                "F158": f158_maggies,
+                "z_obs": z_obs,
+                "z_cosmo": z_cosmo,
+                "sed_index": np.arange(n, dtype=np.int32),
+                "flux_scale": np.ones(n, dtype=np.float32),
+                "sim": [os.path.basename(mock)] * n,
+                "src_index": hdf5_indices,
+                "randoms": list(randoms),
+            },
+            schema=make_parquet_schema(),
+        )
     return galaxy_table, galaxy_seds
 
 
-def process_sim_worker(sim_num, galacticus_dir, fits_index, fnu_to_flam, 
-                       galaxy_fits_catalog, sed_component, wavelengths):
+def process_sim_worker(mock, sed_component):
     """Worker function: process a single sim completely.
     
     Each worker process has its own HDF5 file handle (no contention).
     Returns metadata and SEDs for one sim.
     """
     import time
-    
-    galacticus_dir = Path(galacticus_dir)
-    
-    # Find the HDF5 file for this sim
-    sim_id_match = fits_index["sim_id"][fits_index["sim"] == sim_num]
-    if len(sim_id_match) == 0:
-        return None, None, sim_num
-    
-    hdf5_path = galacticus_dir / f"romanUNIT-{sim_id_match[0]}_2Deg.hdf5"
-    if not hdf5_path.exists():
-        print(f"  sim {sim_num:3d}: SKIPPED (file not found: {hdf5_path})")
-        return None, None, sim_num
+
+    mock_fn = os.path.basename(mock)
     
     t0 = time.time()
     try:
         galaxy_table, galaxy_seds = process_galaxy_partition(
-            sim_num, galacticus_dir, fits_index,
-            fnu_to_flam, hdf5_path, sed_component=sed_component
+            mock, sed_component=sed_component
         )
         dt = time.time() - t0
         
         if galaxy_table is not None:
             print(f"           Processed in {dt:.1f}s")
-            return galaxy_table, galaxy_seds, sim_num, sed_component
+            return galaxy_table, galaxy_seds, mock_fn, sed_component
         
     except Exception as e:
-        print(f"  sim {sim_num:3d}/{sed_component}: ERROR - {e}")
+        print(f"  sim {mock_fn}/{sed_component}: ERROR - {e}")
     
-    return None, None, sim_num, sed_component
+    return None, None, mock_fn, sed_component
 
 
 # ---------------------------------------------------------------------------
@@ -555,13 +493,13 @@ def init_zarr_store(output_dir, wavelengths, star_seds):
     return store
 
 
-def write_galaxy_partition(store, sim_num, sed_component, galaxy_seds):
+def write_galaxy_partition(store, mock_fn, sed_component, galaxy_seds):
     """Write a single galaxy SED partition to an open Zarr store.
 
     Parameters
     ----------
     store : zarr.Group
-    sim_num : int
+    mock_fn : str
     galaxy_seds : ndarray [N_sources, N_wl]
     """
     n_src, n_wl = galaxy_seds.shape
@@ -577,7 +515,7 @@ def write_galaxy_partition(store, sim_num, sed_component, galaxy_seds):
         seds_padded = galaxy_seds
 
     store.create_array(
-        f"galaxy_seds/sim_{sim_num:03d}/{sed_component}",
+        f"galaxy_seds/sim_{mock_fn}/{sed_component}",
         data=seds_padded,
         chunks=(INNER_CHUNK_SOURCES, n_wl),
         shards=(shard_rows, n_wl),
@@ -590,7 +528,7 @@ def write_galaxy_partition(store, sim_num, sed_component, galaxy_seds):
         },
     )
     size_mb = seds_padded.nbytes / 1e6
-    print(f"  galaxy_seds/sim_{sim_num:03d}: {galaxy_seds.shape} ({size_mb:.0f} MB uncompressed)")
+    print(f"  galaxy_seds/sim_{mock_fn}: {galaxy_seds.shape} ({size_mb:.0f} MB uncompressed)")
 
 
 def finalize_zarr_store(store, n_partitions):
@@ -614,31 +552,33 @@ def finalize_zarr_store(store, n_partitions):
 # Main
 # ---------------------------------------------------------------------------
 
-def parse_sims(sims_str):
-    """Parse sim specification like '1', '1-5', '1,3,5', '1-100'."""
-    result = []
-    for part in sims_str.split(","):
-        part = part.strip()
-        if "-" in part:
-            start, end = part.split("-")
-            result.extend(range(int(start), int(end) + 1))
-        else:
-            result.append(int(part))
-    return sorted(set(result))
+def get_galaxy_mocks(galacticus_dir, test_flag=None):
+    """Gather all hdf5 files to be run. 
 
+    Parameters
+    ----------
+    galacticus_dir: Path
+    test_flag: str | None
+    """
+    if test_flag is not None:
+        return [galacticus_dir / test_flag]
+    
+    galaxy_mocks = glob(str(galacticus_dir / '*.hdf5'))
+
+    return sorted(galaxy_mocks)
 
 def main():
     parser = argparse.ArgumentParser(
         description="Build source catalog from Galacticus mock + star catalog",
     )
     parser.add_argument(
-        "--sims", default="1",
-        help="Sim numbers to process: '1', '1-5', '1,3,5', '1-100' (default: 1)",
+        "--test", default=None,
+        help="Test storing only 1 sim. Sim to test must be named specifically.",
     )
     parser.add_argument(
         "--galacticus-dir",
         default=str(Path.home() / "data/Roman/galacticus_4deg2_mock"),
-        help="Path to Galacticus HDF5 + FITS index",
+        help="Path to Galacticus HDF5",
     )
     parser.add_argument(
         "--star-dir", default="data/stars",
@@ -653,34 +593,24 @@ def main():
         help="Skip star processing (galaxies only)",
     )
     parser.add_argument(
-        "--galaxy-fits-catalog", default="Euclid_Roman_4deg2_radec.fits",
-        help="Name of fits file cataloging galaxies & their properties"
-    )
-    parser.add_argument(
         "--sed-component", default="disk",
         help="Component of the galaxy SED to evaluate. Options: disk, spheroid, total, or both"
     )
     args = parser.parse_args()
 
-    sim_numbers = parse_sims(args.sims)
     output_dir = Path(args.output_dir)
     galacticus_dir = Path(args.galacticus_dir)
-    galaxy_fits_catalog = Path(args.galaxy_fits_catalog)
     sed_component = args.sed_component
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Building source catalog")
-    print(f"  Sims: {sim_numbers}")
     print(f"  Output: {output_dir}")
     print()
-
-    # Wavelength grid
-    wavelengths = np.linspace(WL_MIN, WL_MAX, N_WL)
 
     # --- Stars ---
     metadata_tables = []
     if not args.no_stars:
-        star_table, star_seds = process_stars(args.star_dir, wavelengths)
+        star_table, star_seds = process_stars(args.star_dir, WAVELENGTHS)
         metadata_tables.append(star_table)
     else:
         print("--- Skipping stars ---")
@@ -688,87 +618,54 @@ def main():
 
     # --- Galaxies ---
     print("\n--- Galaxies ---")
-    fits_path = galacticus_dir / galaxy_fits_catalog
-    print(f"  Loading FITS index: {fits_path}")
-    t0 = time.time()
-    fits_index = load_galacticus_index(fits_path)
-    print(f"  Loaded {len(fits_index['ra'])} total sources in {time.time() - t0:.1f}s")
 
-    # Precompute bandpass integration weights (once)
-    fnu_to_flam, _ = compute_f158_normalization(wavelengths)
+    galaxy_mocks = get_galaxy_mocks(galacticus_dir, args.test)
+
+    print(galaxy_mocks)
 
     # Initialize Zarr store (wavelengths + stars)
-    zarr_store = init_zarr_store(output_dir, wavelengths, star_seds)
+    zarr_store = init_zarr_store(output_dir, WAVELENGTHS, star_seds)
 
     # Process and write galaxy partitions incrementally
     n_partitions = 0
 
     # Use ProcessPoolExecutor for cleaner API
-    with ProcessPoolExecutor(max_workers=35) as executor:
+    with ProcessPoolExecutor() as executor:
         # Submit all sim jobs
         if sed_component=="both":
             futures = [
                 executor.submit(
                     process_sim_worker,
-                    sim_num,
-                    galacticus_dir,
-                    fits_index,
-                    fnu_to_flam,
-                    galaxy_fits_catalog,
-                    component,
-                    wavelengths
+                    mock,
+                    component
                 )
-                for sim_num in sim_numbers
+                for mock in galaxy_mocks
                 for component in ('disk', 'spheroid')
             ]
         else:
             futures = [
                 executor.submit(
                     process_sim_worker,
-                    sim_num,
-                    galacticus_dir,
-                    fits_index,
-                    fnu_to_flam,
-                    galaxy_fits_catalog,
-                    sed_component,
-                    wavelengths
+                    mock,
+                    sed_component
                 )
-                for sim_num in sim_numbers
+                for mock in galaxy_mocks
             ]
         
         # Collect results as they complete (order doesn't matter)
         sim_results = defaultdict(dict)
         for future in as_completed(futures):
-            galaxy_table, galaxy_seds, sim_num, sed_component = future.result()
+            galaxy_table, galaxy_seds, mock_fn, sed_component = future.result()
             if galaxy_table is not None:
-                sim_results[sim_num][sed_component] = (galaxy_table, galaxy_seds)
+                sim_results[mock_fn][sed_component] = (galaxy_table, galaxy_seds)
         
         # Write results to zarr in order (main process only)
-        for sim_num in sorted(sim_results.keys()):
-            for sed_component in sorted(sim_results[sim_num].keys()):
-                galaxy_table, galaxy_seds = sim_results[sim_num][sed_component]
+        for mock_fn in sorted(sim_results.keys()):
+            for sed_component in sorted(sim_results[mock_fn].keys()):
+                galaxy_table, galaxy_seds = sim_results[mock_fn][sed_component]
                 metadata_tables.append(galaxy_table)
-                write_galaxy_partition(zarr_store, sim_num, sed_component, galaxy_seds)
+                write_galaxy_partition(zarr_store, mock_fn, sed_component, galaxy_seds)
                 n_partitions += 1
-        
-    # for sim_num in sim_numbers:
-    #     hdf5_path = galacticus_dir / f"romanUNIT-{fits_index["sim_id"][fits_index["sim"] == sim_num][0]}_2Deg.hdf5"
-    #     if not hdf5_path.exists():
-    #         print(f"  sim {sim_num:3d}: SKIPPED (file not found: {hdf5_path})")
-    #         continue
-
-    #     t0 = time.time()
-    #     galaxy_table, galaxy_seds = process_galaxy_partition(
-    #         sim_num, galacticus_dir, fits_index,
-    #         fnu_to_flam, hdf5_path, sed_component=sed_component
-    #     )
-    #     dt = time.time() - t0
-
-    #     if galaxy_table is not None:
-    #         metadata_tables.append(galaxy_table)
-    #         write_galaxy_partition(zarr_store, sim_num, galaxy_seds)
-    #         n_partitions += 1
-    #         print(f"           Processed in {dt:.1f}s")
 
     # --- Write outputs ---
     if not metadata_tables:
