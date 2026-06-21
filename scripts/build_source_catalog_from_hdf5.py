@@ -25,6 +25,7 @@ from functools import cache
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import defaultdict
 
+import psutil
 import h5py
 import numpy as np
 import pyarrow as pa
@@ -104,7 +105,7 @@ def make_parquet_schema():
                  metadata={"description": "Row index into SED array"}),
         pa.field("flux_scale", pa.float32(),
                  metadata={"description": "SED multiplier (1.0 for galaxies)"}),
-        pa.field("sim", pa.int16(),
+        pa.field("sim", pa.string(),
                  metadata={"description": "Partition number (0 for stars)"}),
         pa.field("src_index", pa.int32(),
                  metadata={"description": "Row index in original source file (for provenance)"}),
@@ -224,7 +225,7 @@ def process_stars(star_dir, wavelengths):
             "z_cosmo": np.zeros(n_stars, dtype=np.float32),
             "sed_index": sed_indices,
             "flux_scale": f158_maggies,
-            "sim": np.zeros(n_stars, dtype=np.int16),
+            "sim": ["PSF"] * n_stars,
             "src_index": np.arange(n_stars, dtype=np.int32),
             "randoms": list(rng.uniform(0, 1, (n_stars, 5))),
         },
@@ -237,9 +238,6 @@ def process_stars(star_dir, wavelengths):
 # ---------------------------------------------------------------------------
 # Galaxy processing (single partition)
 # ---------------------------------------------------------------------------
-
-def load_galacticus_index(fits_path):
-    return None
 
 
 def compute_f158_normalization(wavelengths_angstrom):
@@ -362,13 +360,13 @@ def process_galaxy_partition(mock, sed_component='disk'):
 
     with h5py.File(mock) as f:
         # Read galaxy properties from hdf5 file
-        ra = f[output]["rightAscension"]
-        dec = f[output]["declination"]
-        z_obs = f[output]["lightconeRedshiftObserved"]
-        z_cosmo = f[output]["lightconeRedshiftCosmological"]
-        randoms = f[output]["randomUniform"]
+        ra = f[output]["rightAscension"][:]
+        dec = f[output]["declination"][:]
+        z_obs = f[output]["lightconeRedshiftObserved"][:]
+        z_cosmo = f[output]["lightconeRedshiftCosmological"][:]
+        randoms = f[output]["randomUniform"][:]
         
-        mag_f158 = f[dustNode]["apparentMagnitudeRomanWFI:F087"]
+        mag_f158 = f[dustNode]["apparentMagnitudeRomanWFI:F087"][:]
 
         # assign indices
         n = len(ra)
@@ -382,17 +380,17 @@ def process_galaxy_partition(mock, sed_component='disk'):
         ba_ratio[sel] = 0.1 # enfore disk height = 10% disk radius
 
         if sed_component=='spheroid':
-            half_light_radii = f[output]["spheroidRadius"]
+            half_light_radii = f[output]["spheroidRadius"][:]
             sersic_idx = 4
         else:
-            half_light_radii = f[output]["diskRadius"]
+            half_light_radii = f[output]["diskRadius"][:]
             sersic_idx = 1
 
         # Compute seds using Galacticus SED Calculator    
         galaxy_seds = compute_raw_seds_fnu(mock, hdf5_indices, sed_component=sed_component)
 
         # Build metadata table
-        f158_maggies = (10.0 ** (-0.4 * mag_f158)).astype(np.float32)
+        f158_maggies = (10.0 ** (-0.4 * np.asarray(mag_f158))).astype(np.float32)
         galaxy_table = pa.table(
             {
                 "ra": ra,
@@ -422,11 +420,10 @@ def process_sim_worker(mock, sed_component):
     
     Each worker process has its own HDF5 file handle (no contention).
     Returns metadata and SEDs for one sim.
-    """
-    import time
+    """ 
 
     mock_fn = os.path.basename(mock)
-    
+
     t0 = time.time()
     try:
         galaxy_table, galaxy_seds = process_galaxy_partition(
@@ -440,7 +437,7 @@ def process_sim_worker(mock, sed_component):
         
     except Exception as e:
         print(f"  sim {mock_fn}/{sed_component}: ERROR - {e}")
-    
+
     return None, None, mock_fn, sed_component
 
 
@@ -561,13 +558,14 @@ def get_galaxy_mocks(galacticus_dir, test_flag=None):
     test_flag: str | None
     """
     if test_flag is not None:
-        return [galacticus_dir / test_flag]
+        return glob(str(galacticus_dir / test_flag))
     
     galaxy_mocks = glob(str(galacticus_dir / '*.hdf5'))
 
     return sorted(galaxy_mocks)
 
 def main():
+
     parser = argparse.ArgumentParser(
         description="Build source catalog from Galacticus mock + star catalog",
     )
@@ -605,7 +603,6 @@ def main():
 
     print(f"Building source catalog")
     print(f"  Output: {output_dir}")
-    print()
 
     # --- Stars ---
     metadata_tables = []
@@ -614,14 +611,12 @@ def main():
         metadata_tables.append(star_table)
     else:
         print("--- Skipping stars ---")
-        star_seds = np.empty((0, N_WL), dtype=np.float32)
+        star_seds = np.empty((1, N_WL), dtype=np.float32)
 
     # --- Galaxies ---
     print("\n--- Galaxies ---")
 
     galaxy_mocks = get_galaxy_mocks(galacticus_dir, args.test)
-
-    print(galaxy_mocks)
 
     # Initialize Zarr store (wavelengths + stars)
     zarr_store = init_zarr_store(output_dir, WAVELENGTHS, star_seds)
@@ -629,8 +624,13 @@ def main():
     # Process and write galaxy partitions incrementally
     n_partitions = 0
 
+    # Determine number of workers to use based on available memory
+    total_mem = psutil.virtual_memory().total
+    per_process_mem = 16 * 1024**3  # estimate ~16 GB per worker based on test case for 4sqDegMocks
+    max_workers = max(1, total_mem // per_process_mem) 
+
     # Use ProcessPoolExecutor for cleaner API
-    with ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Submit all sim jobs
         if sed_component=="both":
             futures = [
@@ -686,3 +686,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
