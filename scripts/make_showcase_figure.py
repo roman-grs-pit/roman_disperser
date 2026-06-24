@@ -168,28 +168,6 @@ def source_box(parquet, sca, ra0, dec0, fov_arcmin, order="1"):
     return s.xsca.to_numpy(), s.ysca.to_numpy()
 
 
-def detector_window(data, xsca, ysca, margin, pad):
-    """Cut a wide detector window around the field, plus the field-footprint box.
-
-    Shows the field's undispersed bbox surrounded by `margin` px of detector
-    context (so the dispersed traces stream through it and surrounding spectra
-    fill the frame instead of whitespace). The returned box marks the 1' field's
-    undispersed footprint (the "same region" highlighted on the imaging panel).
-
-    xsca/ysca are 1-indexed FITS coords; array index is [y-1, x-1].
-    Returns (cutout, (x0,x1,y0,y1) detector coords, (bx,by,bw,bh) box in cutout-local coords).
-    """
-    ny, nx = data.shape
-    fx0, fx1 = xsca.min() - 1.0, xsca.max() - 1.0  # 1-indexed -> 0-indexed
-    fy0, fy1 = ysca.min() - 1.0, ysca.max() - 1.0
-    x0 = max(int(np.floor(fx0 - margin)), 0)
-    x1 = min(int(np.ceil(fx1 + margin)), nx)
-    y0 = max(int(np.floor(fy0 - margin)), 0)
-    y1 = min(int(np.ceil(fy1 + margin)), ny)
-    box = (fx0 - x0 - pad, fy0 - y0 - pad, (fx1 - fx0) + 2 * pad, (fy1 - fy0) + 2 * pad)
-    return data[y0:y1, x0:x1], (x0, x1, y0, y1), box
-
-
 def full_frame(data, xsca, ysca, pad):
     """Whole SCA (4088^2) with the 1' field-footprint box (the imaging-zoom region)."""
     ny, nx = data.shape
@@ -197,6 +175,24 @@ def full_frame(data, xsca, ysca, pad):
     fy0, fy1 = ysca.min() - 1.0, ysca.max() - 1.0
     box = (fx0 - pad, fy0 - pad, (fx1 - fx0) + 2 * pad, (fy1 - fy0) + 2 * pad)
     return data, (0, nx, 0, ny), box
+
+
+def disp_crop(data, xsca, ysca, fov_arcmin, pad, scale=0.11):
+    """Crop the dispersed SCA to a `fov_arcmin` box centred on the field footprint.
+
+    Centre = midpoint of the 1' field's undispersed source positions (≈ the
+    nudged RA/Dec on this SCA). Returns (cut, (x0,x1,y0,y1) detector coords,
+    field-footprint box in cut-local coords).
+    """
+    ny, nx = data.shape
+    half = fov_arcmin * 60.0 / scale / 2.0
+    fx0, fx1 = xsca.min() - 1.0, xsca.max() - 1.0
+    fy0, fy1 = ysca.min() - 1.0, ysca.max() - 1.0
+    cx, cy = 0.5 * (fx0 + fx1), 0.5 * (fy0 + fy1)
+    x0 = max(int(cx - half), 0); x1 = min(int(cx + half), nx)
+    y0 = max(int(cy - half), 0); y1 = min(int(cy + half), ny)
+    box = (fx0 - x0 - pad, fy0 - y0 - pad, (fx1 - fx0) + 2 * pad, (fy1 - fy0) + 2 * pad)
+    return data[y0:y1, x0:x1], (x0, x1, y0, y1), box
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +214,7 @@ def main():
     ap.add_argument("--fov-img", type=float, default=2.0, help="imaging panel FOV [arcmin]")
     ap.add_argument("--fov-sub", type=float, default=1.0, help="grism/prism sky sub-region [arcmin]")
     ap.add_argument("--img-scale", type=float, default=0.11, help="imaging render scale [arcsec/pix]")
-    ap.add_argument("--crop", action="store_true", help="crop dispersed panels to a window (default: full SCA frame)")
-    ap.add_argument("--grism-margin", type=float, default=550.0, help="--crop: detector context around grism field [pix]")
-    ap.add_argument("--prism-margin", type=float, default=400.0, help="--crop: detector context around prism field [pix]")
+    ap.add_argument("--fov-disp", type=float, default=3.0, help="grism/prism panel FOV [arcmin] (0 = full SCA)")
     ap.add_argument("--pad", type=float, default=25.0, help="field-footprint box pad [pix]")
     ap.add_argument("--cmap", default="inferno")
     ap.add_argument("--no-star", action="store_true", help="disable the bright-star orientation marker")
@@ -239,8 +233,8 @@ def main():
     g_src = glob.glob(f"{GRISM_ROOT}/output/*{GRISM_EXP}/*sources.parquet")[0]
     gx, gy = source_box(g_src, GRISM_SCA, args.ra, args.dec, args.fov_sub)
     gdata = load_l2(g_l2)
-    if args.crop:
-        gcut, gwin, gbox = detector_window(gdata, gx, gy, args.grism_margin, args.pad)
+    if args.fov_disp > 0:
+        gcut, gwin, gbox = disp_crop(gdata, gx, gy, args.fov_disp, args.pad)
     else:
         gcut, gwin, gbox = full_frame(gdata, gx, gy, args.pad)
     print(f"[grism] {len(gx)} sources, window {gwin}")
@@ -250,8 +244,8 @@ def main():
     p_src = glob.glob(f"{PRISM_ROOT}/output/{PRISM_DIR}/*sources.parquet")[0]
     px, py = source_box(p_src, PRISM_SCA, args.ra, args.dec, args.fov_sub)
     pdata = load_l2(p_l2)
-    if args.crop:
-        pcut, pwin, pbox = detector_window(pdata, px, py, args.prism_margin, args.pad)
+    if args.fov_disp > 0:
+        pcut, pwin, pbox = disp_crop(pdata, px, py, args.fov_disp, args.pad)
     else:
         pcut, pwin, pbox = full_frame(pdata, px, py, args.pad)
     print(f"[prism] {len(px)} sources, window {pwin}")
@@ -290,13 +284,14 @@ def main():
         bx, by, bw, bh = box
         ax.add_patch(Rectangle((bx, by), bw, bh, fill=False, ec="cyan", lw=1.5, ls="--"))
 
+    disp_lbl = f"{args.fov_disp:.0f}' / 0.11\" px" if args.fov_disp > 0 else "full SCA, 7.5'"
     axes[1].imshow(gcut, origin="lower", cmap=args.cmap, norm=asinh_norm(gcut), interpolation="nearest")
     add_box(axes[1], gbox)
-    axes[1].set_title(f"Grism (L2, SCA{GRISM_SCA:02d})\nfull SCA, 7.5' / 0.11\" px")
+    axes[1].set_title(f"Grism (L2, SCA{GRISM_SCA:02d})\n{disp_lbl}")
 
     axes[2].imshow(pcut, origin="lower", cmap=args.cmap, norm=asinh_norm(pcut), interpolation="nearest")
     add_box(axes[2], pbox)
-    axes[2].set_title(f"Prism (L2, SCA{PRISM_SCA:02d})\nfull SCA, 7.5' / 0.11\" px")
+    axes[2].set_title(f"Prism (L2, SCA{PRISM_SCA:02d})\n{disp_lbl}")
 
     # marker stars: numbered circles in imaging, matching order-1 traces on the
     # dispersed panels (same colour per star). Orients all three views.
@@ -308,7 +303,6 @@ def main():
         ax.text(x, y, str(k + 1), color=c, fontsize=11, weight="bold",
                 path_effects=halo, ha="left", va="bottom")
 
-    rad_det = 28.0  # circle radius on the dispersed (full-SCA) panels [pix]
     for k, s in enumerate(stars):
         c = palette[k % len(palette)]
         # imaging: circle at the star's sky (direct-image) position
@@ -316,7 +310,9 @@ def main():
         rad = max(8.0, 4.0 / args.img_scale)  # ~4" radius
         axes[0].add_patch(plt.Circle((ix[0], iy[0]), rad, fill=False, ec=c, lw=2.0, path_effects=halo))
         label(axes[0], ix[0] + rad, iy[0] + rad, k, c)
-        # dispersed: circle the direct-image (undispersed) position + draw the trace
+        # dispersed: box around the order-1 spectrum (so the dispersed light shows
+        # through) + mark the direct-image (undispersed) position with the number
+        bpx, bpy = 16.0, 8.0  # box pad around the trace extent [pix]
         for ax, tkey, ukey, win in (
             (axes[1], "g_trace", "g_undisp", gwin),
             (axes[2], "p_trace", "p_undisp", pwin),
@@ -324,11 +320,17 @@ def main():
             if tkey in s:
                 tx = np.array(s[tkey]["x"]) - 1 - win[0]
                 ty = np.array(s[tkey]["y"]) - 1 - win[2]
-                ax.plot(tx, ty, "-", color=c, lw=1.8, alpha=0.95, path_effects=halo, solid_capstyle="round")
+                x0, x1, y0, y1 = tx.min() - bpx, tx.max() + bpx, ty.min() - bpy, ty.max() + bpy
+                ax.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, ec=c, lw=1.6, path_effects=halo))
             if ukey in s:
                 ux, uy = s[ukey][0] - 1 - win[0], s[ukey][1] - 1 - win[2]
-                ax.add_patch(plt.Circle((ux, uy), rad_det, fill=False, ec=c, lw=2.0, path_effects=halo))
-                label(ax, ux + rad_det, uy + rad_det, k, c)
+                ax.plot(ux, uy, "x", color=c, ms=7, mew=1.8, path_effects=halo)
+                label(ax, ux + 6, uy + 6, k, c)
+
+    # clamp each panel to its image extent so overlay patches don't expand the axes
+    for ax, im in zip(axes, (img, gcut, pcut)):
+        ax.set_xlim(0, im.shape[1] - 1)
+        ax.set_ylim(0, im.shape[0] - 1)
 
     fig.suptitle("Roman WFI simulation — same sky, three views", fontsize=15, y=1.02)
     fig.tight_layout()
