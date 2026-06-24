@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Showcase visualization scripts (`scripts/`) and figures (`figures/`):
+  - `make_showcase_figure.py` — 3-panel "same sky, three views" of the
+    acceptance/roll test products at RA≈10/Dec≈0: imaging (L3 coadd) | grism |
+    prism, all at the same pointing (RA=10/Dec=0/PA=0, SCA3) so the grism and
+    prism show identical objects. Marks the brightest stars with order-1 trace
+    boxes and an N/E compass.
+  - `make_roll_figure.py` — 2×2 of the same grism field at three telescope rolls
+    (PA=0/10/180), showing the dispersion rotating/flipping with roll.
+  - `compute_showcase_traces.py` / `compute_roll_traces.py` — precompute the
+    marker stars' order-1 traces via the optical model (run in the
+    `roman_disperser`/`roman_disperser_prism` envs); the figure scripts run in
+    the `roman_l2_job` env to read the L2/L3 ASDFs.
+
 ## [0.10.0] - 2026-06-12
 
 > `0.9.x` is reserved for the prism line (`v0.9.0-prism`); the mainline
