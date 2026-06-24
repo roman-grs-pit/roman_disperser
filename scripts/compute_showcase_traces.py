@@ -31,8 +31,8 @@ import pandas as pd
 import roman_disperser.optical_model_jax as omj
 from roman_disperser.optical_model import RomanOpticalModel
 
-# Must match make_showcase_figure.py
-RA0, DEC0, FOV_IMG = 10.183, -0.184, 2.0
+# Must match make_showcase_figure.py (FOV_IMG = star-selection box = imaging FOV)
+RA0, DEC0, FOV_IMG = 10.183, -0.184, 3.0
 GRISM_SRC = "/mnt/roman-science/grs/acceptance-testing-20260430/spectro/2026-05-05/acceptance/output/*001.001.001.001.010.001/*sources.parquet"
 PRISM_SRC = "/mnt/roman-science/grs/prism-testing-20260527/spectro/2026-05-28/output/prism-single.sim_001.001.001.001.001.001/*sources.parquet"
 GRISM_SCA, PRISM_SCA = 5, 3

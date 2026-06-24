@@ -154,6 +154,32 @@ def load_l2(path):
         return np.asarray(af["roman"]["data"], dtype=np.float32)
 
 
+def draw_compass(ax, wcs, cx, cy, length, halo, color="white"):
+    """Draw an N/E compass at the panel's lower-left from an astropy WCS.
+
+    Directions are evaluated at (cx, cy) pixels; arrows are drawn in display
+    coordinates. Used only on the imaging panel (the dispersed L2 frames carry
+    a less reliable WCS, and the numbered stars orient those panels).
+    """
+    d = 2.0 / 3600.0  # 2 arcsec probe
+    ra, dec = [np.atleast_1d(v)[0] for v in wcs.pixel_to_world_values(cx, cy)]
+    xn, yn = [np.atleast_1d(v)[0] for v in wcs.world_to_pixel_values(ra, dec + d)]
+    xe, ye = [np.atleast_1d(v)[0] for v in wcs.world_to_pixel_values(ra + d / np.cos(np.radians(dec)), dec)]
+
+    def unit(x2, y2):
+        v = np.array([x2 - cx, y2 - cy])
+        n = np.hypot(*v)
+        return v / n * length if n else v
+
+    vn, ve = unit(xn, yn), unit(xe, ye)
+    ox = oy = length * 1.4  # origin near lower-left of the panel
+    for v, lab in ((vn, "N"), (ve, "E")):
+        ax.annotate("", xy=(ox + v[0], oy + v[1]), xytext=(ox, oy),
+                    arrowprops=dict(arrowstyle="->", color=color, lw=1.8))
+        ax.text(ox + v[0] * 1.28, oy + v[1] * 1.28, lab, color=color, fontsize=10,
+                weight="bold", ha="center", va="center", path_effects=halo)
+
+
 def source_box(parquet, sca, ra0, dec0, fov_arcmin, order="1"):
     """Undispersed (xsca,ysca) of order-`order` sources within a sky box on `sca`."""
     t = pd.read_parquet(parquet, columns=["sca", "order", "xsca", "ysca", "ra", "dec"])
@@ -211,7 +237,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ra", type=float, default=10.183, help="nudged off (10,0) to center the dispersed fields")
     ap.add_argument("--dec", type=float, default=-0.184)
-    ap.add_argument("--fov-img", type=float, default=2.0, help="imaging panel FOV [arcmin]")
+    ap.add_argument("--fov-img", type=float, default=3.0, help="imaging panel FOV [arcmin]")
     ap.add_argument("--fov-sub", type=float, default=1.0, help="grism/prism sky sub-region [arcmin]")
     ap.add_argument("--img-scale", type=float, default=0.11, help="imaging render scale [arcsec/pix]")
     ap.add_argument("--fov-disp", type=float, default=3.0, help="grism/prism panel FOV [arcmin] (0 = full SCA)")
@@ -331,6 +357,9 @@ def main():
     for ax, im in zip(axes, (img, gcut, pcut)):
         ax.set_xlim(0, im.shape[1] - 1)
         ax.set_ylim(0, im.shape[0] - 1)
+
+    # N/E compass on the imaging (sky) panel
+    draw_compass(axes[0], tw, img.shape[1] / 2, img.shape[0] / 2, 0.10 * img.shape[1], halo)
 
     fig.suptitle("Roman WFI simulation — same sky, three views", fontsize=15, y=1.02)
     fig.tight_layout()
