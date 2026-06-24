@@ -49,14 +49,13 @@ from matplotlib.patches import Rectangle
 # ---------------------------------------------------------------------------
 ROOT = "/mnt/roman-science/grs"
 IMG_ROOT = f"{ROOT}/acceptance-testing-20260430/imaging/2026-04-30"
-GRISM_ROOT = f"{ROOT}/acceptance-testing-20260430/spectro/2026-05-05/acceptance"
+# Grism and prism are the SAME pointing RA=10/Dec=0/PA=0 (same catalog), so the
+# nudged field RA=10.183/Dec=-0.184 lands on SCA3 for both -- identical objects,
+# identical sky orientation, directly comparable.
+GRISM_ROOT = f"{ROOT}/20260324_roman_disperser_NERSC_native"
+GRISM_TAG = "ra10_dec0_pa0"
+GRISM_SCA = 3
 PRISM_ROOT = f"{ROOT}/prism-testing-20260527/spectro/2026-05-28"
-
-# Defaults for the (SCA, exposure) that cover RA=10/Dec=0 (found from source manifests).
-# Nudged showcase point RA=10.183/Dec=-0.184 (~16' from 10/0) lands dead-center on
-# both grism exp010.001 SCA05 (edge 1802px) and prism pt1 SCA03 (edge ~2030px).
-GRISM_EXP = "001.001.001.001.010.001"
-GRISM_SCA = 5
 PRISM_DIR = "prism-single.sim_001.001.001.001.001.001"  # RA 10, Dec 0, PA 0
 PRISM_SCA = 3
 
@@ -273,8 +272,8 @@ def main():
     img, tw = load_imaging_cutout(ra_c, dec_c, args.fov_img, args.img_scale)
 
     # --- grism ---
-    g_l2 = glob.glob(f"{GRISM_ROOT}/output_l2/*{GRISM_EXP}/*detSCA{GRISM_SCA:02d}_l2.asdf")[0]
-    g_src = glob.glob(f"{GRISM_ROOT}/output/*{GRISM_EXP}/*sources.parquet")[0]
+    g_l2 = glob.glob(f"{GRISM_ROOT}/output_l2/{GRISM_TAG}/*{GRISM_TAG}_detSCA{GRISM_SCA:02d}_l2.asdf")[0]
+    g_src = glob.glob(f"{GRISM_ROOT}/output/{GRISM_TAG}/*{GRISM_TAG}_sources.parquet")[0]
     gdata, gwcs = load_l2(g_l2)
     if not stars:
         gmx, gmy = source_box(g_src, GRISM_SCA, args.ra, args.dec, args.fov_sub)

@@ -32,10 +32,12 @@ import roman_disperser.optical_model_jax as omj
 from roman_disperser.optical_model import RomanOpticalModel
 
 # Must match make_showcase_figure.py (FOV_IMG = star-selection box = imaging FOV)
+# Grism and prism are the SAME pointing (RA=10/Dec=0/PA=0): the nudged field lands
+# on SCA3 for both, from the same catalog, so the marked stars are identical objects.
 RA0, DEC0, FOV_IMG = 10.183, -0.184, 3.0
-GRISM_SRC = "/mnt/roman-science/grs/acceptance-testing-20260430/spectro/2026-05-05/acceptance/output/*001.001.001.001.010.001/*sources.parquet"
+GRISM_SRC = "/mnt/roman-science/grs/20260324_roman_disperser_NERSC_native/output/ra10_dec0_pa0/*sources.parquet"
 PRISM_SRC = "/mnt/roman-science/grs/prism-testing-20260527/spectro/2026-05-28/output/prism-single.sim_001.001.001.001.001.001/*sources.parquet"
-GRISM_SCA, PRISM_SCA = 5, 3
+GRISM_SCA, PRISM_SCA = 3, 3
 GRISM_YAML = "/data/npadman/1-Projects/roman_disperser/data/Roman_grism_OpticalModel_v0.8.yaml"
 PRISM_YAML = "/data/npadman/1-Projects/roman_disperser_prism/data/Roman_prism_OpticalModel_v0.8.yaml"
 OUT = os.path.join(os.path.dirname(__file__), "..", "figures", "showcase_star_traces.json")
@@ -54,14 +56,17 @@ def select_stars(n, fallback_yaml):
     r = FOV_IMG / 60.0 / 2.0
 
     def box(parq, sca):
-        t = pd.read_parquet(parq, columns=["sca", "order", "type", "xsca", "ysca", "ra", "dec", "F158"])
+        # Rank by flux_scale (maggies, consistent in both catalogs). NOTE: the grism
+        # catalog here is from old code that stored *magnitudes* in F158, so F158 is
+        # NOT maggies there -- use flux_scale for brightness.
+        t = pd.read_parquet(parq, columns=["sca", "order", "type", "xsca", "ysca", "ra", "dec", "flux_scale"])
         m = (
             (t.sca == sca) & (t["order"].astype(str) == "1") & (t["type"] == "PSF")
             & (t.ra > RA0 - r) & (t.ra < RA0 + r) & (t.dec > DEC0 - r) & (t.dec < DEC0 + r)
         )
         return t[m]
 
-    gs = box(glob.glob(GRISM_SRC)[0], GRISM_SCA).sort_values("F158", ascending=False)
+    gs = box(glob.glob(GRISM_SRC)[0], GRISM_SCA).sort_values("flux_scale", ascending=False)
     ps = box(glob.glob(PRISM_SRC)[0], PRISM_SCA)
     stars = []
     for _, s in gs.iterrows():
@@ -70,7 +75,7 @@ def select_stars(n, fallback_yaml):
             continue
         m = ps.loc[sep.idxmin()]
         stars.append({
-            "ra": float(s.ra), "dec": float(s.dec), "mag": float(-2.5 * np.log10(s.F158)),
+            "ra": float(s.ra), "dec": float(s.dec), "mag": float(-2.5 * np.log10(s.flux_scale)),
             "g_undisp": [float(s.xsca), float(s.ysca)],
             "p_undisp": [float(m.xsca), float(m.ysca)],
         })
