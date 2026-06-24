@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import re
 
@@ -167,36 +168,6 @@ def source_box(parquet, sca, ra0, dec0, fov_arcmin, order="1"):
     return s.xsca.to_numpy(), s.ysca.to_numpy()
 
 
-def find_marker_star(grism_parq, gsca, prism_parq, psca, ra0, dec0, fov_arcmin):
-    """Brightest star (type PSF) in the sky box, with its grism & prism positions.
-
-    The grism and prism runs share the same star catalog, so the same physical
-    star can be marked in all three panels. Returns
-    (ra, dec, mag, (gx,gy), (px,py)) in 1-indexed SCA coords, or None.
-    """
-    r = fov_arcmin / 60.0 / 2.0
-
-    def box(parq, sca):
-        t = pd.read_parquet(parq, columns=["sca", "order", "type", "xsca", "ysca", "ra", "dec", "F158"])
-        m = (
-            (t.sca == sca) & (t["order"].astype(str) == "1") & (t["type"] == "PSF")
-            & (t.ra > ra0 - r) & (t.ra < ra0 + r) & (t.dec > dec0 - r) & (t.dec < dec0 + r)
-        )
-        return t[m]
-
-    gs = box(grism_parq, gsca)
-    ps = box(prism_parq, psca)
-    if len(gs) == 0 or len(ps) == 0:
-        return None
-    s = gs.sort_values("F158", ascending=False).iloc[0]
-    sep = np.hypot((ps.ra - s.ra) * np.cos(np.radians(dec0)), ps.dec - s.dec) * 3600.0
-    if sep.min() > 1.0:
-        return None
-    m = ps.loc[sep.idxmin()]
-    mag = -2.5 * np.log10(s.F158)
-    return s.ra, s.dec, mag, (s.xsca, s.ysca), (m.xsca, m.ysca)
-
-
 def detector_window(data, xsca, ysca, margin, pad):
     """Cut a wide detector window around the field, plus the field-footprint box.
 
@@ -285,11 +256,15 @@ def main():
         pcut, pwin, pbox = full_frame(pdata, px, py, args.pad)
     print(f"[prism] {len(px)} sources, window {pwin}")
 
-    # --- bright-star orientation marker (same physical star in all panels) ---
-    star = None if args.no_star else find_marker_star(g_src, GRISM_SCA, p_src, PRISM_SCA, args.ra, args.dec, args.fov_sub)
-    if star is not None:
-        sra, sdec, smag, (sgx, sgy), (spx, spy) = star
-        print(f"[star] mag {smag:.1f} at RA={sra:.4f} Dec={sdec:.4f}")
+    # --- marker stars: circle in imaging, order-1 trace overlaid on dispersed panels ---
+    # Traces are precomputed by scripts/compute_showcase_traces.py (needs the optical
+    # model, which lives in a different env), read from a tracked JSON.
+    trace_json = os.path.join(os.path.dirname(__file__), "..", "figures", "showcase_star_traces.json")
+    stars = []
+    if not args.no_star and os.path.exists(trace_json):
+        with open(trace_json) as f:
+            stars = json.load(f).get("stars", [])
+        print(f"[stars] {len(stars)} marker stars (mag {[round(s['mag'],1) for s in stars]})")
 
     # --- figure ---
     cmap = matplotlib.colormaps[args.cmap].copy()
@@ -315,25 +290,36 @@ def main():
         bx, by, bw, bh = box
         ax.add_patch(Rectangle((bx, by), bw, bh, fill=False, ec="cyan", lw=1.5, ls="--"))
 
-    def mark_star(ax, x, y, r=22):
-        """Open circle marking the (undispersed) star position, to orient the panels."""
-        ax.add_patch(plt.Circle((x, y), r, fill=False, ec="springgreen", lw=1.8))
-
     axes[1].imshow(gcut, origin="lower", cmap=args.cmap, norm=asinh_norm(gcut), interpolation="nearest")
     add_box(axes[1], gbox)
-    axes[1].set_title(f"Grism (L2, SCA{GRISM_SCA:02d})\nsame {args.fov_sub:.0f}' field dispersed (box)")
+    axes[1].set_title(f"Grism (L2, SCA{GRISM_SCA:02d})\nfull SCA, 7.5' / 0.11\" px")
 
     axes[2].imshow(pcut, origin="lower", cmap=args.cmap, norm=asinh_norm(pcut), interpolation="nearest")
     add_box(axes[2], pbox)
-    axes[2].set_title(f"Prism (L2, SCA{PRISM_SCA:02d})\nsame {args.fov_sub:.0f}' field dispersed (box)")
+    axes[2].set_title(f"Prism (L2, SCA{PRISM_SCA:02d})\nfull SCA, 7.5' / 0.11\" px")
 
-    # bright-star orientation marker (same physical star, all three panels)
-    if star is not None:
-        msx, msy = tw.all_world2pix([sra], [sdec], 0)
-        rad = max(8.0, 5.0 / args.img_scale)  # ~5" radius on the imaging panel
-        mark_star(axes[0], msx[0], msy[0], r=rad)
-        mark_star(axes[1], (sgx - 1) - gwin[0], (sgy - 1) - gwin[2], r=30)
-        mark_star(axes[2], (spx - 1) - pwin[0], (spy - 1) - pwin[2], r=30)
+    # marker stars: numbered circles in imaging, matching order-1 traces on the
+    # dispersed panels (same colour per star). Orients all three views.
+    import matplotlib.patheffects as pe
+    halo = [pe.withStroke(linewidth=2.5, foreground="black")]
+    palette = ["cyan", "springgreen", "white", "deepskyblue", "magenta", "yellow"]
+
+    def label(ax, x, y, k, c):
+        ax.text(x, y, str(k + 1), color=c, fontsize=11, weight="bold",
+                path_effects=halo, ha="left", va="bottom")
+
+    for k, s in enumerate(stars):
+        c = palette[k % len(palette)]
+        ix, iy = tw.all_world2pix([s["ra"]], [s["dec"]], 0)
+        rad = max(8.0, 4.0 / args.img_scale)  # ~4" radius
+        axes[0].add_patch(plt.Circle((ix[0], iy[0]), rad, fill=False, ec=c, lw=2.0, path_effects=halo))
+        label(axes[0], ix[0] + rad, iy[0] + rad, k, c)
+        for ax, key, win in ((axes[1], "g_trace", gwin), (axes[2], "p_trace", pwin)):
+            if key in s:
+                tx = np.array(s[key]["x"]) - 1 - win[0]
+                ty = np.array(s[key]["y"]) - 1 - win[2]
+                ax.plot(tx, ty, "-", color=c, lw=2.0, alpha=0.95, path_effects=halo, solid_capstyle="round")
+                label(ax, tx[0], ty[0], k, c)
 
     fig.suptitle("Roman WFI simulation — same sky, three views", fontsize=15, y=1.02)
     fig.tight_layout()
