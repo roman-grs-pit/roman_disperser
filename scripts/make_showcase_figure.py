@@ -308,18 +308,27 @@ def main():
         ax.text(x, y, str(k + 1), color=c, fontsize=11, weight="bold",
                 path_effects=halo, ha="left", va="bottom")
 
+    rad_det = 28.0  # circle radius on the dispersed (full-SCA) panels [pix]
     for k, s in enumerate(stars):
         c = palette[k % len(palette)]
+        # imaging: circle at the star's sky (direct-image) position
         ix, iy = tw.all_world2pix([s["ra"]], [s["dec"]], 0)
         rad = max(8.0, 4.0 / args.img_scale)  # ~4" radius
         axes[0].add_patch(plt.Circle((ix[0], iy[0]), rad, fill=False, ec=c, lw=2.0, path_effects=halo))
         label(axes[0], ix[0] + rad, iy[0] + rad, k, c)
-        for ax, key, win in ((axes[1], "g_trace", gwin), (axes[2], "p_trace", pwin)):
-            if key in s:
-                tx = np.array(s[key]["x"]) - 1 - win[0]
-                ty = np.array(s[key]["y"]) - 1 - win[2]
-                ax.plot(tx, ty, "-", color=c, lw=2.0, alpha=0.95, path_effects=halo, solid_capstyle="round")
-                label(ax, tx[0], ty[0], k, c)
+        # dispersed: circle the direct-image (undispersed) position + draw the trace
+        for ax, tkey, ukey, win in (
+            (axes[1], "g_trace", "g_undisp", gwin),
+            (axes[2], "p_trace", "p_undisp", pwin),
+        ):
+            if tkey in s:
+                tx = np.array(s[tkey]["x"]) - 1 - win[0]
+                ty = np.array(s[tkey]["y"]) - 1 - win[2]
+                ax.plot(tx, ty, "-", color=c, lw=1.8, alpha=0.95, path_effects=halo, solid_capstyle="round")
+            if ukey in s:
+                ux, uy = s[ukey][0] - 1 - win[0], s[ukey][1] - 1 - win[2]
+                ax.add_patch(plt.Circle((ux, uy), rad_det, fill=False, ec=c, lw=2.0, path_effects=halo))
+                label(ax, ux + rad_det, uy + rad_det, k, c)
 
     fig.suptitle("Roman WFI simulation — same sky, three views", fontsize=15, y=1.02)
     fig.tight_layout()
