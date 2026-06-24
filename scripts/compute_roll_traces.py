@@ -26,7 +26,7 @@ from roman_disperser.optical_model import RomanOpticalModel
 # SCA13 at PA180). PA0->PA10 is a subtle 10deg roll; PA180 is a full flip.
 CRA, CDEC, FOV = 9.948, -0.173, 3.0
 ROLLS = [0, 10, 180]
-N_STARS = 5
+N_STARS = 4  # this field has 4 clearly-bright stars (mag 14-17.5) covered at all 3 rolls
 BASE = "/mnt/roman-science/grs/20260324_roman_disperser_NERSC_native/output"
 GRISM_YAML = "/data/npadman/1-Projects/roman_disperser/data/Roman_grism_OpticalModel_v0.8.yaml"
 OUT = os.path.join(os.path.dirname(__file__), "..", "figures", "showcase_roll_traces.json")

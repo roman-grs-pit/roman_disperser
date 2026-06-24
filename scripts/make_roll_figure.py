@@ -114,7 +114,7 @@ def main():
     fig.tight_layout()
     os.makedirs(os.path.dirname(os.path.abspath(OUT)), exist_ok=True)
     for ext in ("png", "pdf"):
-        fig.savefig(f"{OUT}.{ext}", dpi=150, bbox_inches="tight")
+        fig.savefig(f"{OUT}.{ext}", dpi=300, bbox_inches="tight")
         print("wrote", f"{OUT}.{ext}")
 
 

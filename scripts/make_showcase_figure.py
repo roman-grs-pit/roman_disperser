@@ -356,7 +356,7 @@ def main():
     fig.suptitle("Roman WFI simulation — same sky, three views", fontsize=15, y=1.02)
     fig.tight_layout()
     for ext in ("png", "pdf"):
-        fig.savefig(f"{args.out}.{ext}", dpi=150, bbox_inches="tight")
+        fig.savefig(f"{args.out}.{ext}", dpi=300, bbox_inches="tight")
         print("wrote", f"{args.out}.{ext}")
 
 
