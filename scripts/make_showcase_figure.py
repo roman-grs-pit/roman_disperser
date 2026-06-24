@@ -151,15 +151,16 @@ def load_imaging_cutout(ra, dec, fov_arcmin, scale_arcsec, verbose=True):
 # ---------------------------------------------------------------------------
 def load_l2(path):
     with asdf.open(path, lazy_load=True, memmap=True) as af:
-        return np.asarray(af["roman"]["data"], dtype=np.float32)
+        return np.asarray(af["roman"]["data"], dtype=np.float32), af["roman"]["meta"]["wcs"]
 
 
 def draw_compass(ax, wcs, cx, cy, length, halo, color="white"):
-    """Draw an N/E compass at the panel's lower-left from an astropy WCS.
+    """Draw an N/E compass at the panel's lower-left from a WCS (astropy or GWCS).
 
-    Directions are evaluated at (cx, cy) pixels; arrows are drawn in display
-    coordinates. Used only on the imaging panel (the dispersed L2 frames carry
-    a less reliable WCS, and the numbered stars orient those panels).
+    Directions are evaluated at (cx, cy) full-frame pixels; arrows are drawn in
+    display coordinates. The dispersed L2 GWCS rotation is reliable (validated
+    against the optical model: grism N≈up, prism N≈149°), so each panel gets a
+    compass showing how sky N/E fall on that frame.
     """
     d = 2.0 / 3600.0  # 2 arcsec probe
     ra, dec = [np.atleast_1d(v)[0] for v in wcs.pixel_to_world_values(cx, cy)]
@@ -251,40 +252,44 @@ def main():
     args = ap.parse_args()
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
 
-    # --- imaging ---
-    img, tw = load_imaging_cutout(args.ra, args.dec, args.fov_img, args.img_scale)
-
-    # --- grism ---
-    g_l2 = glob.glob(f"{GRISM_ROOT}/output_l2/*{GRISM_EXP}/*detSCA{GRISM_SCA:02d}_l2.asdf")[0]
-    g_src = glob.glob(f"{GRISM_ROOT}/output/*{GRISM_EXP}/*sources.parquet")[0]
-    gx, gy = source_box(g_src, GRISM_SCA, args.ra, args.dec, args.fov_sub)
-    gdata = load_l2(g_l2)
-    if args.fov_disp > 0:
-        gcut, gwin, gbox = disp_crop(gdata, gx, gy, args.fov_disp, args.pad)
-    else:
-        gcut, gwin, gbox = full_frame(gdata, gx, gy, args.pad)
-    print(f"[grism] {len(gx)} sources, window {gwin}")
-
-    # --- prism ---
-    p_l2 = glob.glob(f"{PRISM_ROOT}/output_l2/{PRISM_DIR}/*detSCA{PRISM_SCA:02d}_l2.asdf")[0]
-    p_src = glob.glob(f"{PRISM_ROOT}/output/{PRISM_DIR}/*sources.parquet")[0]
-    px, py = source_box(p_src, PRISM_SCA, args.ra, args.dec, args.fov_sub)
-    pdata = load_l2(p_l2)
-    if args.fov_disp > 0:
-        pcut, pwin, pbox = disp_crop(pdata, px, py, args.fov_disp, args.pad)
-    else:
-        pcut, pwin, pbox = full_frame(pdata, px, py, args.pad)
-    print(f"[prism] {len(px)} sources, window {pwin}")
-
-    # --- marker stars: circle in imaging, order-1 trace overlaid on dispersed panels ---
-    # Traces are precomputed by scripts/compute_showcase_traces.py (needs the optical
-    # model, which lives in a different env), read from a tracked JSON.
+    # --- marker stars (read first: the panels are centred on the star group) ---
     trace_json = os.path.join(os.path.dirname(__file__), "..", "figures", "showcase_star_traces.json")
     stars = []
     if not args.no_star and os.path.exists(trace_json):
         with open(trace_json) as f:
             stars = json.load(f).get("stars", [])
         print(f"[stars] {len(stars)} marker stars (mag {[round(s['mag'],1) for s in stars]})")
+
+    # Centre each panel on the marker-star group (falls back to args.ra/dec).
+    if stars:
+        ra_c = float(np.mean([s["ra"] for s in stars]))
+        dec_c = float(np.mean([s["dec"] for s in stars]))
+        gmx = np.array([s["g_undisp"][0] for s in stars]); gmy = np.array([s["g_undisp"][1] for s in stars])
+        pmx = np.array([s["p_undisp"][0] for s in stars]); pmy = np.array([s["p_undisp"][1] for s in stars])
+    else:
+        ra_c, dec_c = args.ra, args.dec
+
+    # --- imaging ---
+    img, tw = load_imaging_cutout(ra_c, dec_c, args.fov_img, args.img_scale)
+
+    # --- grism ---
+    g_l2 = glob.glob(f"{GRISM_ROOT}/output_l2/*{GRISM_EXP}/*detSCA{GRISM_SCA:02d}_l2.asdf")[0]
+    g_src = glob.glob(f"{GRISM_ROOT}/output/*{GRISM_EXP}/*sources.parquet")[0]
+    gdata, gwcs = load_l2(g_l2)
+    if not stars:
+        gmx, gmy = source_box(g_src, GRISM_SCA, args.ra, args.dec, args.fov_sub)
+    gcut, gwin, _ = (disp_crop(gdata, gmx, gmy, args.fov_disp, args.pad)
+                     if args.fov_disp > 0 else full_frame(gdata, gmx, gmy, args.pad))
+    print(f"[grism] window {gwin}")
+
+    # --- prism ---
+    p_l2 = glob.glob(f"{PRISM_ROOT}/output_l2/{PRISM_DIR}/*detSCA{PRISM_SCA:02d}_l2.asdf")[0]
+    p_src = glob.glob(f"{PRISM_ROOT}/output/{PRISM_DIR}/*sources.parquet")[0]
+    pdata, pwcs = load_l2(p_l2)
+    if not stars:
+        pmx, pmy = source_box(p_src, PRISM_SCA, args.ra, args.dec, args.fov_sub)
+    pcut, pwin, _ = disp_crop(pdata, pmx, pmy, args.fov_disp, args.pad) if args.fov_disp > 0 else full_frame(pdata, pmx, pmy, args.pad)
+    print(f"[prism] window {pwin}")
 
     # --- figure ---
     cmap = matplotlib.colormaps[args.cmap].copy()
@@ -295,28 +300,13 @@ def main():
         ax.set_xticks([]); ax.set_yticks([])
 
     axes[0].imshow(img, origin="lower", cmap=args.cmap, norm=asinh_norm(img), interpolation="nearest")
-    axes[0].set_title(f"Imaging F158 (L3 coadd)\n{args.fov_img:.0f}' @ RA={args.ra}, Dec={args.dec}")
-    # sub-region rectangle (sky box -> imaging pixels), only if imaging is wider
-    if args.fov_img > args.fov_sub * 1.05:
-        half = args.fov_sub / 60.0 / 2.0
-        corners_ra = args.ra + np.array([-1, 1, 1, -1]) * half / np.cos(np.radians(args.dec))
-        corners_dec = args.dec + np.array([-1, -1, 1, 1]) * half
-        cx, cy = tw.all_world2pix(corners_ra, corners_dec, 0)
-        axes[0].add_patch(
-            plt.Polygon(np.c_[cx, cy], fill=False, ec="cyan", lw=1.5, ls="--")
-        )
-
-    def add_box(ax, box):
-        bx, by, bw, bh = box
-        ax.add_patch(Rectangle((bx, by), bw, bh, fill=False, ec="cyan", lw=1.5, ls="--"))
+    axes[0].set_title(f"Imaging F158 (L3 coadd)\n{args.fov_img:.0f}' @ RA={ra_c:.3f}, Dec={dec_c:.3f}")
 
     disp_lbl = f"{args.fov_disp:.0f}' / 0.11\" px" if args.fov_disp > 0 else "full SCA, 7.5'"
     axes[1].imshow(gcut, origin="lower", cmap=args.cmap, norm=asinh_norm(gcut), interpolation="nearest")
-    add_box(axes[1], gbox)
     axes[1].set_title(f"Grism (L2, SCA{GRISM_SCA:02d})\n{disp_lbl}")
 
     axes[2].imshow(pcut, origin="lower", cmap=args.cmap, norm=asinh_norm(pcut), interpolation="nearest")
-    add_box(axes[2], pbox)
     axes[2].set_title(f"Prism (L2, SCA{PRISM_SCA:02d})\n{disp_lbl}")
 
     # marker stars: numbered circles in imaging, matching order-1 traces on the
@@ -358,8 +348,11 @@ def main():
         ax.set_xlim(0, im.shape[1] - 1)
         ax.set_ylim(0, im.shape[0] - 1)
 
-    # N/E compass on the imaging (sky) panel
+    # N/E compass on every panel (sky orientation differs per frame: grism N≈up,
+    # prism N rotated ~59deg). Imaging from its TAN WCS, dispersed from the L2 GWCS.
     draw_compass(axes[0], tw, img.shape[1] / 2, img.shape[0] / 2, 0.10 * img.shape[1], halo)
+    draw_compass(axes[1], gwcs, 0.5 * (gwin[0] + gwin[1]), 0.5 * (gwin[2] + gwin[3]), 0.10 * gcut.shape[1], halo)
+    draw_compass(axes[2], pwcs, 0.5 * (pwin[0] + pwin[1]), 0.5 * (pwin[2] + pwin[3]), 0.10 * pcut.shape[1], halo)
 
     fig.suptitle("Roman WFI simulation — same sky, three views", fontsize=15, y=1.02)
     fig.tight_layout()
