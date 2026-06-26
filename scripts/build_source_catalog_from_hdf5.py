@@ -292,7 +292,6 @@ def compute_f158_normalization(wavelengths_angstrom):
 
     return fnu_to_flam, bandpass_weights
 
-@cache
 def get_sed_calc():
 
     unit_cosmo = FlatLambdaCDM(
@@ -633,39 +632,28 @@ def main():
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Submit all sim jobs
         if sed_component=="both":
-            futures = [
-                executor.submit(
-                    process_sim_worker,
-                    mock,
-                    component
-                )
+            futures = {
+                executor.submit(process_sim_worker, mock, component): None
                 for mock in galaxy_mocks
                 for component in ('disk', 'spheroid')
-            ]
+            }
         else:
-            futures = [
-                executor.submit(
-                    process_sim_worker,
-                    mock,
-                    sed_component
-                )
+            futures = {
+                executor.submit(process_sim_worker, mock, sed_component): None
                 for mock in galaxy_mocks
-            ]
+            }
         
         # Collect results as they complete (order doesn't matter)
-        sim_results = defaultdict(dict)
         for future in as_completed(futures):
             galaxy_table, galaxy_seds, mock_fn, sed_component = future.result()
+
             if galaxy_table is not None:
-                sim_results[mock_fn][sed_component] = (galaxy_table, galaxy_seds)
-        
-        # Write results to zarr in order (main process only)
-        for mock_fn in sorted(sim_results.keys()):
-            for sed_component in sorted(sim_results[mock_fn].keys()):
-                galaxy_table, galaxy_seds = sim_results[mock_fn][sed_component]
-                metadata_tables.append(galaxy_table)
                 write_galaxy_partition(zarr_store, mock_fn, sed_component, galaxy_seds)
+                metadata_tables.append(galaxy_table)
                 n_partitions += 1
+
+            del galaxy_table, galaxy_seds
+            del futures[future] # free cached result inside Futures
 
     # --- Write outputs ---
     if not metadata_tables:
