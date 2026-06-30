@@ -222,12 +222,13 @@ def validate_catalog(meta, store, wavelengths):
             key = f"galaxy_seds/sim_{sim_val}"
             if key not in store:
                 raise ValueError(f"Missing Zarr array for partition: {key}")
-            if store[key].shape[1] != n_wl:
-                raise ValueError(
-                    f"{key} has {store[key].shape[1]} wavelength bins but the "
-                    f"catalog wavelength grid has {n_wl}. All SED arrays must "
-                    f"share the 'wavelengths' grid (see data/catalogs/README.md)."
-                )
+            for sed_component in store[key]:
+                if store[key][sed_component].shape[1] != n_wl:
+                    raise ValueError(
+                        f"{key} has {store[key][sed_component].shape[1]} wavelength bins but the "
+                        f"catalog wavelength grid has {n_wl}. All SED arrays must "
+                        f"share the 'wavelengths' grid (see data/catalogs/README.md)."
+                    )
 
     # Morphology warnings
     if len(galaxies) > 0:
