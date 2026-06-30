@@ -219,7 +219,7 @@ def validate_catalog(meta, store, wavelengths):
     galaxies = meta[meta["type"] == "SER"]
     if len(galaxies) > 0:
         for sim_val in galaxies["sim"].unique():
-            key = f"galaxy_seds/sim_{sim_val:03d}"
+            key = f"galaxy_seds/sim_{sim_val}"
             if key not in store:
                 raise ValueError(f"Missing Zarr array for partition: {key}")
             if store[key].shape[1] != n_wl:
@@ -299,7 +299,7 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
 
     # Group by sim partition for sequential Zarr access
     for sim_val, group in galaxy_meta.groupby("sim"):
-        key = f"galaxy_seds/sim_{sim_val:03d}"
+        key = f"galaxy_seds/sim_{sim_val}"
         arr = store[key]
         indices = group["sed_index"].values
         scales = group["flux_scale"].values.astype(np.float32)
@@ -336,7 +336,7 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
         print(f"  WARNING: scrubbed {bad_total} pathological SED bins in "
               f"{len(unique)} unique catalog SED template(s):")
         for s, i, n, m in sorted(unique.values()):
-            print(f"    sim_{s:03d}/sed[{i}]: {n} bin(s) zeroed, "
+            print(f"    sim_{s}/sed[{i}]: {n} bin(s) zeroed, "
                   f"max abs value was {m:.3e}")
 
     return spectra
