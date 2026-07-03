@@ -193,16 +193,21 @@ def load_inputs(fits_path, catalog_dir):
     return model_img, sca, manifest, lines
 
 
-def run(fits_path, catalog_dir, optical_model=None, box_half=8, max_stars=None):
+def run(fits_path, catalog_dir, optical_model=None, box_half=8, max_stars=None,
+        model=None, quiet=False):
     model_img, sca, manifest, lines = load_inputs(fits_path, catalog_dir)
     lam_A = np.asarray(lines["center_A"], float)
     lam_um = lam_A / 1e4
 
-    om_path = optical_model or (paths.data_dir() / "Roman_grism_OpticalModel_v0.8.yaml")
-    model = RomanOpticalModel(str(om_path))
+    if model is None:
+        om_path = optical_model or (paths.data_dir() / "Roman_grism_OpticalModel_v0.8.yaml")
+        model = RomanOpticalModel(str(om_path))
     payload = omj.make_sca_payload(model, sca=sca, order=ORDER)
 
-    stars = manifest[(manifest["order"] == ORDER) & (manifest["type"] == "PSF")]
+    # Batch-mode manifests list every SCA; keep only this detector's first-order
+    # point sources.
+    stars = manifest[(manifest["order"] == ORDER) & (manifest["type"] == "PSF")
+                     & (manifest["sca"] == sca)]
     stars = stars.drop_duplicates("catalog_index").reset_index(drop=True)
     if max_stars:
         stars = stars.iloc[:max_stars]
@@ -220,6 +225,7 @@ def run(fits_path, catalog_dir, optical_model=None, box_half=8, max_stars=None):
             xm, ym = measure_line(model_img, xj[k], yj[k], u_disp[k], half=box_half)
             d = np.array([xm - xj[k], ym - yj[k]])
             rows.append({
+                "sca": int(sca),
                 "catalog_index": int(s["catalog_index"]),
                 "xsca": xsca, "ysca": ysca,
                 "line_id": int(lines["line_id"][k]), "center_A": lam_A[k],
@@ -232,22 +238,57 @@ def run(fits_path, catalog_dir, optical_model=None, box_half=8, max_stars=None):
             })
     res = pd.DataFrame(rows)
 
-    ok = res.dropna(subset=["d_disp"])
-    print(f"\nJAX vs class max separation: {jc_max:.4f} px")
-    print(f"Centroided {len(ok)}/{len(res)} (line, star) boxes")
-    if len(ok):
-        for col in ("d_disp", "d_cross"):
-            v = ok[col].to_numpy()
-            print(f"  {col}: median {np.median(v):+.3f}  "
-                  f"MAD {np.median(np.abs(v-np.median(v))):.3f}  "
-                  f"RMS {np.sqrt(np.mean(v**2)):.3f}  max|.| {np.max(np.abs(v)):.3f} px")
+    if not quiet:
+        _print_summary(res, jc_max)
+    res.attrs["jc_max"] = jc_max
     return res
+
+
+def _print_summary(res, jc_max, label=""):
+    ok = res.dropna(subset=["d_disp"])
+    print(f"\n{label}JAX vs class max separation: {jc_max:.4f} px")
+    print(f"{label}Centroided {len(ok)}/{len(res)} (line, star) boxes")
+    for col in ("d_disp", "d_cross"):
+        if not len(ok):
+            break
+        v = ok[col].to_numpy()
+        print(f"  {col}: median {np.median(v):+.3f}  "
+              f"MAD {np.median(np.abs(v - np.median(v))):.3f}  "
+              f"RMS {np.sqrt(np.mean(v**2)):.3f}  max|.| {np.max(np.abs(v)):.3f} px")
+
+
+def run_pointing_dir(pointing_dir, catalog_dir, optical_model=None, box_half=8):
+    """Run the checker on every per-SCA FITS in a batch-mode pointing directory.
+
+    Loads the optical model once and reuses it across SCAs. Returns the
+    concatenated residuals table across all SCAs.
+    """
+    pointing_dir = Path(pointing_dir)
+    fits_files = sorted(pointing_dir.glob("grism_*_detSCA*.fits"))
+    if not fits_files:
+        raise FileNotFoundError(f"No grism_*_detSCA*.fits in {pointing_dir}")
+    om_path = optical_model or (paths.data_dir() / "Roman_grism_OpticalModel_v0.8.yaml")
+    model = RomanOpticalModel(str(om_path))
+    parts = []
+    for f in fits_files:
+        res = run(f, catalog_dir, box_half=box_half, model=model, quiet=True)
+        jc = res.attrs.get("jc_max", np.nan)
+        _print_summary(res, jc, label=f"[{f.name}] ")
+        parts.append(res)
+    allres = pd.concat(parts, ignore_index=True)
+    print("\n" + "=" * 60)
+    _print_summary(allres, max(p.attrs.get("jc_max", 0.0) for p in parts),
+                   label="ALL SCAs · ")
+    return allres
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--fits", required=True, help="Grism sim FITS (MODEL image).")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--fits", help="Single grism sim FITS (MODEL image).")
+    src.add_argument("--pointing-dir",
+                     help="Batch-mode pointing dir; runs all per-SCA FITS and aggregates.")
     p.add_argument("--catalog-dir", required=True,
                    help="Line-test catalog dir (holds lines.ecsv).")
     p.add_argument("--optical-model", default=None, help="Optical model YAML.")
@@ -256,8 +297,12 @@ def main():
     p.add_argument("--out", default=None, help="Write residuals table (parquet).")
     args = p.parse_args()
 
-    res = run(args.fits, args.catalog_dir, args.optical_model,
-              args.box_half, args.max_stars)
+    if args.pointing_dir:
+        res = run_pointing_dir(args.pointing_dir, args.catalog_dir,
+                               args.optical_model, args.box_half)
+    else:
+        res = run(args.fits, args.catalog_dir, args.optical_model,
+                  args.box_half, args.max_stars)
     if args.out:
         res.to_parquet(args.out)
         print(f"\nWrote residuals -> {args.out}")
