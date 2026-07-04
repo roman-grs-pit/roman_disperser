@@ -264,6 +264,10 @@ def main():
                    help="Emission-line FWHM in Angstroms (default 10).")
     p.add_argument("--line-amps", type=float, nargs="+", default=LINE_AMPS,
                    help="Per-line peak amplitude relative to local continuum.")
+    p.add_argument("--no-continuum", action="store_true",
+                   help="Emit lines only (continuum removed) at the SAME absolute "
+                        "line fluxes. Control for the continuum's effect on "
+                        "centroiding; amps still reference the mag-20 continuum.")
     args = p.parse_args()
 
     centers = list(args.line_centers)
@@ -274,6 +278,11 @@ def main():
 
     wl_a = wavelength_grid()
     sed_row, continuum = build_line_test_sed(wl_a, centers, fwhms, amps)
+    if args.no_continuum:
+        # Subtract the continuum, leaving the Gaussians at their same absolute
+        # FLAM (line peak = amp × continuum(center) was added on top, so the
+        # line flux is unchanged by removing the continuum pedestal).
+        sed_row = (sed_row - continuum).astype(np.float32)
 
     stars = select_stars(args.src_catalog, args.mag_limit)
     print(f"Selected {len(stars)} point sources (mag <= {args.mag_limit}) "
@@ -287,7 +296,8 @@ def main():
         "src_catalog": str(args.src_catalog),
         "mag_limit": args.mag_limit,
         "n_stars": int(len(stars)),
-        "continuum_mag": args.continuum_mag,
+        "continuum_mag": (None if args.no_continuum else args.continuum_mag),
+        "no_continuum": bool(args.no_continuum),
         "flux_scale_F158_maggies": float(f158),
         "line_centers_A": centers,
         "line_fwhm_A": args.line_fwhm,
