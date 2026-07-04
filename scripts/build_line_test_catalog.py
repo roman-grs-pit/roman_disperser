@@ -90,9 +90,14 @@ FWHM_TO_SIGMA = 1.0 / (2.0 * np.sqrt(2.0 * np.log(2.0)))
 # Spectrum construction
 # --------------------------------------------------------------------------
 
-def wavelength_grid():
-    """Catalog-standard wavelength grid in Angstroms (2 Å spacing)."""
-    return np.linspace(WL_MIN, WL_MAX, N_WL)
+def wavelength_grid(step=None):
+    """Wavelength grid in Angstroms. `step` (Å) sets the spacing; the pipeline
+    disperses on the catalog grid, so this also sets the dispersal sampling.
+    Default 2 Å (the catalog standard)."""
+    if step is None:
+        return np.linspace(WL_MIN, WL_MAX, N_WL)
+    n = int(round((WL_MAX - WL_MIN) / step)) + 1
+    return np.linspace(WL_MIN, WL_MAX, n)
 
 
 def flat_ab_continuum(wl_a):
@@ -264,10 +269,18 @@ def main():
                    help="Emission-line FWHM in Angstroms (default 10).")
     p.add_argument("--line-amps", type=float, nargs="+", default=LINE_AMPS,
                    help="Per-line peak amplitude relative to local continuum.")
-    p.add_argument("--no-continuum", action="store_true",
-                   help="Emit lines only (continuum removed) at the SAME absolute "
-                        "line fluxes. Control for the continuum's effect on "
-                        "centroiding; amps still reference the mag-20 continuum.")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--no-continuum", action="store_true",
+                      help="Emit lines only (continuum removed) at the SAME "
+                           "absolute line fluxes. Control for the continuum's "
+                           "effect on centroiding; amps still reference the "
+                           "mag-20 continuum.")
+    mode.add_argument("--no-lines", action="store_true",
+                      help="Emit the flat continuum only (no lines). The other "
+                           "half of the control pair.")
+    p.add_argument("--wl-step", type=float, default=None,
+                   help="Wavelength grid spacing in Å (default 2). Also sets the "
+                        "dispersal sampling. Use e.g. 1 or 0.5 to test spacing.")
     args = p.parse_args()
 
     centers = list(args.line_centers)
@@ -276,13 +289,15 @@ def main():
         p.error(f"--line-amps ({len(amps)}) must match --line-centers ({len(centers)})")
     fwhms = [args.line_fwhm] * len(centers)
 
-    wl_a = wavelength_grid()
+    wl_a = wavelength_grid(args.wl_step)
     sed_row, continuum = build_line_test_sed(wl_a, centers, fwhms, amps)
     if args.no_continuum:
         # Subtract the continuum, leaving the Gaussians at their same absolute
         # FLAM (line peak = amp × continuum(center) was added on top, so the
         # line flux is unchanged by removing the continuum pedestal).
         sed_row = (sed_row - continuum).astype(np.float32)
+    elif args.no_lines:
+        sed_row = continuum.astype(np.float32)  # continuum only
 
     stars = select_stars(args.src_catalog, args.mag_limit)
     print(f"Selected {len(stars)} point sources (mag <= {args.mag_limit}) "
@@ -298,14 +313,17 @@ def main():
         "n_stars": int(len(stars)),
         "continuum_mag": (None if args.no_continuum else args.continuum_mag),
         "no_continuum": bool(args.no_continuum),
+        "no_lines": bool(args.no_lines),
         "flux_scale_F158_maggies": float(f158),
-        "line_centers_A": centers,
+        "line_centers_A": ([] if args.no_lines else centers),
         "line_fwhm_A": args.line_fwhm,
-        "line_amps_rel": amps,
-        "wavelength_grid": {"min": WL_MIN, "max": WL_MAX, "n": N_WL},
+        "line_amps_rel": ([] if args.no_lines else amps),
+        "wavelength_grid": {"min": WL_MIN, "max": WL_MAX, "n": len(wl_a),
+                            "step_A": (args.wl_step or 2.0)},
         "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    write_sidecar(args.out_dir, centers, fwhms, amps, args.continuum_mag, provenance)
+    sc = ([], [], []) if args.no_lines else (centers, fwhms, amps)
+    write_sidecar(args.out_dir, sc[0], sc[1], sc[2], args.continuum_mag, provenance)
 
     print(f"Wrote catalog to {args.out_dir}")
     print(f"  flux_scale = F158 = {f158:.4e} maggies (continuum at mag "

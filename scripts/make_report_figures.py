@@ -195,8 +195,12 @@ def predicted_line_counts(catalog_dir, sca, lines):
     return out
 
 
-def measured_line_counts(img, xp, yp, half=8, ap_disp=6, ap_cross=4):
-    """Continuum-subtracted counts/s in an aperture around the line."""
+def measured_line_counts(img, xp, yp, half=18, ap=14):
+    """Background-subtracted counts/s in a ±ap aperture around the line.
+
+    Background = plane fit to the box border ring, subtracted; the aperture is
+    made large enough to capture most of the PSF (EE95 ~1.8″ ≈ 16 px at the red
+    end), so measured/predicted ≈ the aperture-captured fraction (≤1)."""
     got = cut_box(img, xp, yp, half)
     if got is None:
         return np.nan
@@ -208,44 +212,68 @@ def measured_line_counts(img, xp, yp, half=8, ap_disp=6, ap_cross=4):
     coef, *_ = np.linalg.lstsq(A, box[edge], rcond=None)
     sub = box - (coef[0] + coef[1] * xx + coef[2] * yy)
     cy, cx = box.shape[0] // 2, box.shape[1] // 2
-    ap = sub[cy - ap_disp:cy + ap_disp + 1, cx - ap_cross:cx + ap_cross + 1]
-    return float(np.clip(ap, 0, None).sum())
+    return float(np.clip(sub[cy - ap:cy + ap + 1, cx - ap:cx + ap + 1], 0, None).sum())
 
 
-def fig_flux(img, res, lines, catalog_dir, sca, out):
+def _on_detector(x, y, edge_trim, naxis=4088):
+    """Predicted line at least `edge_trim` px inside the SCA (1-indexed FITS)."""
+    return (edge_trim + 1 <= x <= naxis - edge_trim) and \
+           (edge_trim + 1 <= y <= naxis - edge_trim)
+
+
+def print_line_fluxes(catalog_dir, sca, lines, exptime=190.22):
+    """Print the injected line fluxes: integrated FLAM and order-1 counts."""
+    pred = predicted_line_counts(catalog_dir, sca, lines)  # counts/s per line
+    prov = json.loads((Path(catalog_dir) / "provenance.json").read_text())
+    fscale = prov["flux_scale_F158_maggies"]
+    print(f"\nInjected line fluxes (SCA {sca}, order 1; every star identical):")
+    print(f"  flux_scale = {fscale:.3e} maggies;  exptime = {exptime:.1f} s")
+    print("  line  center[Å]  amp  ∫FLAM[erg/s/cm²]  counts/s   counts/exp")
+    for row in lines:
+        c, fw, amp = row["center_A"], row["fwhm_A"], row["amp_rel"]
+        sig = fw / 2.3548
+        int_flam = fscale * amp * (FLAM_0AB_COEFF / c**2) * np.sqrt(2 * np.pi) * sig
+        cps = pred[int(row["line_id"])]
+        print(f"   {int(row['line_id'])}   {c:7.0f}   {amp:4.1f}  {int_flam:.3e}"
+              f"      {cps:7.3f}   {cps*exptime:8.1f}")
+
+
+def fig_flux(img, res, lines, catalog_dir, sca, out, edge_trim=50):
     pred = predicted_line_counts(catalog_dir, sca, lines)
     rows = []
     for _, r in res.iterrows():
         if not np.isfinite(r.x_meas):
             continue
+        if not _on_detector(r.x_pred_jax, r.y_pred_jax, edge_trim):
+            continue                                   # trim SCA edges
         meas = measured_line_counts(img, r.x_pred_jax, r.y_pred_jax)
         rows.append((r.line_id, r.center_A, pred[int(r.line_id)], meas))
     t = pd.DataFrame(rows, columns=["line_id", "center_A", "pred", "meas"])
+    t["frac"] = t.meas / t.pred
+    slope = np.sum(t.pred * t.meas) / np.sum(t.pred**2)
     fig, ax = plt.subplots(1, 2, figsize=(12, 5))
     sc = ax[0].scatter(t.pred, t.meas, c=t.center_A, s=12, cmap="viridis")
     lo, hi = t.pred.min(), t.pred.max()
-    slope = np.sum(t.pred * t.meas) / np.sum(t.pred**2)
-    ax[0].plot([lo, hi], [slope * lo, slope * hi], "k--",
-               label=f"aperture fraction {slope:.2f}")
+    ax[0].plot([lo, hi], [slope * lo, slope * hi], "k--", label=f"slope {slope:.3f}")
+    ax[0].plot([lo, hi], [lo, hi], "r:", lw=.8, label="1:1")
     ax[0].set_xlabel("predicted line counts/s (SED × sensitivity × dλ)")
-    ax[0].set_ylabel("extracted counts/s (aperture)")
-    ax[0].set_title("extracted vs predicted line flux (SCA 5)")
+    ax[0].set_ylabel("extracted counts/s (±14 px aperture)")
+    ax[0].set_title(f"extracted vs predicted line flux (SCA {sca}, "
+                    f"≥{edge_trim} px from edge)")
     ax[0].legend(); plt.colorbar(sc, ax=ax[0], label="wavelength [Å]")
-    # per-line ratio measured/predicted (normalized to its mean → tests relative flux)
-    t["ratio"] = t.meas / t.pred / slope
     for lid, g in t.groupby("line_id"):
-        ax[1].scatter(g.center_A + np.random.uniform(-80, 80, len(g)), g.ratio, s=10)
-        ax[1].scatter(g.center_A.iloc[0], g.ratio.median(), marker="_", s=700, c="k", zorder=5)
+        ax[1].scatter(g.center_A + np.random.uniform(-80, 80, len(g)), g.frac, s=10)
+        ax[1].scatter(g.center_A.iloc[0], g.frac.median(), marker="_", s=700, c="k", zorder=5)
     ax[1].axhline(1, color="k", lw=.5)
-    ax[1].set_ylim(0.7, 1.3); ax[1].set_xlabel("line center [Å]")
-    ax[1].set_ylabel("extracted / predicted  (÷ aperture fraction)")
-    ax[1].set_title("relative flux agreement per line")
+    ax[1].set_ylim(0.7, 1.05); ax[1].set_xlabel("line center [Å]")
+    ax[1].set_ylabel("extracted / predicted (aperture fraction)")
+    ax[1].set_title("aperture-captured fraction vs wavelength")
     fig.tight_layout(); fig.savefig(out, dpi=120); plt.close(fig)
     print("saved", out)
-    print("  aperture fraction (slope): %.3f" % slope)
-    print("  per-line median extracted/predicted (÷slope):")
+    print("  overall slope (aperture fraction): %.3f  (n=%d, edge_trim=%d px)"
+          % (slope, len(t), edge_trim))
     for lid, g in t.groupby("line_id"):
-        print(f"    line {lid} ({g.center_A.iloc[0]:.0f}Å): {g.ratio.median():.3f}")
+        print(f"    line {lid} ({g.center_A.iloc[0]:.0f}Å): frac {g.frac.median():.3f}")
 
 
 def main():
@@ -259,15 +287,22 @@ def main():
     p.add_argument("--outdir", required=True)
     p.add_argument("--zoom", type=int, nargs=4, default=[2400, 2900, 600, 1550],
                    help="x0 x1 y0 y1 (0-indexed) for the SCA zoom panel.")
+    p.add_argument("--edge-trim", type=int, default=50,
+                   help="Drop lines within this many px of the SCA edge (flux).")
+    p.add_argument("--flux-only", action="store_true",
+                   help="Only (re)make the flux figure + print line fluxes.")
     args = p.parse_args()
 
     np.random.seed(0)
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
     img, res, lines = load(args.sca_fits, args.residuals, args.catalog_dir, args.sca)
-    fig_sca_overview(img, res, args.zoom, outdir / "fig_sca_overview.png")
-    fig_line_boxes(img, res, args.star, args.half, outdir / "fig_line_boxes.png")
-    fig_centroiding(img, res, args.star, args.half, outdir / "fig_centroiding.png")
-    fig_flux(img, res, lines, args.catalog_dir, args.sca, outdir / "fig_line_flux.png")
+    print_line_fluxes(args.catalog_dir, args.sca, lines)
+    if not args.flux_only:
+        fig_sca_overview(img, res, args.zoom, outdir / "fig_sca_overview.png")
+        fig_line_boxes(img, res, args.star, args.half, outdir / "fig_line_boxes.png")
+        fig_centroiding(img, res, args.star, args.half, outdir / "fig_centroiding.png")
+    fig_flux(img, res, lines, args.catalog_dir, args.sca, outdir / "fig_line_flux.png",
+             edge_trim=args.edge_trim)
 
 
 if __name__ == "__main__":
