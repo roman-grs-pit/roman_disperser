@@ -17,7 +17,7 @@ pixi run python scripts/build_source_catalog.py --sims 1-5 \
 """
 
 import argparse
-import sys, os
+import sys, os, gc
 import time
 from glob import glob
 from pathlib import Path
@@ -72,6 +72,8 @@ INNER_CHUNK_SOURCES = 10
 MAG_CUT = 27
 
 SED_TEMPLATE = Path(os.getenv("github_dir")) / Path("galacticus_sed_calculator/data/nodePropertyExtractorSED_Nt50_NZ11_ageMinimum0.001.hdf5")
+
+MP_CHUNK_SIZE = 1000
 
 # ---------------------------------------------------------------------------
 # Parquet schema
@@ -336,9 +338,7 @@ def get_sed_calc():
 
     return calc
 
-def compute_raw_seds_fnu(hdf5_path, hdf5_indices, sed_component='disk'):
-
-    calc = get_sed_calc()
+def compute_raw_seds_fnu(hdf5_path, hdf5_indices, calc, sed_component='disk'):
 
     sed_list = []
 
@@ -376,7 +376,7 @@ def compute_raw_seds_fnu(hdf5_path, hdf5_indices, sed_component='disk'):
     return sed_list
 
 
-def process_galaxy_partition(mock, sed_component='disk'):
+def process_galaxy_partition(mock, zarr_path, sed_component='disk'):
     """Process one galaxy partition (one HDF5 sub-file).
 
     Uses vectorized f_ν → FLAM conversion instead of per-source synphot calls.
@@ -389,6 +389,10 @@ def process_galaxy_partition(mock, sed_component='disk'):
 
     output = "/Lightcone/Output1/nodeData"
     dustNode = "/Lightcone/Output1/dustAttenuatedNodeData/"
+    mock_fn = os.path.basename(mock)
+
+    calc = get_sed_calc()
+    zarr_store = zarr.open(str(zarr_path), mode='a')
 
     with h5py.File(mock) as f:
         
@@ -402,8 +406,8 @@ def process_galaxy_partition(mock, sed_component='disk'):
         randoms = f[output]["randomUniform"][:][mask]
 
         # assign indices
-        n = len(ra)
-        hdf5_indices = np.arange(n)
+        n_src = len(ra)
+        hdf5_indices = np.where(mask)[0]
 
         # Set positiona_angle and ba_ratio 
         # DO NOT use pa for position angle variable as it collides with pyarrow.parquet import
@@ -412,7 +416,7 @@ def process_galaxy_partition(mock, sed_component='disk'):
         if sed_component=='spheroid':
             half_light_radii = f[output]["spheroidRadius"][:][mask]
             sersic_idx = 4
-            ba_ratio = [1] * n # b/a=1 for bulge
+            ba_ratio = [1] * n_src # b/a=1 for bulge
         else:
             half_light_radii = f[output]["diskRadius"][:][mask]
             sersic_idx = 1
@@ -421,42 +425,71 @@ def process_galaxy_partition(mock, sed_component='disk'):
             sel = ba_ratio < 0.1
             ba_ratio[sel] = 0.1 # enfore disk height = 10% disk radius
 
-        # Compute seds using Galacticus SED Calculator    
-        galaxy_seds = compute_raw_seds_fnu(mock, hdf5_indices, sed_component=sed_component)
+        za = zarr_store.create_array(
+            f"galaxy_seds/sim_{mock_fn}/{sed_component}",
+            shape=(n_src, N_WL),
+            chunks=(INNER_CHUNK_SOURCES, N_WL),
+            dtype=np.float32,
+            compressors=COMPRESSOR,
+            attributes={
+            "units": "FLAM (erg/s/cm^2/Å, apparent)",
+            "axes": ["sed_index", "wavelength"],
+            "frame": "observed",
+            "n_sources": n_src,
+        },
+        )
 
-        # Compute magnitudes
-        f_maggies = {}
-        for bp in ("f158", "f106", "f129"):
-            f_maggies[bp] = calculate_magnitude(galaxy_seds, bp)
+        # 2. Process in blocks
+        f_maggies = {"f158": [], "f106": [], "f129": []}
+        for start_idx in range(0, n_src, MP_CHUNK_SIZE):
+            end_idx = min(start_idx + MP_CHUNK_SIZE, n_src)
+            chunk_indices = hdf5_indices[start_idx:end_idx]
+            
+            # This only processes 2,000 galaxies at a time
+            chunk_seds = compute_raw_seds_fnu(mock, chunk_indices, calc, sed_component=sed_component)
+            
+            # Write this block directly to its slice in the Zarr array on disk
+            za[start_idx:end_idx, :] = chunk_seds
+            
+            for bp in ("f158", "f106", "f129"):
+                f_maggies[bp].append(calculate_magnitude(WAVELENGTHS, chunk_seds, bp))
+
+            # 3. Aggressively clear memory before the next loop iteration
+            del chunk_seds
+            gc.collect()  # Forces Python to dump the intermediate object bloat
+
+        F158_arr = np.concatenate(f_maggies["f158"]) if n_src > 0 else np.empty(0, dtype=np.float32)
+        F106_arr = np.concatenate(f_maggies["f106"]) if n_src > 0 else np.empty(0, dtype=np.float32)
+        F129_arr = np.concatenate(f_maggies["f129"]) if n_src > 0 else np.empty(0, dtype=np.float32)
 
         # Build metadata table
         galaxy_table = pa.table(
             {
                 "ra": ra,
                 "dec": dec,
-                "type": ["SER"] * n,
-                "n": [sersic_idx] * n,
-                "disk_spheroid": [sed_component] * n,
+                "type": ["SER"] * n_src,
+                "n": [sersic_idx] * n_src,
+                "disk_spheroid": [sed_component] * n_src,
                 "half_light_radius": half_light_radii,
                 "pa": position_angle,
                 "ba": ba_ratio,
-                "F158": f_maggies["f158"],
-                "F106": f_maggies["f106"],
-                "F129": f_maggies["f129"],
+                "F158": F158_arr,
+                "F106": F106_arr,
+                "F129": F129_arr,
                 "z_obs": z_obs,
                 "z_cosmo": z_cosmo,
-                "sed_index": np.arange(n, dtype=np.int32),
-                "flux_scale": np.ones(n, dtype=np.float32),
-                "sim": [os.path.basename(mock)] * n,
+                "sed_index": np.arange(n_src, dtype=np.int32),
+                "flux_scale": np.ones(n_src, dtype=np.float32),
+                "sim": [mock_fn] * n_src,
                 "src_index": hdf5_indices,
                 "randoms": list(randoms),
             },
             schema=make_parquet_schema(),
         )
-    return galaxy_table, galaxy_seds
+    return galaxy_table
 
 
-def process_sim_worker(mock, sed_component):
+def process_sim_worker(mock, zarr_path, sed_component):
     """Worker function: process a single sim completely.
     
     Each worker process has its own HDF5 file handle (no contention).
@@ -467,19 +500,19 @@ def process_sim_worker(mock, sed_component):
 
     t0 = time.time()
     try:
-        galaxy_table, galaxy_seds = process_galaxy_partition(
-            mock, sed_component=sed_component
+        galaxy_table = process_galaxy_partition(
+            mock, zarr_path, sed_component=sed_component
         )
         dt = time.time() - t0
         
         if galaxy_table is not None:
             print(f"           Processed in {dt:.1f}s")
-            return galaxy_table, galaxy_seds, mock_fn, sed_component
+            return galaxy_table, mock_fn, sed_component
         
     except Exception as e:
         print(f"  sim {mock_fn}/{sed_component}: ERROR - {e}")
 
-    return None, None, mock_fn, sed_component
+    return None, mock_fn, sed_component
 
 
 # ---------------------------------------------------------------------------
@@ -667,7 +700,7 @@ def main():
 
     # Determine number of workers to use based on available memory
     total_mem = psutil.virtual_memory().total
-    per_process_mem = 16 * 1024**3  # estimate ~16 GB per worker based on test case for 4sqDegMocks
+    per_process_mem = 2 * 1024**3  # estimate ~2 GB per worker based on test case for 4sqDegMocks
     max_workers = max(1, total_mem // per_process_mem) 
 
     # Use ProcessPoolExecutor for cleaner API
@@ -675,26 +708,24 @@ def main():
         # Submit all sim jobs
         if sed_component=="both":
             futures = {
-                executor.submit(process_sim_worker, mock, component): None
+                executor.submit(process_sim_worker, mock, output_dir/"seds.zarr", component): None
                 for mock in galaxy_mocks
                 for component in ('disk', 'spheroid')
             }
         else:
             futures = {
-                executor.submit(process_sim_worker, mock, sed_component): None
+                executor.submit(process_sim_worker, mock, output_dir/"seds.zarr", sed_component): None
                 for mock in galaxy_mocks
             }
         
         # Collect results as they complete (order doesn't matter)
         for future in as_completed(futures):
-            galaxy_table, galaxy_seds, mock_fn, sed_component = future.result()
+            galaxy_table, mock_fn, sed_component = future.result()
 
             if galaxy_table is not None:
-                write_galaxy_partition(zarr_store, mock_fn, sed_component, galaxy_seds)
                 metadata_tables.append(galaxy_table)
                 n_partitions += 1
 
-            del galaxy_table, galaxy_seds
             del futures[future] # free cached result inside Futures
 
     # --- Write outputs ---
@@ -703,7 +734,8 @@ def main():
         sys.exit(1)
 
     # Finalize Zarr store
-    finalize_zarr_store(zarr_store, n_partitions)
+    zarr_store_final = zarr.open(str(output_dir / "seds.zarr"), mode='a')
+    finalize_zarr_store(zarr_store_final, n_partitions)
 
     # Combine and write metadata
     combined = pa.concat_tables(metadata_tables)
