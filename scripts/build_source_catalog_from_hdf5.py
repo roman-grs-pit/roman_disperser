@@ -126,7 +126,7 @@ def make_parquet_schema():
 # Star processing
 # ---------------------------------------------------------------------------
 
-def calculate_magnitude(spectrum, bandpass: str, return_maggies: bool = True):
+def calculate_magnitude(wavelength, fluxes, bandpass: str, return_maggies: bool = True):
     import synphot as syn
     from roman_disperser.paths import synphot_dir
 
@@ -134,9 +134,10 @@ def calculate_magnitude(spectrum, bandpass: str, return_maggies: bool = True):
     bp = syn.SpectralElement.from_file(str(path))
 
     mag = []
-    for spec in spectrum:
+    for flux in fluxes:
+        spec = syn.SourceSpectrum(syn.models.Empirical1D, points=wavelength, lookup_table=flux)
         obs = syn.Observation(spec, bp, force='taper')
-        mag.append(obs.effstim(flux_unit=u.ABmag))
+        mag.append(obs.effstim(flux_unit=u.ABmag).value)
 
     if return_maggies:
         return (10.0 ** (-0.4 * np.asarray(np.asarray(mag)))).astype(np.float32)
@@ -235,7 +236,7 @@ def process_stars(star_dir, wavelengths):
     f_maggies["f158"] = (10.0 ** (-0.4 * np.asarray(catalog["mag"]))).astype(np.float32)
 
     for bp in ("f106", "f129"):
-        f_maggies[bp] = calculate_magnitude(star_seds, bp)
+        f_maggies[bp] = calculate_magnitude(wavelengths, star_seds, bp)
 
     rng = np.random.default_rng(42)
 
@@ -251,8 +252,8 @@ def process_stars(star_dir, wavelengths):
             "pa": np.zeros(n_stars, dtype=np.float32),
             "ba": np.ones(n_stars, dtype=np.float32),
             "F158": f_maggies["f158"],
-            "F106": f_maggies["f106"],
-            "F129": f_maggies["129"],
+            "F106": f_maggies["f106"][sed_indices],
+            "F129": f_maggies["f129"][sed_indices],
             "z_obs": np.zeros(n_stars, dtype=np.float32),
             "z_cosmo": np.zeros(n_stars, dtype=np.float32),
             "sed_index": sed_indices,
