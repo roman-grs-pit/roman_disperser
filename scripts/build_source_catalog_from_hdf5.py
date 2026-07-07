@@ -133,13 +133,15 @@ def calculate_magnitude(spectrum, bandpass: str, return_maggies: bool = True):
     path = synphot_dir() / f"roman_wfi_{bandpass}.fits"
     bp = syn.SpectralElement.from_file(str(path))
 
-    obs = syn.Observation(spectrum, bp, force='taper')
-    mag = obs.effstim(flux_unit=u.ABmag)
+    mag = []
+    for spec in spectrum:
+        obs = syn.Observation(spec, bp, force='taper')
+        mag.append(obs.effstim(flux_unit=u.ABmag))
 
     if return_maggies:
-        return (10.0 ** (-0.4 * np.asarray(mag))).astype(np.float32)
+        return (10.0 ** (-0.4 * np.asarray(np.asarray(mag)))).astype(np.float32)
     
-    return mag
+    return np.asarray(mag)
 
 def load_star_catalog(star_dir):
     """Load star catalog and template file list.
