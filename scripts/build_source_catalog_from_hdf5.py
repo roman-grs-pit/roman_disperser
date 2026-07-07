@@ -127,13 +127,13 @@ def make_parquet_schema():
 # ---------------------------------------------------------------------------
 
 def calculate_magnitude(spectrum, bandpass: str, return_maggies: bool = True):
-    from synphot import Observation
-    import stsynphot as stsyn
+    import synphot as syn
+    from roman_disperser.paths import synphot_dir
 
-    bp = stsyn.band(f"roman, wfi, {bandpass}")
+    path = synphot_dir() / f"roman_wfi_{bandpass}.fits"
+    bp = syn.SpectralElement.from_file(str(path))
 
-    obs = Observation(spectrum, bp, force='taper')
-
+    obs = syn.Observation(spectrum, bp, force='taper')
     mag = obs.effstim(flux_unit=u.ABmag)
 
     if return_maggies:
