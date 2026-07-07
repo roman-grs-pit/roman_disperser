@@ -135,16 +135,21 @@ def calculate_magnitude(wavelength, fluxes, bandpass: str, return_maggies: bool 
     path = synphot_dir() / f"roman_wfi_{bandpass}.fits"
     bp = syn.SpectralElement.from_file(str(path))
 
-    mag = []
+    all_mag = []
     for flux in fluxes:
         spec = syn.SourceSpectrum(syn.models.Empirical1D, points=wavelength, lookup_table=flux)
         obs = syn.Observation(spec, bp, force='taper')
-        mag.append(obs.effstim(flux_unit=u.ABmag).value)
-
-    if return_maggies:
-        return (10.0 ** (-0.4 * np.asarray(np.asarray(mag)))).astype(np.float32)
-    
-    return np.asarray(mag)
+        try:
+            mag = obs.effstim(flux_unit=u.ABmag).value
+            if return_maggies:
+                all_mag.append((10.0 ** (-0.4 * mag)))
+            else:
+                all_mag.append(mag)
+        except syn.exceptions.SynphotError:
+            if return_maggies:
+                all_mag.append(0 if return_maggies else np.inf)
+        
+    return np.asarray(all_mag, dtype=np.float32)
 
 def load_star_catalog(star_dir):
     """Load star catalog and template file list.
@@ -396,14 +401,30 @@ def process_galaxy_partition(mock, zarr_path, sed_component='disk'):
 
     with h5py.File(mock) as f:
         
-        mask = f[dustNode]["apparentMagnitudeRomanWFI:F087"][:] <= MAG_CUT
+        total_mag = f[dustNode]["apparentMagnitudeRomanWFI:F087"][:]
+        mask = total_mag <= MAG_CUT
+
+        if sed_component=='spheroid':
+            mask &= f[output]["spheroidRadius"][:] > 0
+            half_light_radii = mask
+            sersic_idx = 4
+            ba_ratio = [1] * n_src # b/a=1 for bulge
+            randoms = f[output]["randomUniform"][:][mask]
+        else:
+            mask &= f[output]["diskRadius"][:] > 0
+            half_light_radii = f[output]["diskRadius"][:][mask]
+            sersic_idx = 1
+
+            randoms = f[output]["randomUniform"][:][mask]
+            ba_ratio = randoms[:, 2]
+            sel = ba_ratio < 0.1
+            ba_ratio[sel] = 0.1 # enfore disk height = 10% disk radius
 
         # Read galaxy properties from hdf5 file
         ra = f[output]["rightAscension"][:][mask]
         dec = f[output]["declination"][:][mask]
         z_obs = f[output]["lightconeRedshiftObserved"][:][mask]
         z_cosmo = f[output]["lightconeRedshiftCosmological"][:][mask]
-        randoms = f[output]["randomUniform"][:][mask]
 
         # assign indices
         n_src = len(ra)
@@ -412,18 +433,6 @@ def process_galaxy_partition(mock, zarr_path, sed_component='disk'):
         # Set positiona_angle and ba_ratio 
         # DO NOT use pa for position angle variable as it collides with pyarrow.parquet import
         position_angle = randoms[:, 0] * (2 * np.pi)
-
-        if sed_component=='spheroid':
-            half_light_radii = f[output]["spheroidRadius"][:][mask]
-            sersic_idx = 4
-            ba_ratio = [1] * n_src # b/a=1 for bulge
-        else:
-            half_light_radii = f[output]["diskRadius"][:][mask]
-            sersic_idx = 1
-
-            ba_ratio = randoms[:, 2]
-            sel = ba_ratio < 0.1
-            ba_ratio[sel] = 0.1 # enfore disk height = 10% disk radius
 
         za = zarr_store.create_array(
             f"galaxy_seds/sim_{mock_fn}/{sed_component}",
