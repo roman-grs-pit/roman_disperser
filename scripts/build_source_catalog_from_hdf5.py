@@ -407,24 +407,16 @@ def process_galaxy_partition(mock, zarr_path, sed_component='disk'):
         if sed_component=='spheroid':
             mask &= f[output]["spheroidRadius"][:] > 0
             half_light_radii = mask
-            sersic_idx = 4
-            ba_ratio = [1] * n_src # b/a=1 for bulge
-            randoms = f[output]["randomUniform"][:][mask]
-        else:
+        elif sed_component=='disk':
             mask &= f[output]["diskRadius"][:] > 0
             half_light_radii = f[output]["diskRadius"][:][mask]
-            sersic_idx = 1
-
-            randoms = f[output]["randomUniform"][:][mask]
-            ba_ratio = randoms[:, 2]
-            sel = ba_ratio < 0.1
-            ba_ratio[sel] = 0.1 # enfore disk height = 10% disk radius
 
         # Read galaxy properties from hdf5 file
         ra = f[output]["rightAscension"][:][mask]
         dec = f[output]["declination"][:][mask]
         z_obs = f[output]["lightconeRedshiftObserved"][:][mask]
         z_cosmo = f[output]["lightconeRedshiftCosmological"][:][mask]
+        randoms = f[output]["randomUniform"][:][mask]
 
         # assign indices
         n_src = len(ra)
@@ -433,6 +425,16 @@ def process_galaxy_partition(mock, zarr_path, sed_component='disk'):
         # Set positiona_angle and ba_ratio 
         # DO NOT use pa for position angle variable as it collides with pyarrow.parquet import
         position_angle = randoms[:, 0] * (2 * np.pi)
+
+        if sed_component=='spheroid':
+            sersic_idx = 4
+            ba_ratio = [1] * n_src # b/a=1 for bulge
+            
+        elif sed_component=='disk':
+            sersic_idx = 1
+            ba_ratio = randoms[:, 2]
+            sel = ba_ratio < 0.1
+            ba_ratio[sel] = 0.1 # enfore disk height = 10% disk radius
 
         za = zarr_store.create_array(
             f"galaxy_seds/sim_{mock_fn}/{sed_component}",
@@ -734,6 +736,9 @@ def main():
             if galaxy_table is not None:
                 metadata_tables.append(galaxy_table)
                 n_partitions += 1
+
+                if n_partitions % 10 == 0:
+                    print(n_partitions, " completed")
 
             del futures[future] # free cached result inside Futures
 
