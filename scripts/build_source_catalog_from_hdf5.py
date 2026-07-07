@@ -69,6 +69,8 @@ COMPRESSOR = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
 # Sharding: inner chunk size (sources per chunk)
 INNER_CHUNK_SOURCES = 10
 
+MAG_CUT = 27
+
 SED_TEMPLATE = Path(os.getenv("github_dir")) / Path("galacticus_sed_calculator/data/nodePropertyExtractorSED_Nt50_NZ11_ageMinimum0.001.hdf5")
 
 # ---------------------------------------------------------------------------
@@ -96,7 +98,13 @@ def make_parquet_schema():
                  metadata={"unit": "", "description": "Minor-to-major axis ratio (1 for PSF)"}),
         pa.field("F158", pa.float32(),
                  metadata={"unit": "maggies",
-                           "description": "F158 apparent flux (maggies; mag = -2.5*log10(F158))"}),
+                           "description": "F158/H apparent flux (maggies; mag = -2.5*log10(F158))"}),
+        pa.field("F106", pa.float32(),
+                 metadata={"unit": "maggies",
+                           "description": "F106/Y apparent flux (maggies; mag = -2.5*log10(F106))"}),
+        pa.field("F129", pa.float32(),
+                 metadata={"unit": "maggies",
+                           "description": "F129/J apparent flux (maggies; mag = -2.5*log10(F129))"}),
         pa.field("z_obs", pa.float32(),
                  metadata={"description": "Observed redshift (0 for stars)"}),
         pa.field("z_cosmo", pa.float32(),
@@ -117,6 +125,21 @@ def make_parquet_schema():
 # ---------------------------------------------------------------------------
 # Star processing
 # ---------------------------------------------------------------------------
+
+def calculate_magnitude(spectrum, bandpass: str, return_maggies: bool = True):
+    from synphot import Observation
+    import stsynphot as stsyn
+
+    bp = stsyn.band(f"roman, wfi, {bandpass}")
+
+    obs = Observation(spectrum, bp, force='taper')
+
+    mag = obs.effstim(flux_unit=u.ABmag)
+
+    if return_maggies:
+        return (10.0 ** (-0.4 * np.asarray(mag))).astype(np.float32)
+    
+    return mag
 
 def load_star_catalog(star_dir):
     """Load star catalog and template file list.
@@ -205,7 +228,12 @@ def process_stars(star_dir, wavelengths):
     sed_indices = np.array([index_map[t] for t in catalog["temp_idx"]], dtype=np.int32)
     # F158 is stored in maggies (linear flux); for stars this also serves as the
     # SED multiplier since templates are normalized to 0 ABmag F158 (1 maggie).
-    f158_maggies = (10.0 ** (-0.4 * catalog["mag"])).astype(np.float32)
+
+    f_maggies = {}
+    f_maggies["f158"] = (10.0 ** (-0.4 * np.asarray(catalog["mag"]))).astype(np.float32)
+
+    for bp in ("f106", "f129"):
+        f_maggies[bp] = calculate_magnitude(star_seds, bp)
 
     rng = np.random.default_rng(42)
 
@@ -220,11 +248,13 @@ def process_stars(star_dir, wavelengths):
             "half_light_radius": np.zeros(n_stars, dtype=np.float32),
             "pa": np.zeros(n_stars, dtype=np.float32),
             "ba": np.ones(n_stars, dtype=np.float32),
-            "F158": f158_maggies,
+            "F158": f_maggies["f158"],
+            "F106": f_maggies["f106"],
+            "F129": f_maggies["129"],
             "z_obs": np.zeros(n_stars, dtype=np.float32),
             "z_cosmo": np.zeros(n_stars, dtype=np.float32),
             "sed_index": sed_indices,
-            "flux_scale": f158_maggies,
+            "flux_scale": f_maggies["f158"],
             "sim": ["PSF"] * n_stars,
             "src_index": np.arange(n_stars, dtype=np.int32),
             "randoms": list(rng.uniform(0, 1, (n_stars, 5))),
@@ -358,14 +388,15 @@ def process_galaxy_partition(mock, sed_component='disk'):
     dustNode = "/Lightcone/Output1/dustAttenuatedNodeData/"
 
     with h5py.File(mock) as f:
-        # Read galaxy properties from hdf5 file
-        ra = f[output]["rightAscension"][:]
-        dec = f[output]["declination"][:]
-        z_obs = f[output]["lightconeRedshiftObserved"][:]
-        z_cosmo = f[output]["lightconeRedshiftCosmological"][:]
-        randoms = f[output]["randomUniform"][:]
         
-        mag_f158 = f[dustNode]["apparentMagnitudeRomanWFI:F087"][:]
+        mask = f[dustNode]["apparentMagnitudeRomanWFI:F087"][:] <= MAG_CUT
+
+        # Read galaxy properties from hdf5 file
+        ra = f[output]["rightAscension"][:][mask]
+        dec = f[output]["declination"][:][mask]
+        z_obs = f[output]["lightconeRedshiftObserved"][:][mask]
+        z_cosmo = f[output]["lightconeRedshiftCosmological"][:][mask]
+        randoms = f[output]["randomUniform"][:][mask]
 
         # assign indices
         n = len(ra)
@@ -374,22 +405,28 @@ def process_galaxy_partition(mock, sed_component='disk'):
         # Set positiona_angle and ba_ratio 
         # DO NOT use pa for position angle variable as it collides with pyarrow.parquet import
         position_angle = randoms[:, 0] * (2 * np.pi)
-        ba_ratio = randoms[:, 2]
-        sel = ba_ratio < 0.1
-        ba_ratio[sel] = 0.1 # enfore disk height = 10% disk radius
 
         if sed_component=='spheroid':
-            half_light_radii = f[output]["spheroidRadius"][:]
+            half_light_radii = f[output]["spheroidRadius"][:][mask]
             sersic_idx = 4
+            ba_ratio = [1] * n # b/a=1 for bulge
         else:
-            half_light_radii = f[output]["diskRadius"][:]
+            half_light_radii = f[output]["diskRadius"][:][mask]
             sersic_idx = 1
+
+            ba_ratio = randoms[:, 2]
+            sel = ba_ratio < 0.1
+            ba_ratio[sel] = 0.1 # enfore disk height = 10% disk radius
 
         # Compute seds using Galacticus SED Calculator    
         galaxy_seds = compute_raw_seds_fnu(mock, hdf5_indices, sed_component=sed_component)
 
+        # Compute magnitudes
+        f_maggies = {}
+        for bp in ("f158", "f106", "f129"):
+            f_maggies[bp] = calculate_magnitude(galaxy_seds, bp)
+
         # Build metadata table
-        f158_maggies = (10.0 ** (-0.4 * np.asarray(mag_f158))).astype(np.float32)
         galaxy_table = pa.table(
             {
                 "ra": ra,
@@ -400,7 +437,9 @@ def process_galaxy_partition(mock, sed_component='disk'):
                 "half_light_radius": half_light_radii,
                 "pa": position_angle,
                 "ba": ba_ratio,
-                "F158": f158_maggies,
+                "F158": f_maggies["f158"],
+                "F106": f_maggies["f106"],
+                "F129": f_maggies["f129"],
                 "z_obs": z_obs,
                 "z_cosmo": z_cosmo,
                 "sed_index": np.arange(n, dtype=np.int32),
