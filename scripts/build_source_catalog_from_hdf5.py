@@ -16,6 +16,17 @@ pixi run python scripts/build_source_catalog.py --sims 1-5 \
     --output-dir data/catalogs
 """
 
+# TODO !!!!!!
+#
+# AGN in the hdf5? What did Ferzem do? Is the AGN flux include in the overall magnitude?
+# Do we include the AGN in the disk spectrum? Or, do we treat it as it's own point-source?
+#
+# Cut components on even fainter mag_cut?
+#
+# Put half-light radii as an angular size (see romanisim docs; scale by angular diameter distance)
+#
+# TODO !!!!!!
+
 import argparse
 import sys, os, gc
 import time
@@ -25,6 +36,9 @@ from functools import cache
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import defaultdict
 
+import synphot as syn
+from roman_disperser.paths import synphot_dir
+from roman_disperser.refdata import get_f158_band
 import psutil
 import h5py
 import numpy as np
@@ -129,15 +143,13 @@ def make_parquet_schema():
 # ---------------------------------------------------------------------------
 
 def calculate_magnitude(wavelength, fluxes, bandpass: str, return_maggies: bool = True):
-    import synphot as syn
-    from roman_disperser.paths import synphot_dir
 
     path = synphot_dir() / f"roman_wfi_{bandpass}.fits"
     bp = syn.SpectralElement.from_file(str(path))
 
     all_mag = []
     for flux in fluxes:
-        spec = syn.SourceSpectrum(syn.models.Empirical1D, points=wavelength, lookup_table=flux)
+        spec = syn.SourceSpectrum(syn.models.Empirical1D, points=wavelength * u.AA, lookup_table=flux * syn.units.FLAM)
         obs = syn.Observation(spec, bp, force='taper')
         try:
             mag = obs.effstim(flux_unit=u.ABmag).value
@@ -146,8 +158,7 @@ def calculate_magnitude(wavelength, fluxes, bandpass: str, return_maggies: bool 
             else:
                 all_mag.append(mag)
         except syn.exceptions.SynphotError:
-            if return_maggies:
-                all_mag.append(0 if return_maggies else np.inf)
+            all_mag.append(0 if return_maggies else np.inf)
         
     return np.asarray(all_mag, dtype=np.float32)
 
@@ -184,9 +195,6 @@ def build_star_seds(star_dir, template_files, unique_indices, wavelengths_angstr
     template_grid : ndarray [N_unique, N_wl] float32 in FLAM at 0 ABmag
     index_map : dict mapping template_index -> row in template_grid
     """
-    import synphot as syn
-    from astropy import units as u
-    from roman_disperser.refdata import get_f158_band
 
     f158_band = get_f158_band()
     wl_qty = wavelengths_angstrom * u.AA
@@ -297,7 +305,6 @@ def compute_f158_normalization(wavelengths_angstrom):
     fnu_to_flam : ndarray [N_wl] - conversion factor from f_ν to f_λ at each wavelength
     bandpass_weights : ndarray [N_wl] - F158 throughput × λ × dλ for synthetic flux
     """
-    from roman_disperser.refdata import get_f158_band
 
     f158_band = get_f158_band()
 
@@ -343,7 +350,7 @@ def get_sed_calc():
 
     return calc
 
-def compute_raw_seds_fnu(hdf5_path, hdf5_indices, calc, sed_component='disk'):
+def compute_raw_seds_flam(hdf5_path, hdf5_indices, calc, sed_component='disk'):
 
     sed_list = []
 
@@ -401,7 +408,7 @@ def process_galaxy_partition(mock, zarr_path, sed_component='disk'):
 
     with h5py.File(mock) as f:
         
-        total_mag = f[dustNode]["apparentMagnitudeRomanWFI:F087"][:]
+        total_mag = f[dustNode]["apparentMagnitudeRomanWFI:F158"][:]
         mask = total_mag <= MAG_CUT
 
         if sed_component=='spheroid':
@@ -458,7 +465,7 @@ def process_galaxy_partition(mock, zarr_path, sed_component='disk'):
             chunk_indices = hdf5_indices[start_idx:end_idx]
             
             # This only processes 2,000 galaxies at a time
-            chunk_seds = compute_raw_seds_fnu(mock, chunk_indices, calc, sed_component=sed_component)
+            chunk_seds = compute_raw_seds_flam(mock, chunk_indices, calc, sed_component=sed_component)
             
             # Write this block directly to its slice in the Zarr array on disk
             za[start_idx:end_idx, :] = chunk_seds
