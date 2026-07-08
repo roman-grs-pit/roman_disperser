@@ -712,8 +712,8 @@ def main():
 
     # Determine number of workers to use based on available memory
     total_mem = psutil.virtual_memory().total
-    per_process_mem = 1 * 1024**3  # estimate ~2 GB per worker based on test case for 4sqDegMocks
-    max_workers = max(1, total_mem // per_process_mem) 
+    per_process_mem = 0.75 * 1024**3  # estimate ~0.75 GB per worker
+    max_workers = int(max(1, total_mem // per_process_mem))
 
     # Use ProcessPoolExecutor for cleaner API
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
