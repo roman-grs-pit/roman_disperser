@@ -406,10 +406,9 @@ def process_galaxy_partition(mock, zarr_path, sed_component='disk'):
 
         if sed_component=='spheroid':
             mask &= f[output]["spheroidRadius"][:] > 0
-            half_light_radii = mask
+            
         elif sed_component=='disk':
             mask &= f[output]["diskRadius"][:] > 0
-            half_light_radii = f[output]["diskRadius"][:][mask]
 
         # Read galaxy properties from hdf5 file
         ra = f[output]["rightAscension"][:][mask]
@@ -429,12 +428,14 @@ def process_galaxy_partition(mock, zarr_path, sed_component='disk'):
         if sed_component=='spheroid':
             sersic_idx = 4
             ba_ratio = [1] * n_src # b/a=1 for bulge
+            half_light_radii = f[output]["spheroidRadius"][:][mask]
             
         elif sed_component=='disk':
             sersic_idx = 1
             ba_ratio = randoms[:, 2]
             sel = ba_ratio < 0.1
             ba_ratio[sel] = 0.1 # enfore disk height = 10% disk radius
+            half_light_radii = f[output]["diskRadius"][:][mask]
 
         za = zarr_store.create_array(
             f"galaxy_seds/sim_{mock_fn}/{sed_component}",
@@ -711,7 +712,7 @@ def main():
 
     # Determine number of workers to use based on available memory
     total_mem = psutil.virtual_memory().total
-    per_process_mem = 2 * 1024**3  # estimate ~2 GB per worker based on test case for 4sqDegMocks
+    per_process_mem = 1 * 1024**3  # estimate ~2 GB per worker based on test case for 4sqDegMocks
     max_workers = max(1, total_mem // per_process_mem) 
 
     # Use ProcessPoolExecutor for cleaner API
