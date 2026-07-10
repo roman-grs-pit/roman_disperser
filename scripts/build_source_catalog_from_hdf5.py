@@ -430,14 +430,16 @@ def process_galaxy_partition(mock, zarr_path, sed_component='disk'):
         if sed_component=='spheroid':
             sersic_idx = 4
             ba_ratio = [1] * n_src # b/a=1 for bulge
-            half_light_radii = UNIT_COSMO.arcsec_per_kpc_proper(f[output]["spheroidRadius"][:][mask] / 10**3)
+            arcsec_per_kpc_proper = UNIT_COSMO.arcsec_per_kpc_proper(z_cosmo)
+            half_light_radii = (f[output]["spheroidRadius"][:][mask] / (10**3)) *  arcsec_per_kpc_proper
             
         elif sed_component=='disk':
             sersic_idx = 1
             ba_ratio = randoms[:, 2]
             sel = ba_ratio < 0.1
             ba_ratio[sel] = 0.1 # enfore disk height = 10% disk radius
-            half_light_radii = UNIT_COSMO.arcsec_per_kpc_proper(f[output]["diskRadius"][:][mask] / 10**3)
+            arcsec_per_kpc_proper = UNIT_COSMO.arcsec_per_kpc_proper(z_cosmo)
+            half_light_radii = (f[output]["diskRadius"][:][mask] / (10**3))  *  arcsec_per_kpc_proper
 
         za = zarr_store.create_array(
             f"galaxy_seds/sim_{mock_fn}/{sed_component}",
