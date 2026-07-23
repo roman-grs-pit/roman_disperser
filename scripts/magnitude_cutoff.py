@@ -66,9 +66,9 @@ import yaml
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-# AB zeropoint: f_nu = 3631 Jy = 3.631e-20 erg/s/cm^2/Hz
-# f_lambda = f_nu * c / lambda^2 = 0.10885 / lambda_A^2  [erg/s/cm^2/Å]
-AB_FLAM_CONST = 0.10885  # erg/s/cm^2/Å * Å^2, i.e. f_lam = AB_FLAM_CONST / lam_A^2
+# AB zeropoint f_lambda coefficient: f_lam = AB_FLAM_CONST / lam_A^2
+# [erg/s/cm^2/Å]; canonical value + derivation in roman_disperser.refdata.
+from roman_disperser.refdata import FLAM_0AB_COEFF as AB_FLAM_CONST
 
 # Standard Roman grism exposure time (seconds)
 EXPTIME = 190.22

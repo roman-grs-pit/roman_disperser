@@ -56,7 +56,8 @@ def main():
     p.add_argument("--out", required=True, help="Output figure path.")
     args = p.parse_args()
 
-    psfdir = os.path.expandvars("$ROMAN_DISPERSER_DATA/psf_cache")
+    from roman_disperser.paths import data_dir
+    psfdir = str(data_dir() / "psf_cache")
     recs = []
     curves = {}
     for sca in range(1, 19):

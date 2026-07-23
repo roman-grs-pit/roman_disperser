@@ -26,7 +26,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-FLAM_0AB_COEFF = 0.108866  # matches build_line_test_catalog
+from roman_disperser.refdata import FLAM_0AB_COEFF
 
 
 # --------------------------------------------------------------------------
@@ -181,7 +181,8 @@ def predicted_line_counts(catalog_dir, sca, lines):
     fscale = prov["flux_scale_F158_maggies"]
     cont = FLAM_0AB_COEFF / wl**2
     line_only = np.clip(sed - (0 if prov.get("no_continuum") else cont), 0, None)
-    sd = os.path.expandvars("$ROMAN_DISPERSER_DATA/sensitivities")
+    from roman_disperser.paths import data_dir
+    sd = str(data_dir() / "sensitivities")
     m = yaml.safe_load(open(os.path.join(sd, "sensitivity_map.yaml")))
     with fits.open(os.path.join(sd, m[f"SCA{sca}"]["1"])) as h:
         S = np.interp(wl, np.array(h[1].data["WAVELENGTH"], float),

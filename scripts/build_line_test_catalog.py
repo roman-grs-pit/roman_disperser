@@ -29,7 +29,7 @@ Spectrum construction (units, conventions)
 - Continuum: a flat-f_nu (AB-flat) source. By definition a flat-f_nu source has
   AB mag 0 in *every* band, so its FLAM is exactly
 
-      f_lambda(lambda) = f_nu(0 AB) * c / lambda^2 = 0.10887 / lambda_Å^2
+      f_lambda(lambda) = f_nu(0 AB) * c / lambda^2 = 0.108855 / lambda_Å^2
 
   (erg/s/cm^2/Å). This is the same relation used in `magnitude_cutoff.py`. The
   stored continuum is therefore the 0-mag anchor; `flux_scale = 10^(-0.4*mag)`
@@ -69,9 +69,9 @@ from zarr.codecs import BloscCodec
 # Catalog-standard wavelength grid (Angstroms).
 WL_MIN, WL_MAX, N_WL = 9000.0, 21000.0, 6001  # 2 Å spacing
 
-# f_lambda of a 0-AB-mag flat-f_nu source: f_nu(0 AB)=3631 Jy, f_l = f_nu c/l^2.
-# c = 2.99792458e18 Å/s, f_nu(0AB)=3.631e-20 erg/s/cm^2/Hz -> 0.108866 / l_Å^2.
-FLAM_0AB_COEFF = 0.108866  # erg/s/cm^2/Å, multiply by 1/lambda_Å^2
+# f_lambda of a 0-AB-mag flat-f_nu source; single source of truth in the
+# package (see roman_disperser.refdata for the derivation).
+from roman_disperser.refdata import FLAM_0AB_COEFF
 
 CONTINUUM_MAG = 20.0  # AB mag of the flat continuum in F158
 
@@ -140,7 +140,13 @@ def select_stars(meta_path, mag_limit, mag_eps=1e-4):
     is_star = df["type"] == "PSF"
     mag = -2.5 * np.log10(df["F158"].to_numpy(np.float64))
     keep = is_star & (mag <= mag_limit + mag_eps)
-    return df[keep].reset_index(drop=True)
+    df = df[keep]
+    # Capture the original source-catalog row index BEFORE reset_index, so the
+    # src_index provenance column really is "row in the source catalog" (the
+    # reference catalog carries no src_index column of its own).
+    if "src_index" not in df.columns:
+        df = df.assign(src_index=df.index.to_numpy(np.int32))
+    return df.reset_index(drop=True)
 
 
 # --------------------------------------------------------------------------
@@ -174,10 +180,9 @@ def write_catalog(out_dir, stars, wl_a, sed_row, continuum_mag):
         "sed_index": np.zeros(n, np.int32),
         "flux_scale": np.full(n, f158, np.float32),
         "sim": np.zeros(n, np.int16),
-        # Provenance: original row index in the source catalog, if available.
-        "src_index": stars.get(
-            "src_index", stars.index.to_series()
-        ).to_numpy(np.int32),
+        # Provenance: original row index in the source catalog (guaranteed by
+        # select_stars, which captures it before reset_index).
+        "src_index": stars["src_index"].to_numpy(np.int32),
     }
     schema = pa.schema([
         pa.field("ra", pa.float64(), metadata={"unit": "deg"}),
@@ -250,8 +255,8 @@ def write_sidecar(out_dir, centers, fwhms, amps, continuum_mag, provenance):
 def main():
     import os
 
-    default_src = os.path.expandvars(
-        "$ROMAN_DISPERSER_DATA/catalogs/metadata.parquet")
+    from roman_disperser.paths import data_dir
+    default_src = str(data_dir() / "catalogs" / "metadata.parquet")
 
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)

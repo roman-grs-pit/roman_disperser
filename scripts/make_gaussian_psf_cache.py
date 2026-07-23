@@ -43,7 +43,8 @@ def main():
     p.add_argument("--out-dir", required=True)
     args = p.parse_args()
 
-    src = os.path.expandvars("$ROMAN_DISPERSER_DATA/psf_cache")
+    from roman_disperser.paths import data_dir
+    src = str(data_dir() / "psf_cache")
     out = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
     for sca in args.scas:
         for order in ("GRISM0", "GRISM1"):
