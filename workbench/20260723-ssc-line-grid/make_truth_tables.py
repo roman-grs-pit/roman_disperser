@@ -40,6 +40,14 @@ import numpy as np
 import pandas as pd
 from astropy.table import Table
 
+# Truth positions are DOUBLE-precision evaluations of the optical model.
+# The rendering pipeline and checker run at JAX's default float32, whose
+# ULP at detector coordinates (~2000-4000 px) is ~0.5-1e-3 px; predictions
+# in residuals.parquet may therefore differ from these truth values by up
+# to ~1e-3 px. That jitter is numerical, not physical — the shipped truth
+# should not carry it. x64 must be enabled before any JAX array exists.
+import jax
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import roman_disperser.optical_model_jax as omj
 from roman_disperser.optical_model import RomanOpticalModel
@@ -57,11 +65,19 @@ def predict_batch(payload, xsca, ysca, lam_um):
 
     xsca, ysca: [N] undispersed positions; lam_um: [M] wavelengths (microns).
     Returns (xpix, ypix) each [N, M], 1-indexed FITS pixels.
+
+    trace_beam is elementwise over [n]-shaped inputs, so the (source, line)
+    grid is flattened to length N*M (sources repeated, lines tiled) and
+    reshaped back — the same per-element math as predict_jax's scalar calls.
     """
-    xf, yf = omj.sca_to_fpa(payload, jnp.asarray(xsca), jnp.asarray(ysca))
-    xm, ym = omj.trace_beam(payload, xf, yf, jnp.asarray(lam_um))
+    n, m = len(xsca), len(lam_um)
+    xs = jnp.asarray(np.repeat(np.asarray(xsca), m))
+    ys = jnp.asarray(np.repeat(np.asarray(ysca), m))
+    lam = jnp.asarray(np.tile(np.asarray(lam_um), n))
+    xf, yf = omj.sca_to_fpa(payload, xs, ys)
+    xm, ym = omj.trace_beam(payload, xf, yf, lam)
     xp, yp = omj.mpa_to_sca(payload, xm, ym)
-    return np.asarray(xp), np.asarray(yp)
+    return (np.asarray(xp).reshape(n, m), np.asarray(yp).reshape(n, m))
 
 
 def main():
