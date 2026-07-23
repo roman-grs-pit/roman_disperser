@@ -1,0 +1,13 @@
+# SSC line-grid campaign: lines-only SED, synthetic centred-Gaussian PSF
+# caches (FWHM 2.5 native px; see scripts/make_gaussian_psf_cache.py).
+# The psf_cache_dir MUST contain GRISM0+GRISM1 caches for all 18 SCAs before
+# a full-pointing run: get_or_make_psf_payload would silently generate real
+# STPSF caches for any missing SCA, poisoning the Gaussian control.
+output_dir: /mnt/roman-science/grs/line-tests-20260723/lines_gauss
+catalog_dir: /mnt/roman-science/grs/line-tests-20260723/catalog_lines
+seed: 42
+scas: all
+cone_radius: 0.6
+star_batch_size: 1000
+psf_cache_dir: /data/npadman/1-Projects/roman/roman_disperser/line_test_outputs/psf_cache_gaussian
+# sensitivity_dir / optical_model default to $ROMAN_DISPERSER_DATA.

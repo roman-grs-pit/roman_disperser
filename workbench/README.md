@@ -20,3 +20,5 @@ Large data files go in a `data/` subdirectory within each study (ignored by git)
 | `20260326-spectral-lookup/` | Input SED lookup and self-extraction consistency check |
 | `20260414-acceptance-testing/` | NERSC acceptance test driver (single 4xA100 node, ramdisk-staged) |
 | `20260505-acceptance-testing-aws/` | AWS rerun after catalog SED scrubber fix; SLURM-array on gpu-med a10g |
+| `20260508-romanisim-wrap/` | Romanisim L2 wrap of the spectro acceptance run (mem-lg array + S3 archive) |
+| `20260723-ssc-line-grid/` | SSC line-grid simulation campaign (line-test field; STPSF/Gaussian × PA 0/10; truth tables) |
