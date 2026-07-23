@@ -17,9 +17,9 @@
 # are safe.
 set -euo pipefail
 
-STAGE=${1:?usage: submit.sh {sim|wrap|closure} {stpsf|gauss} {pa000|pa010}}
-VARIANT=${2:?variant: stpsf|gauss}
-PA=${3:?pa: pa000|pa010}
+STAGE=${1:?"usage: submit.sh sim|wrap|closure stpsf|gauss pa000|pa010"}
+VARIANT=${2:?"variant: stpsf|gauss"}
+PA=${3:?"pa: pa000|pa010"}
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT=/mnt/roman-science/grs/line-tests-20260723
