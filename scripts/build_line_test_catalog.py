@@ -166,11 +166,16 @@ def write_catalog(out_dir, stars, wl_a, sed_row, continuum_mag, galaxy=None):
 
     If `galaxy` is given (dict with keys `n`, `hlr_arcsec`, `ba`, `pa_deg`
     [array, deg E of N]), every source is emitted as a Sersic galaxy
-    (`type="SER"`) at the SAME positions and flux: the SED template goes into
-    `galaxy_seds/sim_000` instead of being read from `star_seds`, and
-    `build_grism_image.py` multiplies it by the same `flux_scale`
-    (load_galaxy_seds), so the emitted line fluxes are identical to the star
-    catalog's -- the morphology is the only change.
+    (`type="SER"`) at the SAME positions and flux. Galaxies follow the catalog
+    convention of PRE-SCALED SEDs: `galaxy_seds/sim_000` stores the template
+    already multiplied by `10^(-0.4*continuum_mag)` and the metadata carries
+    `flux_scale = 1.0`, so the emitted line fluxes are identical to the star
+    catalog's -- morphology is the only change. This convention is load-bearing,
+    not cosmetic: `load_galaxy_seds` in build_grism_image.py zeroes any galaxy
+    SED bin with |FLAM| > 1e-12 as catalog corruption (a guard calibrated to
+    pre-scaled Galacticus SEDs, ~<=1e-14). A 0-mag-normalized template (line
+    peaks ~5e-9) would have every line core scrubbed to zero -- this silently
+    emptied the first wave-3 run on 2026-07-24.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -204,7 +209,10 @@ def write_catalog(out_dir, stars, wl_a, sed_row, continuum_mag, galaxy=None):
         "z_obs": np.zeros(n, np.float32),
         "z_cosmo": np.zeros(n, np.float32),
         "sed_index": np.zeros(n, np.int32),
-        "flux_scale": np.full(n, f158, np.float32),
+        # Stars: flux applied at dispersion via flux_scale = F158.
+        # Galaxies: SED is stored pre-scaled (see docstring), flux_scale = 1.
+        "flux_scale": (np.full(n, f158, np.float32) if galaxy is None
+                       else np.ones(n, np.float32)),
         "sim": np.zeros(n, np.int16),
         # Provenance: original row index in the source catalog (guaranteed by
         # select_stars, which captures it before reset_index).
@@ -250,11 +258,14 @@ def write_catalog(out_dir, stars, wl_a, sed_row, continuum_mag, galaxy=None):
         store["galaxy_seds"].attrs.update({"n_partitions": 0})
         desc = "Line-centering optical-model test catalog (stars only)"
     else:
-        # Same template, stored where the galaxy path reads it (sim_000).
+        # Pre-scaled template where the galaxy path reads it (sim_000);
+        # flux_scale=1 in the metadata (see docstring for why this matters).
+        gal_seds = (star_seds.astype(np.float64) * float(f158)).astype(np.float32)
         store.create_array(
-            "galaxy_seds/sim_000", data=star_seds, chunks=star_seds.shape,
+            "galaxy_seds/sim_000", data=gal_seds, chunks=gal_seds.shape,
             compressors=compressor,
-            attributes={"units": "FLAM (erg/s/cm^2/Å, normalized to 0 mag F158)",
+            attributes={"units": "FLAM (erg/s/cm^2/Å, pre-scaled to the "
+                                 "continuum anchor magnitude)",
                         "axes": ["template_index", "wavelength"]},
         )
         store["galaxy_seds"].attrs.update({"n_partitions": 1})
