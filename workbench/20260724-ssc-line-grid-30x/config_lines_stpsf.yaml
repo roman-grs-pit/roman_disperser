@@ -1,0 +1,10 @@
+# SSC line-grid campaign: lines-only SED, standard STPSF PSF caches.
+# Consumed by scripts/build_grism_image.py with one of the per-PA pointing
+# ECSVs in this directory (pointing_pa000.ecsv / pointing_pa010.ecsv).
+output_dir: /mnt/roman-science/grs/line-tests-20260724/lines_stpsf
+catalog_dir: /mnt/roman-science/grs/line-tests-20260724/catalog_lines
+seed: 42
+scas: all
+cone_radius: 0.6
+star_batch_size: 1000
+# sensitivity_dir / optical_model / psf_cache_dir default to $ROMAN_DISPERSER_DATA.
