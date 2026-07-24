@@ -193,7 +193,7 @@ def load_inputs(fits_path, catalog_dir):
 
 
 def run(fits_path, catalog_dir, optical_model=None, box_half=8, max_stars=None,
-        model=None, quiet=False):
+        model=None, quiet=False, source_type="PSF", narrow=3, linehalf=4):
     model_img, sca, manifest, lines = load_inputs(fits_path, catalog_dir)
     lam_A = np.asarray(lines["center_A"], float)
     lam_um = lam_A / 1e4
@@ -204,13 +204,17 @@ def run(fits_path, catalog_dir, optical_model=None, box_half=8, max_stars=None,
     payload = omj.make_sca_payload(model, sca=sca, order=ORDER)
 
     # Batch-mode manifests list every SCA; keep only this detector's first-order
-    # point sources.
-    stars = manifest[(manifest["order"] == ORDER) & (manifest["type"] == "PSF")
+    # sources of the requested type. For SER (Sersic galaxy) catalogs the
+    # prediction is still the *point* trace at the galaxy center, so measured -
+    # predicted is the morphology-induced centroid shift, which is the measurand.
+    stars = manifest[(manifest["order"] == ORDER)
+                     & (manifest["type"] == source_type)
                      & (manifest["sca"] == sca)]
     stars = stars.drop_duplicates("catalog_index").reset_index(drop=True)
     if max_stars:
         stars = stars.iloc[:max_stars]
-    print(f"SCA {sca}: {len(stars)} first-order stars, {len(lam_A)} lines each")
+    print(f"SCA {sca}: {len(stars)} first-order {source_type} sources, "
+          f"{len(lam_A)} lines each")
 
     rows = []
     jc_max = 0.0
@@ -221,7 +225,8 @@ def run(fits_path, catalog_dir, optical_model=None, box_half=8, max_stars=None,
         jc_max = max(jc_max, np.nanmax(np.hypot(xj - xc, yj - yc)))
         u_disp, u_cross = dispersion_axes(payload, xsca, ysca, lam_um)
         for k in range(len(lam_A)):
-            xm, ym = measure_line(model_img, xj[k], yj[k], u_disp[k], half=box_half)
+            xm, ym = measure_line(model_img, xj[k], yj[k], u_disp[k],
+                                  half=box_half, narrow=narrow, linehalf=linehalf)
             d = np.array([xm - xj[k], ym - yj[k]])
             rows.append({
                 "sca": int(sca),
@@ -256,7 +261,8 @@ def _print_summary(res, jc_max, label=""):
               f"RMS {np.sqrt(np.mean(v**2)):.3f}  max|.| {np.max(np.abs(v)):.3f} px")
 
 
-def run_pointing_dir(pointing_dir, catalog_dir, optical_model=None, box_half=8):
+def run_pointing_dir(pointing_dir, catalog_dir, optical_model=None, box_half=8,
+                     source_type="PSF", narrow=3, linehalf=4):
     """Run the checker on every per-SCA FITS in a batch-mode pointing directory.
 
     Loads the optical model once and reuses it across SCAs. Returns the
@@ -270,7 +276,8 @@ def run_pointing_dir(pointing_dir, catalog_dir, optical_model=None, box_half=8):
     model = RomanOpticalModel(str(om_path))
     parts = []
     for f in fits_files:
-        res = run(f, catalog_dir, box_half=box_half, model=model, quiet=True)
+        res = run(f, catalog_dir, box_half=box_half, model=model, quiet=True,
+                  source_type=source_type, narrow=narrow, linehalf=linehalf)
         jc = res.attrs.get("jc_max", np.nan)
         _print_summary(res, jc, label=f"[{f.name}] ")
         parts.append(res)
@@ -292,16 +299,29 @@ def main():
                    help="Line-test catalog dir (holds lines.ecsv).")
     p.add_argument("--optical-model", default=None, help="Optical model YAML.")
     p.add_argument("--box-half", type=int, default=8, help="Centroid box half-size (px).")
+    p.add_argument("--source-type", choices=["PSF", "SER"], default="PSF",
+                   help="Manifest source type to measure. SER measures Sersic "
+                        "galaxies against the point prediction at the galaxy "
+                        "center (residual = morphology-induced shift).")
+    p.add_argument("--narrow", type=int, default=3,
+                   help="Cross-band half-width for the 1-D collapse (px). "
+                        "Widen for extended sources.")
+    p.add_argument("--linehalf", type=int, default=4,
+                   help="Line-window half-size for baseline fit + centroid (px). "
+                        "Widen for morphology-broadened lines.")
     p.add_argument("--max-stars", type=int, default=None, help="Limit stars (debug).")
     p.add_argument("--out", default=None, help="Write residuals table (parquet).")
     args = p.parse_args()
 
     if args.pointing_dir:
         res = run_pointing_dir(args.pointing_dir, args.catalog_dir,
-                               args.optical_model, args.box_half)
+                               args.optical_model, args.box_half,
+                               source_type=args.source_type,
+                               narrow=args.narrow, linehalf=args.linehalf)
     else:
         res = run(args.fits, args.catalog_dir, args.optical_model,
-                  args.box_half, args.max_stars)
+                  args.box_half, args.max_stars, source_type=args.source_type,
+                  narrow=args.narrow, linehalf=args.linehalf)
     if args.out:
         res.to_parquet(args.out)
         print(f"\nWrote residuals -> {args.out}")

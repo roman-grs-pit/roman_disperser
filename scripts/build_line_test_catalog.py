@@ -1,5 +1,9 @@
 #!/usr/bin/env python
-"""Build a synthetic point-source catalog for optical-model line-centering tests.
+"""Build a synthetic source catalog for optical-model line-centering tests.
+
+Sources are point sources (stars) by default; `--galaxy` re-emits the same
+field as Sersic galaxies (same positions, same SED, same flux -- morphology is
+the only change), for testing morphology-induced line-centroid shifts.
 
 Purpose
 -------
@@ -153,27 +157,49 @@ def select_stars(meta_path, mag_limit, mag_eps=1e-4):
 # Catalog writing
 # --------------------------------------------------------------------------
 
-def write_catalog(out_dir, stars, wl_a, sed_row, continuum_mag):
+def write_catalog(out_dir, stars, wl_a, sed_row, continuum_mag, galaxy=None):
     """Write metadata.parquet + seds.zarr for the line-test field.
 
-    All stars share `sed_index=0` and carry `flux_scale = F158 =
+    All sources share `sed_index=0` and carry `flux_scale = F158 =
     10^(-0.4*continuum_mag)`, so every source is the identical spectrum anchored
     to the continuum magnitude.
+
+    If `galaxy` is given (dict with keys `n`, `hlr_arcsec`, `ba`, `pa_deg`
+    [array, deg E of N]), every source is emitted as a Sersic galaxy
+    (`type="SER"`) at the SAME positions and flux: the SED template goes into
+    `galaxy_seds/sim_000` instead of being read from `star_seds`, and
+    `build_grism_image.py` multiplies it by the same `flux_scale`
+    (load_galaxy_seds), so the emitted line fluxes are identical to the star
+    catalog's -- the morphology is the only change.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     n = len(stars)
     f158 = np.float32(10.0 ** (-0.4 * continuum_mag))
 
+    if galaxy is None:
+        src_type = np.array(["PSF"] * n, dtype=object)
+        sersic_n = np.zeros(n, np.float32)
+        hlr = np.zeros(n, np.float32)
+        pa_arr = np.zeros(n, np.float32)   # NB: `pa` is the pyarrow module
+        ba_arr = np.ones(n, np.float32)
+    else:
+        src_type = np.array(["SER"] * n, dtype=object)
+        sersic_n = np.full(n, galaxy["n"], np.float32)
+        hlr = np.full(n, galaxy["hlr_arcsec"], np.float32)
+        pa_arr = np.asarray(galaxy["pa_deg"], np.float32)
+        assert pa_arr.shape == (n,), "galaxy['pa_deg'] must be per-source"
+        ba_arr = np.full(n, galaxy["ba"], np.float32)
+
     # --- metadata.parquet (columns/dtypes per data/catalogs/README.md) ---
     cols = {
         "ra": stars["ra"].to_numpy(np.float64),
         "dec": stars["dec"].to_numpy(np.float64),
-        "type": np.array(["PSF"] * n, dtype=object),
-        "n": np.zeros(n, np.float32),
-        "half_light_radius": np.zeros(n, np.float32),
-        "pa": np.zeros(n, np.float32),
-        "ba": np.ones(n, np.float32),
+        "type": src_type,
+        "n": sersic_n,
+        "half_light_radius": hlr,
+        "pa": pa_arr,
+        "ba": ba_arr,
         "F158": np.full(n, f158, np.float32),
         "z_obs": np.zeros(n, np.float32),
         "z_cosmo": np.zeros(n, np.float32),
@@ -218,12 +244,24 @@ def write_catalog(out_dir, stars, wl_a, sed_row, continuum_mag):
         attributes={"units": "FLAM (erg/s/cm^2/Å, normalized to 0 mag F158)",
                     "axes": ["template_index", "wavelength"]},
     )
-    # Empty galaxy group for schema completeness (no extended sources here).
     store.create_group("galaxy_seds")
-    store["galaxy_seds"].attrs.update({"n_partitions": 0})
+    if galaxy is None:
+        # Empty galaxy group for schema completeness (no extended sources).
+        store["galaxy_seds"].attrs.update({"n_partitions": 0})
+        desc = "Line-centering optical-model test catalog (stars only)"
+    else:
+        # Same template, stored where the galaxy path reads it (sim_000).
+        store.create_array(
+            "galaxy_seds/sim_000", data=star_seds, chunks=star_seds.shape,
+            compressors=compressor,
+            attributes={"units": "FLAM (erg/s/cm^2/Å, normalized to 0 mag F158)",
+                        "axes": ["template_index", "wavelength"]},
+        )
+        store["galaxy_seds"].attrs.update({"n_partitions": 1})
+        desc = "Line-centering optical-model test catalog (Sersic galaxies)"
     store.attrs.update({
         "format_version": "1.0",
-        "description": "Line-centering optical-model test catalog (stars only)",
+        "description": desc,
     })
     return f158
 
@@ -286,6 +324,28 @@ def main():
     p.add_argument("--wl-step", type=float, default=None,
                    help="Wavelength grid spacing in Å (default 2). Also sets the "
                         "dispersal sampling. Use e.g. 1 or 0.5 to test spacing.")
+    g = p.add_argument_group("galaxy mode (emit sources as Sersic galaxies)")
+    g.add_argument("--galaxy", action="store_true",
+                   help="Emit every selected source as a Sersic galaxy (SER) at "
+                        "the same position and flux; morphology from the flags "
+                        "below. The SED template is stored in galaxy_seds/sim_000 "
+                        "and scaled by the same flux_scale, so line fluxes match "
+                        "the star catalog exactly.")
+    g.add_argument("--sersic-n", type=float, default=1.0,
+                   help="Sersic index (default 1, exponential disk).")
+    g.add_argument("--ba", type=float, default=0.3,
+                   help="Minor/major axis ratio (default 0.3).")
+    g.add_argument("--hlr-arcsec", type=float, default=0.275,
+                   help="Half-light radius in arcsec (default 0.275 = 2.5 "
+                        "native px at 0.11 arcsec/px).")
+    g.add_argument("--pa-mode", choices=["random", "fixed"], default="random",
+                   help="Position angles: 'random' draws per-source PA uniform "
+                        "in [0, 180) deg (deterministic via --pa-seed); 'fixed' "
+                        "uses --pa-fixed for all sources.")
+    g.add_argument("--pa-fixed", type=float, default=0.0,
+                   help="PA in deg E of N when --pa-mode=fixed.")
+    g.add_argument("--pa-seed", type=int, default=20260724,
+                   help="RNG seed for --pa-mode=random (recorded in provenance).")
     args = p.parse_args()
 
     centers = list(args.line_centers)
@@ -310,7 +370,23 @@ def main():
     print(f"  RA {stars['ra'].min():.3f}..{stars['ra'].max():.3f}, "
           f"Dec {stars['dec'].min():.3f}..{stars['dec'].max():.3f}")
 
-    f158 = write_catalog(args.out_dir, stars, wl_a, sed_row, args.continuum_mag)
+    galaxy = None
+    if args.galaxy:
+        if args.pa_mode == "random":
+            # PA of an ellipse is degenerate mod 180 deg; draw on [0, 180).
+            rng = np.random.default_rng(args.pa_seed)
+            pa_deg = rng.uniform(0.0, 180.0, len(stars))
+        else:
+            pa_deg = np.full(len(stars), args.pa_fixed)
+        galaxy = {"n": args.sersic_n, "hlr_arcsec": args.hlr_arcsec,
+                  "ba": args.ba, "pa_deg": pa_deg}
+        print(f"  Galaxy mode: Sersic n={args.sersic_n}, b/a={args.ba}, "
+              f"hlr={args.hlr_arcsec}\" , PA {args.pa_mode}"
+              + (f" (seed {args.pa_seed})" if args.pa_mode == "random" else
+                 f" ({args.pa_fixed} deg)"))
+
+    f158 = write_catalog(args.out_dir, stars, wl_a, sed_row, args.continuum_mag,
+                         galaxy=galaxy)
 
     provenance = {
         "src_catalog": str(args.src_catalog),
@@ -325,6 +401,12 @@ def main():
         "line_amps_rel": ([] if args.no_lines else amps),
         "wavelength_grid": {"min": WL_MIN, "max": WL_MAX, "n": len(wl_a),
                             "step_A": (args.wl_step or 2.0)},
+        "galaxy": (None if galaxy is None else {
+            "sersic_n": args.sersic_n, "ba": args.ba,
+            "hlr_arcsec": args.hlr_arcsec, "pa_mode": args.pa_mode,
+            "pa_seed": (args.pa_seed if args.pa_mode == "random" else None),
+            "pa_fixed": (args.pa_fixed if args.pa_mode == "fixed" else None),
+        }),
         "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     sc = ([], [], []) if args.no_lines else (centers, fwhms, amps)
