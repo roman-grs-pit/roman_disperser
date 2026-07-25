@@ -70,11 +70,11 @@ import pyarrow.parquet as pq
 import zarr
 
 from roman_disperser import (
-    galaxy_disperser, psf_model, sersic, star_disperser,
+    galaxy_disperser, modes, psf_model, sersic, star_disperser,
 )
 from roman_disperser.optical_model import RomanOpticalModel
 from roman_disperser.pipeline import (
-    DETECTOR_SIZE, ORDERS, LAM_MIN, LAM_MAX,
+    DETECTOR_SIZE,
     resolve_paths, cone_search, select_sources_per_order,
     load_sensitivities,
     make_batched_star_fori, disperse_batched_stars,
@@ -83,6 +83,17 @@ from roman_disperser.pipeline import (
     get_code_version, get_git_sha, make_sca_keys,
 )
 import roman_disperser.optical_model_jax as omj
+
+
+def resolve_mode(cfg=None, cli_mode=None):
+    """Resolve the dispersing element for a run.
+
+    Precedence: ``--mode`` > the config's ``mode:`` key > ``$ROMAN_DISPERSER_MODE``
+    > grism. Every entry point funnels through here so a run cannot end up with
+    two different answers in different stages.
+    """
+    cfg_mode = (cfg or {}).get("mode")
+    return modes.get_mode(cli_mode or cfg_mode)
 
 
 def make_pointing_key(seed, pointing_filename, plan, pass_, segment,
@@ -148,7 +159,7 @@ def load_catalog(catalog_dir):
     return meta, store, wavelengths
 
 
-def validate_catalog(meta, store, wavelengths):
+def validate_catalog(meta, store, wavelengths, mode=None):
     """Validate catalog consistency.
 
     Checks wavelength coverage/spacing, required columns and types,
@@ -157,9 +168,12 @@ def validate_catalog(meta, store, wavelengths):
 
     Raises ValueError on hard errors; prints warnings for soft issues.
     """
-    # Wavelength coverage
-    wl_min_ang = LAM_MIN * 1e4
-    wl_max_ang = LAM_MAX * 1e4
+    # Wavelength coverage. The catalog must span the *mode's* band: the prism
+    # opens at 7500 A, 1500 A blueward of the grism, so a grism-era catalog
+    # leaves the prism's blue end with no SED to disperse.
+    mode = modes.get_mode(mode)
+    wl_min_ang = mode.lam_min * 1e4
+    wl_max_ang = mode.lam_max * 1e4
     if wavelengths[0] > wl_min_ang or wavelengths[-1] < wl_max_ang:
         raise ValueError(
             f"Catalog wavelengths [{wavelengths[0]:.0f}, {wavelengths[-1]:.0f}] A "
@@ -237,8 +251,11 @@ def validate_catalog(meta, store, wavelengths):
             print(f"  WARNING: {n_large} galaxies have half_light_radius > 1 arcsec")
 
 
-def trim_wavelength_grid(wavelengths):
-    """Trim the catalog wavelength grid to the grism range [9000, 20000] A.
+def trim_wavelength_grid(wavelengths, mode=None):
+    """Trim the catalog wavelength grid to the mode's band.
+
+    Grism [9000, 20000] A; prism [7500, 18500] A. The catalog is built as a
+    superset, so each element trims to its own band at consumption time.
 
     Parameters
     ----------
@@ -254,8 +271,9 @@ def trim_wavelength_grid(wavelengths):
     dlam_angstroms : float
         Wavelength spacing in Angstroms.
     """
-    wl_min_ang = LAM_MIN * 1e4  # 9000
-    wl_max_ang = LAM_MAX * 1e4  # 20000
+    mode = modes.get_mode(mode)
+    wl_min_ang = mode.lam_min * 1e4
+    wl_max_ang = mode.lam_max * 1e4
     wl_mask = (wavelengths >= wl_min_ang) & (wavelengths <= wl_max_ang)
     wavelengths_trimmed = wavelengths[wl_mask]
     dlam_angstroms = float(wavelengths_trimmed[1] - wavelengths_trimmed[0])
@@ -357,6 +375,7 @@ def setup_pipeline(
     galaxy_batch_size=100,
     galaxy_npix=30,
     verbose=True,
+    mode=None,
 ):
     """One-time setup: load model, catalog, optical payloads, sensitivities.
 
@@ -381,12 +400,18 @@ def setup_pipeline(
         Oversampled size is ``galaxy_npix * oversample``.
     verbose : bool
         Print progress information.
+    mode : str or DisperserMode, optional
+        Dispersing element (default grism). Determines the orders, the band,
+        and the default optical-model / sensitivity paths. It is resolved once
+        here and carried in the returned ``pipeline`` dict, so downstream
+        functions never re-resolve it (and can never disagree about it).
 
     Returns
     -------
     pipeline : dict
         Contains all shared state for ``process_pointing``.
     """
+    mode = modes.get_mode(mode)
     timings = {}
     t_total = time.time()
 
@@ -396,7 +421,7 @@ def setup_pipeline(
 
     catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir = \
         resolve_paths(catalog_dir, sensitivity_dir,
-                      optical_model_path, psf_cache_dir)
+                      optical_model_path, psf_cache_dir, mode=mode)
 
     # -- Load & validate catalog ---------------------------------------------
     log("Loading catalog...")
@@ -409,16 +434,16 @@ def setup_pipeline(
         f"in {timings['load_catalog']:.2f}s")
 
     log("Validating catalog...")
-    validate_catalog(meta, store, wavelengths_full)
+    validate_catalog(meta, store, wavelengths_full, mode=mode)
 
     # -- Trim wavelength grid ------------------------------------------------
     wavelengths_ang, wl_mask, dlam_angstroms = trim_wavelength_grid(
-        wavelengths_full
+        wavelengths_full, mode=mode
     )
     wavelengths_um = (wavelengths_ang / 1e4).astype(np.float32)
     wavelengths_jax = jnp.array(wavelengths_um)
     n_wavelength = len(wavelengths_um)
-    log(f"Wavelength grid: {LAM_MIN}-{LAM_MAX} um, "
+    log(f"Wavelength grid ({mode.name}): {mode.lam_min}-{mode.lam_max} um, "
         f"{dlam_angstroms:.1f} A spacing, {n_wavelength} samples")
 
     # -- Load full star SED array (trimmed) ----------------------------------
@@ -433,6 +458,9 @@ def setup_pipeline(
     # -- Optical model -------------------------------------------------------
     log("Loading optical model...")
     model = RomanOpticalModel(config_file=str(optical_model_path))
+    # Fail loudly if the mode and the model disagree, or if the mode's band
+    # would extrapolate the trace polynomials past their fitted range.
+    modes.check_band(mode, model)
 
     # -- Per-SCA setup: optical payloads and sensitivity curves ---------------
     # PSFs, dispersers, and JIT compilation are deferred to process_pointing
@@ -444,7 +472,7 @@ def setup_pipeline(
     # (all PSF payloads use the same oversample)
     first_psf = psf_model.get_or_make_psf_payload(
         detector=f"WFI{sca_list[0]:02d}", order="1",
-        cache_dir=str(psf_cache_dir), verbose=False,
+        cache_dir=str(psf_cache_dir), verbose=False, mode=mode,
     )
     oversample = int(first_psf["oversample"])
     galaxy_npix_os = galaxy_npix * oversample
@@ -458,12 +486,12 @@ def setup_pipeline(
         # Optical payloads (small — polynomial coefficients)
         optical_payloads = {
             order: omj.make_sca_payload(model, sca=sca_num, order=order)
-            for order in ORDERS
+            for order in mode.orders
         }
 
         # Sensitivity curves (tiny — one array per order)
         sensitivities = load_sensitivities(
-            sensitivity_dir, sca_num, wavelengths_um,
+            sensitivity_dir, sca_num, wavelengths_um, mode=mode,
         )
 
         sca_data[sca_num] = {
@@ -475,6 +503,7 @@ def setup_pipeline(
     log(f"\nSetup complete in {timings['setup_total']:.1f}s")
 
     return {
+        "mode": mode,
         "model": model,
         "meta": meta,
         "store": store,
@@ -555,6 +584,7 @@ def process_pointing(
     output_dir.mkdir(parents=True, exist_ok=True)
     prefix = f"grism_{output_dir.name}"
 
+    mode = pipeline["mode"]
     meta = pipeline["meta"]
     sca_list = pipeline["sca_list"]
     star_batch_size = pipeline["star_batch_size"]
@@ -668,17 +698,21 @@ def process_pointing(
         t_jit = time.time()
         detector_name = f"WFI{sca_num:02d}"
 
+        # One PSF payload per order STPSF can actually compute, then fill in
+        # the aliased orders (grism order 2 borrows the order-1 PSF; see
+        # modes.DisperserMode.psf_order_alias for why that is acceptable).
         psf_payloads = {}
-        for psf_order in ["0", "1"]:
+        for psf_order in mode.psf_orders:
             psf_payloads[psf_order] = psf_model.get_or_make_psf_payload(
                 detector=detector_name, order=psf_order,
-                cache_dir=psf_cache_dir, verbose=False,
+                cache_dir=psf_cache_dir, verbose=False, mode=mode,
             )
-        psf_payloads["2"] = psf_payloads["1"]
+        for order in mode.orders:
+            psf_payloads[order] = psf_payloads[mode.psf_order(order)]
 
         star_fori_fns = {}
         galaxy_fori_fns = {}
-        for order in ORDERS:
+        for order in mode.orders:
             sd_fn = star_disperser.make_star_disperser(
                 psf_payloads[order], sd["optical_payloads"][order],
             )
@@ -712,7 +746,7 @@ def process_pointing(
             (galaxy_batch_size, galaxy_npix_os, galaxy_npix_os),
             dtype=jnp.float32,
         )
-        for order in ORDERS:
+        for order in mode.orders:
             star_fori_fns[order](
                 1, warmup_spec, warmup_x, warmup_y, warmup_output,
             ).block_until_ready()
@@ -726,11 +760,11 @@ def process_pointing(
 
         # -- Select sources for this SCA (per order) -------------------------
         order_masks, any_mask = select_sources_per_order(
-            sd["optical_payloads"], xfpa, yfpa,
+            sd["optical_payloads"], xfpa, yfpa, mode=mode,
         )
         n_any = int(any_mask.sum())
 
-        sca_counts = {order: {"stars": 0, "galaxies": 0} for order in ORDERS}
+        sca_counts = {order: {"stars": 0, "galaxies": 0} for order in mode.orders}
         source_counts[sca_num] = sca_counts
 
         # Disperse sources
@@ -783,7 +817,7 @@ def process_pointing(
             star_cone_indices = np.where(is_star)[0]
 
             order_masks_sel = {
-                order: order_masks[order][any_mask_np] for order in ORDERS
+                order: order_masks[order][any_mask_np] for order in mode.orders
             }
 
             # --- Load galaxy SEDs and generate images per SCA ---
@@ -825,7 +859,7 @@ def process_pointing(
                     f"in {time.time() - t0:.2f}s")
 
             # --- Disperse per order ---
-            for order in ORDERS:
+            for order in mode.orders:
                 omask = order_masks_sel[order]
                 n_order = int(omask.sum())
                 if n_order == 0:
@@ -885,7 +919,7 @@ def process_pointing(
                         f"{elapsed:.2f}s ({ms_per:.1f} ms/galaxy)")
 
             # Collect manifest rows
-            for order in ORDERS:
+            for order in mode.orders:
                 omask = order_masks_sel[order]
                 if not omask.any():
                     continue
@@ -915,7 +949,7 @@ def process_pointing(
         sca_outputs[sca_num] = output
 
         # Log per-order counts
-        for order in ORDERS:
+        for order in mode.orders:
             c = sca_counts[order]
             log(f"    Order {order}: {c['stars']} stars, "
                 f"{c['galaxies']} galaxies")
@@ -1006,6 +1040,7 @@ def process_pointing(
             "dec": pointing_dec,
             "pa": pointing_pa,
         },
+        "mode": mode.name,
         "exptime": exptime,
         "codever": get_code_version(),
         "git_sha": get_git_sha(),
@@ -1060,8 +1095,9 @@ def build_grism_image(
     galaxy_npix=30,
     verbose=True,
     force=False,
+    mode=None,
 ):
-    """Build a simulated grism image for a single SCA.
+    """Build a simulated dispersed image for a single SCA.
 
     Convenience wrapper around setup_pipeline + process_pointing.
 
@@ -1089,6 +1125,8 @@ def build_grism_image(
         Sersic image size in native pixels (default: 30).
     verbose : bool
         Print progress information (default: True).
+    mode : str or DisperserMode, optional
+        Dispersing element (default grism).
     force : bool
         Overwrite existing output file (default: skip).
 
@@ -1113,6 +1151,7 @@ def build_grism_image(
         galaxy_batch_size=galaxy_batch_size,
         galaxy_npix=galaxy_npix,
         verbose=verbose,
+        mode=mode,
     )
 
     # Use a temp directory, then move the files to match the requested output
@@ -1180,6 +1219,13 @@ output_dir: output/grism-fields
 # deterministic and independent of pointing order or slicing.
 seed: 42
 
+# -- Dispersing element ------------------------------------------------------
+# "grism" (G150, orders 0/1/2 over 0.9-2.0 um) or "prism" (P127, a single beam
+# over 0.75-1.85 um).  Omit for grism.  Sets the optical model, the sensitivity
+# curves, the PSF caches, the band, and which BANDPASS rows of the pointing
+# table are processed.  Overridden by --mode.
+# mode: grism
+
 # -- Detectors ---------------------------------------------------------------
 # Which SCAs to simulate.  Use "all" for 1-18, or list specific numbers.
 scas: all
@@ -1226,7 +1272,8 @@ def _pointing_dir_name(prefix, row):
             f".{int(row['EXPOSURE']):03d}")
 
 
-def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
+def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None,
+               mode=None):
     """Compile JIT functions for all SCAs and exit (no catalog needed).
 
     Populates the JAX compilation cache so subsequent batch runs start fast.
@@ -1243,9 +1290,13 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
         This worker's index for SCA partitioning.
     num_workers : int, optional
         Total number of workers.  SCAs are assigned round-robin.
+    mode : str or DisperserMode, optional
+        Dispersing element; overrides the config's ``mode:`` key.
     """
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
+
+    mode = resolve_mode(cfg, mode)
 
     # Cache dir from config (CLI already wins via pre-parse)
     if _pre_args.cache_dir is None and "cache_dir" in cfg:
@@ -1270,7 +1321,7 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
         log("No SCAs assigned to this worker.")
         return
 
-    log(f"Warmup: compiling JIT functions for SCAs {sca_list}")
+    log(f"Warmup ({mode.name}): compiling JIT functions for SCAs {sca_list}")
     log(f"Cache dir: {os.environ.get('JAX_COMPILATION_CACHE_DIR', '(default)')}")
 
     # Batch sizes (affect compiled function shapes)
@@ -1282,25 +1333,29 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
     catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir = \
         resolve_paths(cfg.get("catalog_dir"), cfg.get("sensitivity_dir"),
                       cfg.get("optical_model"),
-                      cfg.get("psf_cache_dir"))
+                      cfg.get("psf_cache_dir"), mode=mode)
 
     # Read wavelength grid from catalog (must match what setup_pipeline uses)
     store = zarr.open(str(Path(catalog_dir) / "seds.zarr"), mode="r")
     wavelengths_full = np.array(store["wavelengths"])
-    wavelengths_ang, _, dlam_angstroms = trim_wavelength_grid(wavelengths_full)
+    wavelengths_ang, _, dlam_angstroms = trim_wavelength_grid(
+        wavelengths_full, mode=mode)
     wavelengths_um = (wavelengths_ang / 1e4).astype(np.float32)
     wavelengths_jax = jnp.array(wavelengths_um)
     n_wavelength = len(wavelengths_um)
-    log(f"Wavelength grid: {LAM_MIN}-{LAM_MAX} um, "
+    log(f"Wavelength grid ({mode.name}): {mode.lam_min}-{mode.lam_max} um, "
         f"{dlam_angstroms:.1f} A spacing, {n_wavelength} samples")
 
     # Load optical model
     model = RomanOpticalModel(config_file=str(optical_model_path))
+    # Fail loudly if the mode and the model disagree, or if the mode's band
+    # would extrapolate the trace polynomials past their fitted range.
+    modes.check_band(mode, model)
 
     # Determine oversample from first PSF payload
     first_psf = psf_model.get_or_make_psf_payload(
         detector=f"WFI{sca_list[0]:02d}", order="1",
-        cache_dir=str(psf_cache_dir), verbose=False,
+        cache_dir=str(psf_cache_dir), verbose=False, mode=mode,
     )
     oversample = int(first_psf["oversample"])
     galaxy_npix_os = galaxy_npix * oversample
@@ -1312,27 +1367,31 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
         log(f"\n  SCA {sca_num} ({detector_name}):")
 
         # Load PSF payloads
+        # One PSF payload per order STPSF can actually compute, then fill in
+        # the aliased orders (grism order 2 borrows the order-1 PSF; see
+        # modes.DisperserMode.psf_order_alias for why that is acceptable).
         psf_payloads = {}
-        for psf_order in ["0", "1"]:
+        for psf_order in mode.psf_orders:
             psf_payloads[psf_order] = psf_model.get_or_make_psf_payload(
                 detector=detector_name, order=psf_order,
-                cache_dir=str(psf_cache_dir), verbose=False,
+                cache_dir=str(psf_cache_dir), verbose=False, mode=mode,
             )
-        psf_payloads["2"] = psf_payloads["1"]
+        for order in mode.orders:
+            psf_payloads[order] = psf_payloads[mode.psf_order(order)]
 
         # Build optical payloads and sensitivities
         optical_payloads = {
             order: omj.make_sca_payload(model, sca=sca_num, order=order)
-            for order in ORDERS
+            for order in mode.orders
         }
         sensitivities = load_sensitivities(
-            sensitivity_dir, sca_num, wavelengths_um,
+            sensitivity_dir, sca_num, wavelengths_um, mode=mode,
         )
 
         # Build dispersers and JIT-compile
         star_fori_fns = {}
         galaxy_fori_fns = {}
-        for order in ORDERS:
+        for order in mode.orders:
             sd_fn = star_disperser.make_star_disperser(
                 psf_payloads[order], optical_payloads[order],
             )
@@ -1369,7 +1428,7 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
             (galaxy_batch_size, galaxy_npix_os, galaxy_npix_os),
             dtype=jnp.float32,
         )
-        for order in ORDERS:
+        for order in mode.orders:
             star_fori_fns[order](
                 1, warmup_spec, warmup_x, warmup_y, warmup_output,
             ).block_until_ready()
@@ -1389,7 +1448,7 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
 
 
 def run_batch(config_path, pointings_path, verbose=True, force=False,
-              worker_index=None, num_workers=None):
+              worker_index=None, num_workers=None, mode=None):
     """Run the pipeline from a YAML config + ECSV pointing table.
 
     Parameters
@@ -1407,12 +1466,16 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
     num_workers : int, optional
         Total number of parallel workers.  When set, this worker processes
         only pointings where ``index % num_workers == worker_index``.
+    mode : str or DisperserMode, optional
+        Dispersing element; overrides the config's ``mode:`` key.
     """
     import warnings
     from astropy.table import Table
 
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
+
+    mode = resolve_mode(cfg, mode)
 
     def log(msg):
         if verbose:
@@ -1442,16 +1505,18 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
     # Load pointing table
     ptable = Table.read(pointings_path, format="ascii.ecsv")
 
-    # Filter to GRISM pointings only
+    # Keep only pointings taken with this dispersing element. The APT BANDPASS
+    # column uses the same tokens romanisim does ("GRISM"/"PRISM").
+    bandpass = mode.romanisim_bandpass
     if "BANDPASS" in ptable.colnames:
-        grism_mask = ptable["BANDPASS"] == "GRISM"
+        grism_mask = ptable["BANDPASS"] == bandpass
         n_filtered = len(ptable) - grism_mask.sum()
         if n_filtered > 0:
-            log(f"Filtered {n_filtered} non-GRISM rows from pointing table")
+            log(f"Filtered {n_filtered} non-{bandpass} rows from pointing table")
         ptable = ptable[grism_mask]
 
     if len(ptable) == 0:
-        log("No GRISM pointings found in pointing table.")
+        log(f"No {bandpass} pointings found in pointing table.")
         return
 
     # Parse SCA list
@@ -1504,6 +1569,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         galaxy_batch_size=cfg.get("galaxy_batch_size", 100),
         galaxy_npix=cfg.get("galaxy_npix", 30),
         verbose=verbose,
+        mode=mode,
     )
 
     # Process pointings
@@ -1595,17 +1661,25 @@ def main():
                "config file.",
     )
 
-    # Mode selection
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--config", type=str,
-                      help="YAML config file for batch mode")
-    mode.add_argument("--pointing-ra", type=float,
-                      help="Pointing RA in degrees (quick mode)")
-    mode.add_argument("--generate-config", type=str, metavar="FILE",
-                      help="Write a documented template config file and exit")
-    mode.add_argument("--mosaic", type=str, metavar="DIR",
-                      help="Generate mosaic PNG from a pointing directory "
-                           "containing grism_*_detSCA*.fits files")
+    # Run-mode selection (which of the script's four entry points to use).
+    # Not to be confused with --mode, which picks the dispersing element.
+    run_mode = parser.add_mutually_exclusive_group(required=True)
+    run_mode.add_argument("--config", type=str,
+                          help="YAML config file for batch mode")
+    run_mode.add_argument("--pointing-ra", type=float,
+                          help="Pointing RA in degrees (quick mode)")
+    run_mode.add_argument("--generate-config", type=str, metavar="FILE",
+                          help="Write a documented template config file and exit")
+    run_mode.add_argument("--mosaic", type=str, metavar="DIR",
+                          help="Generate mosaic PNG from a pointing directory "
+                               "containing grism_*_detSCA*.fits files")
+
+    # Dispersing element
+    parser.add_argument("--mode", type=str, default=None,
+                        choices=sorted(modes.MODES),
+                        help="Dispersing element (default: the config's "
+                             "'mode:' key, then $ROMAN_DISPERSER_MODE, "
+                             "then grism)")
 
     # Batch mode: ECSV pointing table
     parser.add_argument("--pointings", type=str,
@@ -1696,6 +1770,7 @@ def main():
         write_mosaic_from_directory(
             args.mosaic,
             optical_model_path=args.optical_model,
+            mode=args.mode,
         )
         return
 
@@ -1705,7 +1780,8 @@ def main():
             parser.error("--warmup-only requires --config")
         run_warmup(args.config, verbose=not args.quiet,
                    worker_index=args.worker_index,
-                   num_workers=args.num_workers)
+                   num_workers=args.num_workers,
+                   mode=args.mode)
         return
 
     # Batch mode
@@ -1715,7 +1791,8 @@ def main():
         run_batch(args.config, args.pointings,
                   verbose=not args.quiet, force=args.force,
                   worker_index=args.worker_index,
-                  num_workers=args.num_workers)
+                  num_workers=args.num_workers,
+                  mode=args.mode)
         return
 
     # Quick mode --- validate required arguments
@@ -1745,6 +1822,7 @@ def main():
         galaxy_batch_size=args.galaxy_batch_size,
         galaxy_npix=args.galaxy_npix,
         verbose=not args.quiet,
+        mode=args.mode,
         force=args.force,
     )
 

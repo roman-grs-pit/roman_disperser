@@ -31,19 +31,45 @@ from zarr.codecs import BloscCodec
 # Constants
 # ---------------------------------------------------------------------------
 
-# Wavelength range (Angstroms)
-# Covers grism range (0.9–2.0 μm) plus margin to fully contain the F184 bandpass
-WL_MIN = 9000.0
-WL_MAX = 21000.0
+# Wavelength range (Angstroms).
+#
+# The catalog is built as a **superset** of every element's band, so one catalog
+# serves both and each trims to its own band at consumption time (see
+# build_grism_image.trim_wavelength_grid). The floor is therefore the bluest
+# band edge in use — the prism's 7500 Å, 1500 Å blueward of the grism's 9000 Å —
+# and the ceiling stays at 21000 Å, past the grism's 20000 Å red edge, so the
+# F184 bandpass is fully contained for the F158/F184 colour diagnostics.
+#
+# A catalog built with WL_MIN = 9000 (everything up to and including the
+# published `catalog-v2`) leaves the prism's 7500-9000 Å with no SED to
+# disperse, which is silent rather than loud: the trimmed grid simply starts
+# late. `--wl-min` is exposed so an older grid can still be reproduced exactly.
+WL_MIN_DEFAULT = 7500.0
+WL_MAX_DEFAULT = 21000.0
 WL_STEP = 2.0  # Angstroms
-N_WL = int((WL_MAX - WL_MIN) / WL_STEP) + 1  # 6001
 
 # Galacticus SED wavelength grid (from Readme_4sqdeg.txt):
 # "The data array is saved with a step size of 2 Angstroms, you can get the
 # wavelength by np.linspace(2000, 40000, 19001) in units of Angstroms."
 # Not stored in the HDF5 files — no attributes anywhere.
 GALACTICUS_WL = np.linspace(2000, 40000, 19001)  # Angstroms
-GRISM_SLICE = slice(3500, 9501)  # indices for 9000-21000 Å
+GALACTICUS_WL_MIN = 2000.0  # Angstroms, first sample of the grid above
+
+
+def wl_grid(wl_min=WL_MIN_DEFAULT, wl_max=WL_MAX_DEFAULT):
+    """Output wavelength grid in Angstroms, and its slice into GALACTICUS_WL.
+
+    The slice is *derived* from the requested range rather than hardcoded, so
+    the two can never drift apart — a hardcoded pair is how a widened floor
+    silently keeps reading the old indices.
+    """
+    n_wl = int(round((wl_max - wl_min) / WL_STEP)) + 1
+    wavelengths = np.linspace(wl_min, wl_max, n_wl)
+    i0 = int(round((wl_min - GALACTICUS_WL_MIN) / WL_STEP))
+    sl = slice(i0, i0 + n_wl)
+    assert np.allclose(GALACTICUS_WL[sl], wavelengths), \
+        "derived Galacticus slice does not match the requested output grid"
+    return wavelengths, n_wl, sl
 
 # Magnitude cut
 MAG_CUT = 26.0  # F158 AB mag
@@ -296,7 +322,8 @@ def compute_f158_normalization(wavelengths_angstrom):
 
 
 def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
-                             fnu_to_flam, bandpass_weights, bandpass_norm):
+                             fnu_to_flam, bandpass_weights, bandpass_norm,
+                             sed_slice):
     """Process one galaxy partition (one HDF5 sub-file).
 
     Uses vectorized f_ν → FLAM conversion instead of per-source synphot calls.
@@ -329,12 +356,12 @@ def process_galaxy_partition(sim_num, galacticus_dir, fits_index,
     z_obs = fits_index["z"][mask]
     hdf5_indices = fits_index["idx"][mask]
 
-    # Read HDF5 SEDs for kept sources (only grism wavelength range)
+    # Read HDF5 SEDs for kept sources (only our output wavelength range)
     # SEDs are f_ν in unknown absolute units, on the Galacticus wavelength grid
     # (2 Å spacing). Our output grid is a subset of their grid.
     with h5py.File(hdf5_path, "r") as f:
         outputs = f["Outputs"]
-        raw_seds_fnu = outputs["SED:observed:dust:Av1.6523"][hdf5_indices, GRISM_SLICE]
+        raw_seds_fnu = outputs["SED:observed:dust:Av1.6523"][hdf5_indices, sed_slice]
         z_cosmo = outputs["lightconeRedshift"][hdf5_indices].astype(np.float32)
 
     # Vectorized f_ν → FLAM conversion with F158 normalization:
@@ -437,7 +464,8 @@ def init_zarr_store(output_dir, wavelengths, star_seds):
         attributes={
             "units": "Angstrom",
             "description": "Common wavelength grid for all SEDs",
-            "grid_definition": f"np.linspace({WL_MIN}, {WL_MAX}, {N_WL})",
+            "grid_definition": (f"np.linspace({wavelengths[0]}, "
+                                f"{wavelengths[-1]}, {len(wavelengths)})"),
         },
     )
     print(f"  wavelengths: {wavelengths.shape}")
@@ -554,6 +582,17 @@ def main():
         "--no-stars", action="store_true",
         help="Skip star processing (galaxies only)",
     )
+    parser.add_argument(
+        "--wl-min", type=float, default=WL_MIN_DEFAULT,
+        help=(f"Blue edge of the SED grid in Angstroms (default: "
+              f"{WL_MIN_DEFAULT:.0f}, the prism's band edge, so the catalog is "
+              f"a superset for both elements). Use 9000 to reproduce the "
+              f"grism-era grid of catalog-v2."),
+    )
+    parser.add_argument(
+        "--wl-max", type=float, default=WL_MAX_DEFAULT,
+        help=f"Red edge of the SED grid in Angstroms (default: {WL_MAX_DEFAULT:.0f})",
+    )
     args = parser.parse_args()
 
     sim_numbers = parse_sims(args.sims)
@@ -566,8 +605,10 @@ def main():
     print(f"  Output: {output_dir}")
     print()
 
-    # Wavelength grid
-    wavelengths = np.linspace(WL_MIN, WL_MAX, N_WL)
+    # Wavelength grid (and the matching slice into the Galacticus grid)
+    wavelengths, n_wl, sed_slice = wl_grid(args.wl_min, args.wl_max)
+    print(f"  Wavelengths: {wavelengths[0]:.0f}-{wavelengths[-1]:.0f} A, "
+          f"{n_wl} samples at {WL_STEP:.0f} A")
 
     # --- Stars ---
     metadata_tables = []
@@ -576,7 +617,7 @@ def main():
         metadata_tables.append(star_table)
     else:
         print("--- Skipping stars ---")
-        star_seds = np.empty((0, N_WL), dtype=np.float32)
+        star_seds = np.empty((0, n_wl), dtype=np.float32)
 
     # --- Galaxies ---
     print("\n--- Galaxies ---")
@@ -604,7 +645,7 @@ def main():
         t0 = time.time()
         galaxy_table, galaxy_seds = process_galaxy_partition(
             sim_num, galacticus_dir, fits_index,
-            fnu_to_flam, bandpass_weights, bandpass_norm,
+            fnu_to_flam, bandpass_weights, bandpass_norm, sed_slice,
         )
         dt = time.time() - t0
 

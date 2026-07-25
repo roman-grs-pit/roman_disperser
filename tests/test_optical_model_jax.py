@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import roman_disperser.optical_model_jax as omj
+from roman_disperser import paths
 from roman_disperser.optical_model import RomanOpticalModel
 
 # Tolerances for float32 precision (YAML has limited decimal places)
@@ -32,10 +33,8 @@ def deg_to_px(x):
 
 @pytest.fixture(scope="module")
 def optical_model():
-    """Load optical model once for all tests."""
-    pixi_root_path = os.environ.get("PIXI_PROJECT_ROOT", ".")
-    fn = os.path.join(pixi_root_path, "data/Roman_grism_OpticalModel_v0.8.yaml")
-    return RomanOpticalModel(fn)
+    """Grism optical model, located via the vendored-data resolver."""
+    return RomanOpticalModel(str(paths.optical_model_path(mode="grism")))
 
 class TestSCAtoMPA:
     """Test SCA to MPA coordinate transformation."""

@@ -45,7 +45,24 @@ import numpy as np
 import jax.numpy as jnp
 import jax
 
+from . import modes
 from .psf_utils import sca_to_stpsf_position, stpsf_to_sca_position
+
+# PSF wavelength sampling: 0.02 um, chosen in the Phase-1 grid study because it
+# holds interpolation flux error below 0.002% (10x better than 0.1 um sampling);
+# see docs/psf_phase1_plan.md. Both elements happen to give 56 samples across
+# their band at this spacing.
+PSF_WL_STEP_UM = 0.02
+
+
+def default_wavelengths(mode=None):
+    """Default PSF-grid wavelengths, in **microns**, for a dispersing mode.
+
+    Spans the mode's band inclusively at :data:`PSF_WL_STEP_UM` spacing:
+    grism 0.90-2.00 um and prism 0.75-1.85 um, 56 samples each.
+    """
+    mode = modes.get_mode(mode)
+    return np.arange(mode.lam_min, mode.lam_max + PSF_WL_STEP_UM / 2, PSF_WL_STEP_UM)
 
 
 # ============================================================================
@@ -60,27 +77,34 @@ def get_cache_filename(
     spatial_grid,
     fov_arcsec,
     oversample,
+    mode=None,
 ):
     """
     Generate a standardized cache filename for a PSF payload.
 
     The filename encodes key parameters to avoid collisions between different
-    configurations.
+    configurations. It also encodes the STPSF filter name, which is what lets
+    grism and prism caches share one ``psf_cache/`` directory without colliding
+    (``psf_WFI05_GRISM1_...`` vs ``psf_WFI05_PRISM_...``).
 
     Parameters
     ----------
     detector : str
         WFI detector name (e.g., 'WFI05')
     order : str
-        Spectral order ('0' or '1')
+        Spectral order ('0' or '1' for the grism, '1' for the prism)
     wavelengths : array_like
-        Wavelengths in meters
+        Wavelengths in microns
     spatial_grid : dict
         {'x': x_array, 'y': y_array} in SCA coordinates
     fov_arcsec : float
         PSF field of view in arcseconds
     oversample : int
         Oversampling factor
+    mode : str or DisperserMode, optional
+        Dispersing element (default grism). Orders this mode has no STPSF
+        filter for fall back to an ``ORDER<n>`` token rather than raising, so
+        the filename builder stays usable for exploratory grids.
 
     Returns
     -------
@@ -98,9 +122,8 @@ def get_cache_filename(
     x_grid = np.asarray(spatial_grid['x'])
     y_grid = np.asarray(spatial_grid['y'])
 
-    # Map order to filter name
-    filter_map = {'0': 'GRISM0', '1': 'GRISM1'}
-    filter_name = filter_map.get(order, f'ORDER{order}')
+    # Map order to STPSF filter name
+    filter_name = modes.get_mode(mode).stpsf_filter.get(order, f'ORDER{order}')
 
     # Grid dimensions
     n_y = len(y_grid)
@@ -308,7 +331,10 @@ def _generate_single_cache(args):
     Parameters
     ----------
     args : tuple
-        (detector, order, cache_path, wavelengths, spatial_grid, fov_arcsec, oversample)
+        (detector, order, cache_path, wavelengths, spatial_grid, fov_arcsec,
+        oversample, mode_name). ``mode_name`` is passed as a plain string rather
+        than a :class:`~roman_disperser.modes.DisperserMode` so the tuple
+        pickles cheaply across the process boundary.
 
     Returns
     -------
@@ -325,7 +351,8 @@ def _generate_single_cache(args):
     warnings.filterwarnings('ignore', message='.*outside the range.*')
     warnings.filterwarnings('ignore', message='.*clipping to closest.*')
 
-    detector, order, cache_path, wavelengths, spatial_grid, fov_arcsec, oversample = args
+    (detector, order, cache_path, wavelengths, spatial_grid, fov_arcsec,
+     oversample, mode_name) = args
 
     # Get shared counter if available (set by _init_worker)
     try:
@@ -342,6 +369,7 @@ def _generate_single_cache(args):
             fov_arcsec=fov_arcsec,
             oversample=oversample,
             progress_counter=counter,
+            mode=mode_name,
         )
         save_psf_payload(payload, cache_path, verbose=False)
         return (detector, order, 'generated', str(cache_path))
@@ -350,7 +378,8 @@ def _generate_single_cache(args):
 
 
 def _make_psf_payload_with_progress(
-    detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, progress_counter=None
+    detector, order, wavelengths, spatial_grid, fov_arcsec, oversample,
+    progress_counter=None, mode=None,
 ):
     """
     Internal version of make_psf_payload that updates a shared progress counter.
@@ -364,13 +393,9 @@ def _make_psf_payload_with_progress(
     warnings.filterwarnings('ignore', message='.*Attempted to get aberrations.*')
     warnings.filterwarnings('ignore', message='.*outside the range.*')
 
-    # Map order to STPSF filter name
-    filter_map = {'0': 'GRISM0', '1': 'GRISM1'}
-    if order not in filter_map:
-        raise ValueError(f"Invalid order '{order}'. Must be '0' or '1'.")
-
+    # Map order to STPSF filter name (raises with the valid orders listed)
     wfi = stpsf.roman.WFI()
-    wfi.filter = filter_map[order]
+    wfi.filter = modes.get_mode(mode).filter_for(order)
     wfi.detector = detector
 
     x_grid = np.asarray(spatial_grid['x'])
@@ -419,7 +444,7 @@ def _make_psf_payload_with_progress(
 
 def generate_all_psf_caches(
     cache_dir,
-    orders=('0', '1'),
+    orders=None,
     detectors=None,
     wavelengths=None,
     spatial_grid=None,
@@ -428,25 +453,29 @@ def generate_all_psf_caches(
     skip_existing=True,
     n_workers=1,
     verbose=True,
+    mode=None,
 ):
     """
     Generate PSF caches for all detectors and orders.
 
     This is a convenience function for pre-generating all PSF caches needed
-    for full-field validation. With default settings (4×4×56 grid), this
+    for full-field validation. With default settings (4×4×56 grid), the grism
     takes approximately 3-4 hours for all 36 combinations (18 SCAs × 2 orders)
-    with a single worker, or ~30-40 minutes with 8 workers.
+    with a single worker, or ~30-40 minutes with 8 workers. The prism has a
+    single beam, so it is half of that: 18 payloads.
 
     Parameters
     ----------
     cache_dir : str or Path
         Directory to store cache files (will be created if needed)
     orders : tuple, optional
-        Spectral orders to generate (default: ('0', '1') for GRISM0 and GRISM1)
+        Spectral orders to generate. Default: the modes's PSF orders —
+        ``('0', '1')`` for the grism (GRISM0/GRISM1), ``('1',)`` for the prism.
     detectors : list, optional
         List of detector names (default: all 18 WFI detectors)
     wavelengths : array_like, optional
-        Wavelengths in **microns** (default: 0.9-2.0 μm at 0.02 μm spacing)
+        Wavelengths in **microns** (default: the mode's band at 0.02 μm
+        spacing — grism 0.9-2.0 μm, prism 0.75-1.85 μm)
     spatial_grid : dict, optional
         {'x': x_array, 'y': y_array} (default: 4×4 grid)
     fov_arcsec : float, optional
@@ -461,6 +490,9 @@ def generate_all_psf_caches(
         for maximum parallelism, or fewer if memory-constrained.
     verbose : bool, optional
         Print progress information (default: True)
+    mode : str or DisperserMode, optional
+        Dispersing element (default grism). Sets the default ``orders`` and
+        ``wavelengths``, and the STPSF filter each order maps to.
 
     Returns
     -------
@@ -485,6 +517,7 @@ def generate_all_psf_caches(
     ...     n_workers=3
     ... )
     """
+    mode = modes.get_mode(mode)
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -492,9 +525,12 @@ def generate_all_psf_caches(
     if detectors is None:
         detectors = [f'WFI{i:02d}' for i in range(1, 19)]
 
+    if orders is None:
+        orders = mode.psf_orders
+
     # Setup defaults (wavelengths in microns)
     if wavelengths is None:
-        wavelengths = np.arange(0.9, 2.01, 0.02)
+        wavelengths = default_wavelengths(mode)
     wavelengths = np.asarray(wavelengths)
 
     if spatial_grid is None:
@@ -509,7 +545,8 @@ def generate_all_psf_caches(
     for detector in detectors:
         for order in orders:
             filename = get_cache_filename(
-                detector, order, wavelengths, spatial_grid, fov_arcsec, oversample
+                detector, order, wavelengths, spatial_grid, fov_arcsec, oversample,
+                mode=mode,
             )
             cache_path = cache_dir / filename
 
@@ -518,7 +555,7 @@ def generate_all_psf_caches(
             else:
                 tasks.append((
                     detector, order, str(cache_path),
-                    wavelengths, spatial_grid, fov_arcsec, oversample
+                    wavelengths, spatial_grid, fov_arcsec, oversample, mode.name
                 ))
 
     total_combinations = len(detectors) * len(orders)
@@ -570,6 +607,7 @@ def generate_all_psf_caches(
                     fov_arcsec=task[5],
                     oversample=task[6],
                     verbose=verbose,  # Show inner progress bar
+                    mode=task[7],
                 )
                 save_psf_payload(payload, cache_path, verbose=False)
                 generated.append((detector, order))
@@ -684,6 +722,7 @@ def get_or_make_psf_payload(
     cache_dir=None,
     force_regenerate=False,
     verbose=True,
+    mode=None,
 ):
     """
     Get a PSF payload, loading from cache if available or generating if not.
@@ -698,7 +737,7 @@ def get_or_make_psf_payload(
     order : str, optional
         Spectral order (default: '1')
     wavelengths : array_like, optional
-        Wavelengths in **microns** (default: 0.9-2.0 μm at 0.02 μm spacing)
+        Wavelengths in **microns** (default: the mode's band at 0.02 μm spacing)
     spatial_grid : dict, optional
         {'x': x_array, 'y': y_array} in SCA coordinates (default: 4×4 grid)
     fov_arcsec : float, optional
@@ -712,6 +751,9 @@ def get_or_make_psf_payload(
         If True, regenerate even if cache exists (default: False)
     verbose : bool, optional
         Print progress information (default: True)
+    mode : str or DisperserMode, optional
+        Dispersing element (default grism). Sets the default wavelengths and
+        the STPSF filter token in the cache filename.
 
     Returns
     -------
@@ -736,8 +778,9 @@ def get_or_make_psf_payload(
     save_psf_payload : Save to specific file
     """
     # Setup defaults (same as make_psf_payload) - wavelengths in microns
+    mode = modes.get_mode(mode)
     if wavelengths is None:
-        wavelengths = np.arange(0.9, 2.01, 0.02)
+        wavelengths = default_wavelengths(mode)
     wavelengths = np.asarray(wavelengths)
 
     if spatial_grid is None:
@@ -757,12 +800,14 @@ def get_or_make_psf_payload(
             fov_arcsec=fov_arcsec,
             oversample=oversample,
             verbose=verbose,
+            mode=mode,
         )
 
     # Generate cache filepath
     cache_dir = Path(cache_dir)
     filename = get_cache_filename(
-        detector, order, wavelengths, spatial_grid, fov_arcsec, oversample
+        detector, order, wavelengths, spatial_grid, fov_arcsec, oversample,
+        mode=mode,
     )
     cache_path = cache_dir / filename
 
@@ -791,6 +836,7 @@ def get_or_make_psf_payload(
         fov_arcsec=fov_arcsec,
         oversample=oversample,
         verbose=verbose,
+        mode=mode,
     )
 
     # Save to cache
@@ -814,6 +860,7 @@ def make_psf_payload(
     fov_arcsec=5.0,
     oversample=4,
     verbose=True,
+    mode=None,
 ):
     """
     Create PSF payload for star dispersion with timing benchmarks.
@@ -833,13 +880,15 @@ def make_psf_payload(
         Valid: 'WFI01' through 'WFI18'
 
     order : str, optional
-        Grism spectral order (default: '1')
-        Valid: '0' (zeroth order, undispersed), '1' (first order, dispersed)
-        Maps to STPSF filters: '0' -> 'GRISM0', '1' -> 'GRISM1'
+        Spectral order (default: '1')
+        Grism: '0' (zeroth order, undispersed) -> 'GRISM0',
+        '1' (first order, dispersed) -> 'GRISM1'.
+        Prism: '1' (its single beam) -> 'PRISM'.
 
     wavelengths : array_like, optional
         Wavelengths in **microns** for PSF calculations
-        Default: 56 wavelengths from 0.9 to 2.0 μm at 0.02 μm spacing
+        Default: 56 wavelengths across the mode's band at 0.02 μm spacing
+        (grism 0.9-2.0 μm, prism 0.75-1.85 μm)
         Finer wavelength sampling reduces interpolation errors in PSF wings
 
     spatial_grid : dict, optional
@@ -913,9 +962,9 @@ def make_psf_payload(
     """
     # Setup default wavelengths (in microns)
     if wavelengths is None:
-        # 56 wavelengths across full grism range (0.9 - 2.0 μm) at 0.02 μm spacing
-        # Finer wavelength sampling reduces interpolation errors in PSF wings
-        wavelengths = np.arange(0.9, 2.01, 0.02)
+        # 56 wavelengths across the mode's full band at 0.02 μm spacing.
+        # Finer wavelength sampling reduces interpolation errors in PSF wings.
+        wavelengths = default_wavelengths(mode)
 
     # Validate wavelengths are strictly increasing (required for interpolation)
     wavelengths = np.asarray(wavelengths)
@@ -953,7 +1002,8 @@ def make_psf_payload(
         print(f"  This may take 5-6 minutes for default grid...")
 
     psf_grid, timing = _compute_psf_grid_with_timing(
-        detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, verbose
+        detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, verbose,
+        mode=mode,
     )
 
     # Return JAX-compatible payload
@@ -987,7 +1037,8 @@ def make_psf_payload(
 
 
 def _compute_psf_grid_with_timing(
-    detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, verbose
+    detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, verbose,
+    mode=None,
 ):
     """
     Compute PSF grid using STPSF with detailed timing information.
@@ -1029,16 +1080,12 @@ def _compute_psf_grid_with_timing(
 
     start_time = time.time()
 
-    # Map order to STPSF filter name
-    filter_map = {
-        '0': 'GRISM0',  # Zeroth order (undispersed)
-        '1': 'GRISM1',  # First order (dispersed)
-    }
-    if order not in filter_map:
-        raise ValueError(f"Invalid order '{order}'. Must be '0' or '1'.")
+    # Map order to STPSF filter name. Grism: '0' -> GRISM0 (zeroth, undispersed),
+    # '1' -> GRISM1 (first, dispersed). Prism: '1' -> PRISM (its single beam).
+    filter_name = modes.get_mode(mode).filter_for(order)
 
     wfi = stpsf.roman.WFI()
-    wfi.filter = filter_map[order]
+    wfi.filter = filter_name
     wfi.detector = detector
 
     x_grid = spatial_grid['x']

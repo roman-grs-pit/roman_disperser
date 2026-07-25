@@ -1,5 +1,12 @@
 """Bisect to find which source(s) introduce NaN/Inf into a per-SCA grism dispersion.
 
+**Grism only.** This is a one-off debugging aid written for a specific 2026-04
+NERSC failure; it was not made mode-aware when the prism was merged, because it
+is not part of any pipeline anyone runs. It hardcodes the grism orders and
+filters the pointing table on ``BANDPASS == "GRISM"``. If you need the prism
+equivalent, thread ``modes.get_mode(...)`` through it the way
+``build_grism_image.py`` does — it is a short script.
+
 Reproduces the SCA-level dispersion for a single pointing without writing files,
 but processes the source list in halves with a finiteness check between calls
 so we can binary-search down to the offending galaxy.
@@ -53,8 +60,12 @@ from roman_disperser.pipeline import (
     cone_search, select_sources_per_order,
     make_batched_galaxy_fori, make_batched_star_fori,
     disperse_batched_galaxies, disperse_batched_stars,
-    DETECTOR_SIZE, ORDERS,
+    DETECTOR_SIZE,
 )
+from roman_disperser.modes import GRISM
+
+# Grism only -- see the module docstring.
+ORDERS = GRISM.orders
 
 
 def is_finite_all(arr):
