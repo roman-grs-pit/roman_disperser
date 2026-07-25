@@ -422,8 +422,16 @@ def check_synphot_integration(df, store, galacticus_dir, n_check=10):
 
     # Galacticus wavelength grid (from Readme_4sqdeg.txt)
     wl_galacticus = np.linspace(2000, 40000, 19001) * u.AA
-    # Slice matching our output grid
-    grism_slice = slice(3500, 3500 + len(wavelengths))
+    # Slice matching our output grid. DERIVED from the catalog's own first
+    # wavelength rather than hardcoded: the floor moved from 9000 A (grism-era)
+    # to 7500 A (prism band edge), and a hardcoded start index silently keeps
+    # reading the old window against a rebuilt catalog.
+    _wl0, _step = 2000.0, 2.0
+    _i0 = int(round((float(wavelengths[0]) - _wl0) / _step))
+    grism_slice = slice(_i0, _i0 + len(wavelengths))
+    assert np.allclose(wl_galacticus[grism_slice].to_value(u.AA), wavelengths), (
+        "derived Galacticus slice does not match the catalog wavelength grid"
+    )
 
     galaxies = df[df["type"] == "SER"]
     ok = True

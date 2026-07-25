@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 import roman_disperser.optical_model_jax as omj
+from roman_disperser import paths
 from roman_disperser.optical_model import RomanOpticalModel
 
 # Must match make_showcase_figure.py (FOV_IMG = star-selection box = imaging FOV)
@@ -38,8 +39,13 @@ RA0, DEC0, FOV_IMG = 10.183, -0.184, 3.0
 GRISM_SRC = "/mnt/roman-science/grs/20260324_roman_disperser_NERSC_native/output/ra10_dec0_pa0/*sources.parquet"
 PRISM_SRC = "/mnt/roman-science/grs/prism-testing-20260527/spectro/2026-05-28/output/prism-single.sim_001.001.001.001.001.001/*sources.parquet"
 GRISM_SCA, PRISM_SCA = 3, 3
-GRISM_YAML = "/data/npadman/1-Projects/roman_disperser/data/Roman_grism_OpticalModel_v0.8.yaml"
-PRISM_YAML = "/data/npadman/1-Projects/roman_disperser_prism/data/Roman_prism_OpticalModel_v0.8.yaml"
+# Resolved through the vendored data directory rather than hardcoded checkout
+# paths. The old absolute paths pointed at a pre-2026-07 laptop layout
+# (.../roman_disperser/ and .../roman_disperser_prism/) that no longer exists
+# on this cluster, and at a separate prism checkout that the merge removed the
+# need for -- both models now sit side by side in one data dir.
+GRISM_YAML = str(paths.optical_model_path(mode="grism"))
+PRISM_YAML = str(paths.optical_model_path(mode="prism"))
 OUT = os.path.join(os.path.dirname(__file__), "..", "figures", "showcase_star_traces.json")
 
 

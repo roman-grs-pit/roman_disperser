@@ -13,16 +13,27 @@ The data directory is resolved in this order:
 3. ``$PIXI_PROJECT_ROOT/data`` — back-compat with the pixi dev workflow,
 4. ``./data`` — default: a ``data/`` directory under the current directory.
 
+Two of these locations — the optical model and the sensitivity curves — depend on
+which dispersing element is in use, so those accessors take an optional ``mode``
+(see :mod:`roman_disperser.modes`). It is **keyword-optional and defaults to
+grism**, never required and never positional, so every existing no-argument call
+keeps working unchanged.
+
 See ``docs/data_vendoring_plan.md`` for the full design.
 """
 
 import os
 from pathlib import Path
 
-# Layout within the data directory.
-OPTICAL_MODEL_FILE = "Roman_grism_OpticalModel_v0.8.yaml"
+from roman_disperser import modes
+
+# Layout within the data directory. The optical-model filename and the
+# sensitivities subdirectory are mode-dependent and live in `modes.py`; these
+# grism values are kept only as back-compatible aliases for callers that
+# imported them before modes existed.
+OPTICAL_MODEL_FILE = modes.GRISM.optical_model_file
 CATALOGS_SUBDIR = "catalogs"
-SENSITIVITIES_SUBDIR = "sensitivities"
+SENSITIVITIES_SUBDIR = modes.GRISM.sensitivities_subdir
 PSF_CACHE_SUBDIR = "psf_cache"
 SYNPHOT_SUBDIR = "synphot"
 
@@ -45,9 +56,15 @@ def catalog_dir(explicit=None):
     return Path(explicit) if explicit is not None else data_dir() / CATALOGS_SUBDIR
 
 
-def sensitivity_dir(explicit=None):
-    """Sensitivity-curve directory (FITS files + ``sensitivity_map.yaml``)."""
-    return Path(explicit) if explicit is not None else data_dir() / SENSITIVITIES_SUBDIR
+def sensitivity_dir(explicit=None, mode=None):
+    """Sensitivity-curve directory (FITS files + ``sensitivity_map.yaml``).
+
+    ``mode`` selects the dispersing element (default grism); see
+    :func:`roman_disperser.modes.get_mode`.
+    """
+    if explicit is not None:
+        return Path(explicit)
+    return data_dir() / modes.get_mode(mode).sensitivities_subdir
 
 
 def psf_cache_dir(explicit=None):
@@ -60,6 +77,12 @@ def synphot_dir(explicit=None):
     return Path(explicit) if explicit is not None else data_dir() / SYNPHOT_SUBDIR
 
 
-def optical_model_path(explicit=None):
-    """Optical-model YAML path."""
-    return Path(explicit) if explicit is not None else data_dir() / OPTICAL_MODEL_FILE
+def optical_model_path(explicit=None, mode=None):
+    """Optical-model YAML path.
+
+    ``mode`` selects the dispersing element (default grism); see
+    :func:`roman_disperser.modes.get_mode`.
+    """
+    if explicit is not None:
+        return Path(explicit)
+    return data_dir() / modes.get_mode(mode).optical_model_file

@@ -1,0 +1,38 @@
+# Prism single-pointing test (2026-05-28)
+#
+# One PRISM pointing at RA,Dec=(10,0) -- dead-center of the prism-testing
+# catalog footprint (RA [9,11], Dec [-1,1]).
+#
+# Originally written on the single-mode-per-checkout `prism` branch, where the
+# single order "1" over 0.75-1.85 um and the prism reference-data paths were
+# baked into pipeline.py. Post-merge they come from `mode: prism` below, and
+# the optical model / sensitivities / PSF caches resolve through the vendored
+# data directory ($ROMAN_DISPERSER_DATA) -- so the three explicit path keys
+# that used to be here are gone. They pointed at a pre-2026-07 laptop layout
+# (/data/npadman/1-Projects/roman_disperser_prism/) that no longer exists.
+#
+# Path strategy (see README):
+#   - catalog_dir reads directly from /mnt (S3-Files). For a SINGLE pointing
+#     the S3 read penalty (~2.8x; a few min total across 18 SCAs, since
+#     galaxy SEDs are read per-SCA for the on-detector subset) is smaller
+#     than the ~5 min cost of staging the 19 GB catalog to EBS -- so direct
+#     is simpler and no slower end-to-end. This matches the acceptance run.
+#     Stage to EBS only for multi-pointing runs (project_s3_vs_ebs_seds).
+#   - output_dir is on /mnt for shareability -- FITS/PNG are plain writes,
+#     so the zarr/hardlink limitation of the S3 mount does not apply.
+#   - cache_dir (JAX compile cache) is on EBS so it persists and reads fast.
+mode: prism
+output_dir: /mnt/roman-science/grs/prism-testing-20260527/spectro/2026-05-28/output
+seed: 42
+scas: all
+cone_radius: 0.6
+star_batch_size: 1000
+galaxy_batch_size: 100
+galaxy_npix: 30
+cache_dir: /data/npadman/jax-cache-prism
+
+# The catalog is NOT the vendored default: catalog-v2 is on a 9000-21000 A grid
+# (a grism grid), and the prism band opens at 7500 A. This one is on
+# linspace(7500, 21000, 6751). Until catalog-v3 exists, prism runs must name a
+# 7500 A-floor catalog explicitly. See docs/mode_support.md.
+catalog_dir: /mnt/roman-science/grs/prism-testing-20260527/catalogs

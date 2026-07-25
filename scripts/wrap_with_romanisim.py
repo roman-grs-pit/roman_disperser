@@ -22,7 +22,7 @@ Header-driven arguments (read per FITS):
     RNDSEED0 ^ RNDSEED1      -> --rng_seed  (XOR fold to 32-bit)
 
 Static arguments (CLI-tunable; see --help):
-    --bandpass GRISM
+    --bandpass GRISM (or PRISM; follows --mode)
     --usecrds --stpsf
     --nobj 0
     --extra-counts <fits> ISIM
@@ -165,8 +165,12 @@ def main() -> None:
                    help="Total workers for round-robin partitioning")
     p.add_argument("--date", default=DEFAULT_DATE,
                    help=f"UTC date passed to romanisim --date (default: {DEFAULT_DATE})")
-    p.add_argument("--bandpass", default="GRISM",
-                   help="--bandpass to romanisim (default: GRISM)")
+    p.add_argument("--mode", default=None,
+                   help="Dispersing element: grism (default) or prism. Sets "
+                        "--bandpass unless that is given explicitly.")
+    p.add_argument("--bandpass", default=None,
+                   help="--bandpass to romanisim (default: the mode's, i.e. "
+                        "GRISM or PRISM)")
     p.add_argument("--level", type=int, default=2,
                    help="L1 (1) or L2 (2) output (default: 2)")
     p.add_argument("--dry-run", action="store_true",
@@ -182,6 +186,11 @@ def main() -> None:
         level=args.log_level,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+
+    # Bandpass follows the dispersing element unless overridden explicitly.
+    if args.bandpass is None:
+        from roman_disperser import modes
+        args.bandpass = modes.get_mode(args.mode).romanisim_bandpass
 
     if args.num_workers <= 0 or not (0 <= args.worker_index < args.num_workers):
         p.error("--worker-index must be in [0, --num-workers)")

@@ -36,20 +36,28 @@ warnings.filterwarnings('ignore', message='.*clipping to closest.*')
 # Add src to path for development
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
+from roman_disperser import modes
 from roman_disperser import psf_model
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate PSF caches for Roman grism disperser'
+        description='Generate PSF caches for the Roman disperser'
+    )
+    parser.add_argument(
+        '--mode', type=str, default=None, choices=sorted(modes.MODES),
+        help=('Dispersing element (default: $ROMAN_DISPERSER_MODE, then grism). '
+              'Sets the default orders and wavelength grid, and the STPSF '
+              'filter token in each cache filename.')
     )
     parser.add_argument(
         '--cache-dir', type=str, default='data/psf_cache',
         help='Cache directory (default: data/psf_cache)'
     )
     parser.add_argument(
-        '--orders', type=str, default='0,1',
-        help='Comma-separated orders to generate (default: 0,1)'
+        '--orders', type=str, default=None,
+        help=("Comma-separated orders to generate (default: the mode's PSF "
+              "orders -- 0,1 for the grism, 1 for the prism)")
     )
     parser.add_argument(
         '--detectors', type=str, default=None,
@@ -66,8 +74,10 @@ def main():
 
     args = parser.parse_args()
 
-    # Parse orders
-    orders = tuple(args.orders.split(','))
+    mode = modes.get_mode(args.mode)
+
+    # Parse orders (None -> the mode's own PSF orders)
+    orders = tuple(args.orders.split(',')) if args.orders else None
 
     # Parse detectors
     detectors = None
@@ -78,7 +88,8 @@ def main():
     print("PSF Cache Generator")
     print("=" * 60)
     print(f"Cache directory: {args.cache_dir}")
-    print(f"Orders: {orders}")
+    print(f"Mode: {mode.name}")
+    print(f"Orders: {orders or mode.psf_orders}")
     print(f"Detectors: {detectors or 'all 18'}")
     print(f"Workers: {args.workers}")
     print(f"Skip existing: {not args.no_skip}")
@@ -92,6 +103,7 @@ def main():
         skip_existing=not args.no_skip,
         n_workers=args.workers,
         verbose=True,
+        mode=mode,
     )
 
     # Summary

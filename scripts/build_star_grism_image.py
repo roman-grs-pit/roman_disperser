@@ -4,6 +4,11 @@
 supporting both stars and galaxies, use ``scripts/build_grism_image.py``
 (see ``docs/grism_pipeline.md``).
 
+**Grism only - raises in prism mode.** It keeps its own copies of
+ORDERS/LAM_MIN/LAM_MAX and its own ``resolve_paths``; those were left alone
+during the prism merge rather than ported, because nothing runs this any more
+and the unified pipeline is the mode-aware one.  See ``docs/mode_support.md``.
+
 Build simulated Roman grism images from a stellar catalog.
 
 Supports two modes:
@@ -55,9 +60,23 @@ import roman_disperser.optical_model_jax as omj
 # Constants
 # ---------------------------------------------------------------------------
 DETECTOR_SIZE = 4088
+# Grism only - see the module docstring. Deliberately NOT routed through
+# roman_disperser.modes: this script is deprecated and was not ported.
+_PRISM_BLOCKER = (
+    "build_star_grism_image.py is deprecated and grism-only (asked for "
+    "{mode}). Use build_grism_image.py --mode prism instead."
+)
 ORDERS = ["0", "1", "2"]
 LAM_MIN = 0.9   # microns
 LAM_MAX = 2.0   # microns
+
+
+def _require_grism(mode_arg=None):
+    """Refuse to run in prism mode rather than produce a grism-shaped answer."""
+    from roman_disperser import modes
+    mode = modes.get_mode(mode_arg)
+    if mode.name != "grism":
+        raise NotImplementedError(_PRISM_BLOCKER.format(mode=mode.name))
 SENSITIVITY_MAP_FILE = "sensitivity_map.yaml"
 
 
@@ -1328,6 +1347,7 @@ def run_batch(config_path, verbose=True, force=False):
 # ---------------------------------------------------------------------------
 
 def main():
+    _require_grism()
     parser = argparse.ArgumentParser(
         description="Build simulated Roman grism images from a stellar catalog.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
