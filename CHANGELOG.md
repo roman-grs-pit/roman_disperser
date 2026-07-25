@@ -8,6 +8,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Dual dispersing-element support: grism (G150) and prism (P127).**
+  `roman_disperser.modes` holds a frozen `DisperserMode` record per element
+  carrying everything that differs — optical model, sensitivities directory,
+  spectral orders, STPSF filter map, PSF-order aliasing, wavelength band, and
+  romanisim bandpass. The physics is identical; only these constants differ.
+  See `docs/dispersers.md` for the design and `docs/mode_support.md` for what
+  supports which element.
+  - **Grism is the default everywhere**, so existing calls, scripts, configs
+    and SLURM drivers are unaffected. Selection order mirrors
+    `paths.data_dir()`: explicit argument > `--mode` / config `mode:` >
+    `$ROMAN_DISPERSER_MODE` > grism.
+  - `modes.check_band()` raises at pipeline setup on a mode/model mismatch, on
+    a band that would extrapolate the trace polynomials past their fitted
+    range, or on an order the delivered model does not define.
+  - Note these are *our* package versions; the `v0.8` in the optical-model
+    filenames is IPAC/SSC's model version and is unrelated.
+- `docs/dispersers.md`, `docs/mode_support.md`.
+- Prism single-pointing workbench study (`workbench/20260528-prism-single-pointing/`)
+  and the parallel SLURM PSF-cache driver (`scripts/slurm_generate_psfs.sh`),
+  brought across from the `prism` branch.
+
+### Changed
+- **Breaking:** `pipeline.ORDERS`, `pipeline.LAM_MIN` and `pipeline.LAM_MAX`
+  are **removed**. They were single-mode globals — editing them in place is
+  how the `prism` branch lost grism support — and are replaced by the mode
+  record threaded through as an argument. Band and order parameters take
+  `None` sentinels resolved from the mode, so callers that omitted them keep
+  working; only code that *imported the constants* needs updating.
+- `paths.optical_model_path()` and `paths.sensitivity_dir()` take an optional
+  `mode` keyword (never positional, defaults to grism).
+- `build_source_catalog.py`: default SED grid is now **7500–21000 Å**, a
+  superset covering both elements, and the Galacticus slice is derived from the
+  requested range rather than hardcoded. `--wl-min 9000` reproduces the
+  grism-era grid of `catalog-v2`.
+- `build_grism_image.py` validates that the catalog covers the active mode's
+  band and raises otherwise, rather than dispersing a truncated spectrum.
+
+### Fixed
+- Test fixtures located the optical model by building
+  `$PIXI_PROJECT_ROOT/data/...` by hand; they were never updated for the
+  v0.10.0 vendoring rework and failed on a clean checkout. They now use
+  `paths.optical_model_path()`.
+
+### Deprecated
+- `magnitude_cutoff.py`, `build_star_grism_image.py` and
+  `debug_dispersion_nan.py` were deliberately not made mode-aware and raise in
+  prism mode rather than returning a grism-shaped answer. For
+  `magnitude_cutoff.py` the blocker is physics: it needs a prism R(λ).
+
 - Showcase visualization scripts (`scripts/`) and figures (`figures/`):
   - `make_showcase_figure.py` — 3-panel "same sky, three views" of the
     acceptance/roll test products at RA≈10/Dec≈0: imaging (L3 coadd) | grism |
