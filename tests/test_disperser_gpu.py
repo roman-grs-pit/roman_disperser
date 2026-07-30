@@ -287,10 +287,19 @@ class TestSkyToFPACPUvsGPU:
             np.hypot(np.asarray(x_cpu) - np.asarray(x_gpu),
                      np.asarray(y_cpu) - np.asarray(y_gpu))
         )
-        assert diff_px.max() < 1e-3, (
+        # Tolerance is ~10 float32 ulp, not bit-identity. At the field radius
+        # (~0.4 deg) one float32 ulp is 9.8e-4 px, and CPU and GPU legitimately
+        # differ by 0-2 ulp because their libm cos/sin disagree in the last bit
+        # when building the rotation matrix. Measured on an a10g: max 0.0020 px,
+        # quantised in exact ulp steps.
+        #
+        # This still separates the two regimes by ~180x: TF32 has eps 4.9e-4
+        # against float32's 1.2e-7, and reproduced the original defect at
+        # 1.84 px median / 7.08 px max.
+        assert diff_px.max() < 1e-2, (
             f"CPU and GPU sky->FPA differ by {diff_px.max():.4f} px. If this "
-            "is ~1 px the rotation matmul has lost precision='highest' and is "
-            "running as TF32 on the GPU."
+            "is ~1 px or more, the rotation matmul has lost precision='highest' "
+            "and is running as TF32 on the GPU."
         )
 
     @pytest.mark.parametrize("device_kind", ["cpu", "gpu"])
