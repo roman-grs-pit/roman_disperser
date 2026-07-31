@@ -215,13 +215,25 @@ add_text(s, [
 
 # ------------------------------------------------------ 5 · smoothness gate
 s = new_slide("Independent-validation smoothness defect: eliminated")
-h = add_figure(s, ANALYSIS / "fig4_smoothness.png", max_h_in=4.4,
-               caption="Per SCA: centre (RA·cosδ, Dec) on the SCA mean, fit "
-                       "x and y independently by least squares to all "
-                       "monomials uⁱvʲ with i+j ≤ 3; plot rms of the 2-D "
-                       "residual (wave-1b stpsf PA 0 truth tables). Pre-fix: "
-                       "0.70–2.69 px. v0.13.0: 1.8e-4–6.9e-4 px — smooth at "
-                       "float precision.")
+add_figure(s, ANALYSIS / "fig4_smoothness.png", max_h_in=4.6, max_w_in=7.5,
+           left=MARGIN,
+           caption="Wave-1b stpsf PA 0 truth tables. Pre-fix: 0.70–2.69 px. "
+                   "v0.13.0: 1.8e-4–6.9e-4 px — smooth at float precision.")
+add_text(s, ["The fit (per SCA, sources deduplicated):"],
+         left=Inches(8.25), top=Inches(1.35), width=Inches(4.7), size=14)
+add_text(s, [
+    "u = (RA − ⟨RA⟩) · cos⟨Dec⟩   [deg]",
+    "v =  Dec − ⟨Dec⟩             [deg]",
+    "      (⟨·⟩ = per-SCA mean)",
+    "",
+    "x̂(u,v) = Σ  aᵢⱼ uⁱ vʲ ,   i+j ≤ 3",
+    "ŷ(u,v) = Σ  bᵢⱼ uⁱ vʲ ,   i+j ≤ 3",
+    "      (independent OLS fits,",
+    "       10 coefficients each)",
+    "",
+    "rms = √⟨ (x−x̂)² + (y−ŷ)² ⟩   [px]",
+], left=Inches(8.25), top=Inches(1.85), width=Inches(4.7), size=13,
+    mono=True, line_gap=4)
 add_text(s, [
     "The audit's one real defect (0.6–2.9 px non-smoothness, surviving "
     "affine / degree-6 / TAN+SIP fits) was exactly the v0.11/v0.12 placement "
