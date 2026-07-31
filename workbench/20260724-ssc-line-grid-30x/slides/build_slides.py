@@ -22,7 +22,10 @@ from PIL import Image
 
 HERE = Path(__file__).parent
 FIGS = HERE / "figs"
-OUT = HERE / "line_grid_wave1b_draft.pptx"
+# Decks are build artifacts and live with the data, not in git
+# (2026-07-31 decision; the committed copy was moved there the same day).
+OUT = Path("/mnt/roman-science/grs/line-tests-20260724/slides"
+           ) / "line_grid_wave1b_draft.pptx"
 
 SLIDE_W, SLIDE_H = Inches(13.333), Inches(7.5)
 MARGIN = Inches(0.55)
