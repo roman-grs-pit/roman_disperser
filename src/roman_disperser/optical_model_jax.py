@@ -290,7 +290,7 @@ def sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec):
         :math:`\\Delta\\alpha \\cos\\delta` rather than a gnomonic (TAN)
         projection, and therefore has **no right-ascension wrap handling**. A
         field straddling RA = 0 raises rather than silently mis-placing its
-        sources; see the guard below and log-repo issue #13. The gnomonic
+        sources; see the guard below and issue #19. The gnomonic
         replacement fixes both, since a tangent-plane transform uses sin/cos of
         (ra - ra0) and is periodic by construction.
 
@@ -320,7 +320,7 @@ def sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec):
             f"(max {np.abs(dra).max():.4f} deg). The flat-sky transform has no "
             "wrap handling and would place these sources ~360 deg off the focal "
             "plane, where they are silently culled by the detector bounding box. "
-            "Refusing rather than dropping them. See log-repo issue #13; fixed "
+            "Refusing rather than dropping them. See issue #19; fixed "
             "by the gnomonic projection."
         )
 

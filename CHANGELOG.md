@@ -61,12 +61,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Affects any pointing within ~0.4 deg of RA = 0; no run to date is affected.
   Fixed for free by the gnomonic projection (next release), since a
   tangent-plane transform uses sin/cos of the RA difference and is periodic.
-  See log-repo issue #13.
+  See issue #19.
 - **The flat-sky approximation `Δα·cos δ` is still in use**, and is a larger
-  error than the TF32 defect for any pointing off the equator. Measured against
-  an astropy TAN projection over a ±0.4 deg field: 0.12 px median (0.72 px max)
-  at Dec 0, 3.19 px (18.85 px) at Dec 30, 9.64 px (54.81 px) at Dec 60.
-  Replaced by a gnomonic projection in the next release.
+  error than the TF32 defect for any pointing off the equator. The dominant term
+  is second order — `Δη ≈ -(tan δ₀ / 2)·u²` with `u = Δα·cos δ₀`, the curvature
+  of parallels — so it grows as `u²·tan δ₀`: quadratic in field radius, and zero
+  at the equator. Source displacement measured against an astropy TAN
+  projection over a ±0.4 deg field:
+
+  | pointing Dec | median | max |
+  |---|---|---|
+  | 0° | 0.12 px | 0.74 px |
+  | 30° | 6.75 px | 26.76 px |
+  | 60° | 20.25 px | 79.53 px |
+
+  Replaced by a gnomonic projection in the next release, which also fixes the
+  RA wrap above (a tangent-plane transform is periodic in the RA difference).
+  See issue #5.
 
 ### Added
 - Showcase visualization scripts (`scripts/`) and figures (`figures/`):

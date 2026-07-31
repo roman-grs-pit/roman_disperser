@@ -157,7 +157,7 @@ def test_checker_reports_correct_line_number():
 
 
 def test_regression_get_fpa_pos_rotation_is_annotated():
-    """Pin the specific line that shipped wrong (log-repo sky-to-fpa thread).
+    """Pin the specific line that shipped wrong (see PR #18).
 
     Named separately from the sweep above so that a future exclusion of
     optical_model_jax.py from the scan cannot quietly drop coverage of the one

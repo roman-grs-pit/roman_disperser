@@ -652,7 +652,7 @@ class TestSkyToFPAMeridian:
     periodic), at which point the xfail below flips to a pass -- and because it
     is `strict`, the suite goes red and forces the marker to be removed.
 
-    See log-repo issue #13.
+    See issue #19.
     """
 
     def test_meridian_crossing_field_raises_rather_than_dropping_sources(self):
@@ -668,7 +668,7 @@ class TestSkyToFPAMeridian:
     @pytest.mark.xfail(
         strict=True,
         reason="flat-sky transform has no RA wrap handling; fixed by the "
-               "gnomonic projection (stage 2). See log-repo issue #13. When "
+               "gnomonic projection (stage 2). See issue #19. When "
                "this XPASSes, delete the marker and the guard in "
                "sky_to_tangent_offsets.",
     )
