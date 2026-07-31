@@ -102,10 +102,21 @@ def make_sca_keys(pointing_key, sca_list):
     """Derive per-SCA RNG keys by folding the SCA number into the pointing key.
 
     Each SCA's key depends only on ``(pointing_key, sca_number)`` — never on
-    which other SCAs are in the run or their order — so a subset run
-    reproduces the full run's Poisson draw for the SCAs they share. This is
-    what makes a 1-SCA ISIM bit-identity check a valid regression gate for a
-    full 18-SCA production run.
+    which other SCAs are in the run or their order — so a subset run draws
+    from the same key as the full run for the SCAs they share. This removes
+    the RNG obstacle to using a 1-SCA run as a regression gate for a full
+    18-SCA production run.
+
+    Caveat (measured 2026-07-31, a10g): identical keys do *not* imply
+    bit-identical ISIM on GPU. Scatter-add accumulation is
+    non-deterministic run-to-run at the float32-epsilon level (~1e-7
+    relative in MODEL), which flips a handful of Poisson draws (~88 of 2.9M
+    nonzero pixels in a 1-SCA test). ``--xla_gpu_deterministic_ops=true``
+    restores determinism but was measured >100x slower — impractical here.
+    Gates on GPU products should therefore compare MODEL with
+    ``np.allclose`` / relative-sum tolerances (the existing acceptance
+    gates' ~1e-9 ``rel_sum_diff`` is exactly this noise floor), not
+    bitwise; exact ISIM bit-identity requires a deterministic backend.
 
     History: before v0.13.0 keys came from ``jax.random.split`` indexed by
     *position* in ``sca_list``, so ``scas: [5]`` gave SCA 5 the key an

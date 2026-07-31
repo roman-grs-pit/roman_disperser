@@ -24,8 +24,14 @@ bit-identical to 0.12.0.
   are in the run. **ISIM noise realisations change by construction** for
   every SCA relative to ≤0.12.0; MODEL is unaffected. Old products remain
   reconstructible from their `RNDSEED0`/`RNDSEED1` header cards via
-  `jax.random.wrap_key_data`. A 1-SCA ISIM bit-identity check is now a
-  valid regression gate for a full 18-SCA run.
+  `jax.random.wrap_key_data`. This removes the RNG obstacle to 1-SCA
+  regression gates for full 18-SCA runs — but note that GPU products are
+  not bit-reproducible even at fixed keys (scatter-add nondeterminism at
+  the f32-epsilon level, ~1e-7 relative in MODEL, measured a10g
+  2026-07-31; flips ~tens of Poisson counts per SCA), so GPU gates must
+  compare with tolerances (`allclose`, relative sums); bitwise gates
+  require a deterministic backend (`--xla_gpu_deterministic_ops` measured
+  >100x slower).
 
 ### Added
 - **`CODEVER` and `GITSHA` provenance cards in every FITS product** (both

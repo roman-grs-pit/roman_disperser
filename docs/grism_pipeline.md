@@ -167,12 +167,19 @@ make_pointing_key(seed, filename, plan, pass, segment, obs, visit, exposure)
 ```
 
 Because the fold uses the SCA number rather than the position in the SCA
-list, slice-invariance extends to SCAs: a `scas: [5]` run draws the same
-noise for SCA 5 as a full 18-SCA run, so a 1-SCA ISIM bit-identity check is
-a valid regression gate for a full production run. **Before v0.13.0 the keys
-came from `jax.random.split` indexed by list position (issue #20), so ISIM
-realisations from earlier versions differ by construction; the noiseless
-MODEL extension is unaffected.**
+list, slice-invariance extends to SCAs: a `scas: [5]` run draws from the
+same key as a full 18-SCA run, removing the RNG obstacle to 1-SCA
+regression gates. **Before v0.13.0 the keys came from `jax.random.split`
+indexed by list position (issue #20), so ISIM realisations from earlier
+versions differ by construction; the noiseless MODEL extension is
+unaffected.**
+
+Note that identical keys do not imply bit-identical products on GPU:
+scatter-add accumulation is non-deterministic at the float32-epsilon level
+(~1e-7 relative in MODEL run-to-run, measured on a10g), which can flip a
+handful of Poisson counts. Compare GPU products with `np.allclose` /
+relative-sum tolerances rather than bitwise; `--xla_gpu_deterministic_ops`
+restores bit-identity but at a >100x slowdown.
 
 Per-SCA keys are stored in both FITS headers (`RNDSEED0`/`RNDSEED1`) and the metadata YAML, so individual SCAs can be reproduced by reconstructing the key:
 
