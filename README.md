@@ -101,7 +101,6 @@ pytest -v tests/test_psf_model.py           # PSF model tests
 - [Installation Guide](INSTALL.md) — Pixi/pip setup, GPU support, data files
 - [Optical Model API](docs/optical_model.md) — JAX optical model functions and examples
 - [Grism Pipeline](docs/grism_pipeline.md) — User guide for `build_grism_image.py` (stars + galaxies)
-- [Star Grism Pipeline](docs/star_grism_pipeline.md) — Legacy star-only pipeline (deprecated)
 - [Disperser Design](docs/disperser_design.md) — Legacy disperser implementation details
 - [JIT Compilation Strategy](docs/jit_compilation.md) — Closure pattern for non-traceable payloads
 - [STPSF Quick Reference](docs/stpsf.md) — Roman WFI grism PSF generation
@@ -153,12 +152,10 @@ roman_disperser/
 │   └── archive/                   # Legacy notebooks
 ├── scripts/
 │   ├── build_grism_image.py       # Unified grism pipeline (stars + galaxies)
-│   ├── build_star_grism_image.py  # Legacy star-only pipeline (deprecated)
 │   ├── download_psf_caches.py     # Download pre-generated PSF caches
 │   ├── download_source_catalog.py # Download unified source catalog
 │   ├── generate_psf_caches.py     # Regenerate PSF caches from STPSF
 │   ├── example_grism_config.yaml  # Documented batch pipeline config
-│   └── example_star_config.yaml   # Legacy star-only config
 ├── data/
 │   ├── Roman_grism_OpticalModel_v0.8.yaml
 │   ├── catalogs/                  # Unified source catalog (Parquet + Zarr)

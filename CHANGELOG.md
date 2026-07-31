@@ -7,7 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-31
+
+### Fixed
+- **Sky→FPA source placement was wrong on GPU (TF32).** The position-angle
+  rotation in `optical_model_jax.get_fpa_pos` was an unannotated float32
+  matmul. With `jax_enable_x64` off, XLA:GPU serves that as TF32 on Ampere and
+  later — a 10-bit mantissa, eps ≈ 4.9e-4 — while the identical op on CPU is
+  exact. Every source in a GPU run was placed at a perturbed focal-plane
+  position: median 1.84 px, up to 7.08 px, growing with field radius. Now uses
+  `jnp.matmul(..., precision='highest')`. **All grism/prism products generated
+  on GPU before this release carry the error**; the catalogue and manifest
+  RA/Dec are correct, only the placement was wrong, so the products remain
+  internally self-consistent. A consumer who re-runs their own disperser from
+  the catalogue coordinates will disagree with them.
+- **Absolute RA was silently downcast to float32 before differencing.** The
+  call site passed `jnp.array(ra)` from float64 pandas, quantising right
+  ascension *before* `(ra - pointing_ra)` — catastrophic cancellation, with an
+  error that scaled with the pointing: 0.006 px at RA 10, but 0.40 px at RA
+  260, where float32 ulp is 0.11 arcsec. The differencing now happens in float64
+  on the host (`sky_to_tangent_offsets`), making the accuracy independent of
+  where the telescope points (9.8e-5 px at every RA tested).
+
 ### Added
+- `optical_model_jax.sky_to_tangent_offsets` (host, float64) and
+  `get_fpa_pos_from_offsets` (JAX, jit-compilable), the two halves of the
+  sky→FPA transform. `get_fpa_pos` composes them and keeps its signature.
+- `sky_to_tangent_offsets` **raises `TypeError` on float32 input** (including
+  JAX arrays, which are float32 with x64 disabled). By the time absolute RA is
+  float32 the quantisation has already happened and upcasting cannot undo it,
+  so a call site that wraps its catalogue columns in `jnp.array()` — how the
+  original defect shipped — now fails loudly instead of silently reintroducing
+  the pointing-dependent error. The cost is an O(1) dtype check on the host.
+- `tests/test_precision_convention.py`: AST scan asserting every matmul-class
+  JAX op in the package declares `precision=`, with self-tests pinning the
+  checker's own behaviour on known-good and known-bad forms. Runs on CPU in
+  milliseconds, so unlike the `has_gpu()`-guarded tests it cannot skip silently
+  on a GPU-less machine.
+- `scripts/slurm_run_tests.sh`: submits the GPU test suite to `gpu-med`. The
+  CPU/GPU tests existed but were never run anywhere with a GPU, which is why
+  the TF32 defect survived.
+- Sky→FPA tests now state tolerances in **pixels**. The previous cross-check
+  compared positions in degrees at `ATOL = 1e-3`, which is 33 px — loose enough
+  to pass a 1.84 px displacement. Adds an independent astropy TAN oracle and
+  float64 golden values.
 - Showcase visualization scripts (`scripts/`) and figures (`figures/`):
   - `make_showcase_figure.py` — 3-panel "same sky, three views" of the
     acceptance/roll test products at RA≈10/Dec≈0: imaging (L3 coadd) | grism |
@@ -20,6 +63,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     marker stars' order-1 traces via the optical model (run in the
     `roman_disperser`/`roman_disperser_prism` envs); the figure scripts run in
     the `roman_l2_job` env to read the L2/L3 ASDFs.
+
+### Changed
+- **`get_fpa_pos` is no longer jit-compilable**, deliberately: its float64
+  differencing is host NumPy. Jit `get_fpa_pos_from_offsets` instead. In
+  production the host half runs once per pointing over a few thousand sources
+  and is not on a hot path.
+
+### Known issues
+- **`get_fpa_pos` has no RA wrap handling; a field crossing RA = 0 is
+  refused.** `dx = ra - pointing_ra` gives +359.8 deg where the true separation
+  is −0.2 deg. Because `cone_search` uses a wrap-safe haversine, such sources
+  are correctly *selected*, then placed ~360 deg off the focal plane and
+  silently culled by the detector bounding box — vanishing from both image and
+  truth table with no error. Rather than mis-place them, `sky_to_tangent_offsets`
+  now raises when any source lies more than 180 deg from the pointing in RA.
+  Affects any pointing within ~0.4 deg of RA = 0; no run to date is affected.
+  Fixed for free by the gnomonic projection (next release), since a
+  tangent-plane transform uses sin/cos of the RA difference and is periodic.
+  See issue #19.
+- **The flat-sky approximation `Δα·cos δ` is still in use**, and is a larger
+  error than the TF32 defect for any pointing off the equator. The dominant term
+  is second order — `Δη ≈ -(tan δ₀ / 2)·u²` with `u = Δα·cos δ₀`, the curvature
+  of parallels — so it grows as `u²·tan δ₀`: quadratic in field radius, and zero
+  at the equator. Source displacement measured against an astropy TAN
+  projection over a ±0.4 deg field:
+
+  | pointing Dec | median | max |
+  |---|---|---|
+  | 0° | 0.12 px | 0.74 px |
+  | 30° | 6.75 px | 26.76 px |
+  | 60° | 20.25 px | 79.53 px |
+
+  Replaced by a gnomonic projection in the next release, which also fixes the
+  RA wrap above (a tangent-plane transform is periodic in the RA difference).
+  See issue #5.
 
 ## [0.10.0] - 2026-06-12
 

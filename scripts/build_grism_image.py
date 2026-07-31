@@ -611,8 +611,13 @@ def process_pointing(
         t0 = time.time()
         ra_cone = meta_cone_reset["ra"].values
         dec_cone = meta_cone_reset["dec"].values
+        # Pass the float64 arrays straight through: get_fpa_pos differences
+        # them on the host before handing JAX the (small) tangent-plane
+        # offsets. Wrapping them in jnp.array() here would silently downcast
+        # absolute RA to float32 first, which costs up to 0.5 px depending on
+        # the pointing -- see the precision convention in optical_model_jax.
         xfpa, yfpa = omj.get_fpa_pos(
-            jnp.array(ra_cone), jnp.array(dec_cone),
+            ra_cone, dec_cone,
             pointing_ra, pointing_dec, pointing_pa,
         )
         log(f"    Done in {time.time() - t0:.2f}s")

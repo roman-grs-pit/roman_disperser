@@ -292,10 +292,13 @@ class TestSkyPAToSCATheta:
         src_ra = pointing_ra + 0.01
         src_dec = pointing_dec + 0.01
 
-        # Compute FPA position
+        # Compute FPA position. Float64 host arrays, not jnp.array(): the
+        # eps = 1e-5 deg finite differences below are only ~10 float32 ulp at
+        # RA = 10, so a float32 downcast here quantises the very step the
+        # Jacobian is built from (and get_fpa_pos now refuses float32).
         xfpa, yfpa = omj.get_fpa_pos(
-            jnp.array([src_ra]),
-            jnp.array([src_dec]),
+            np.array([src_ra]),
+            np.array([src_dec]),
             pointing_ra,
             pointing_dec,
             pointing_pa,
@@ -310,7 +313,7 @@ class TestSkyPAToSCATheta:
 
         def sky_to_sca(ra, dec):
             xf, yf = omj.get_fpa_pos(
-                jnp.array([ra]), jnp.array([dec]),
+                np.array([ra]), np.array([dec]),
                 pointing_ra, pointing_dec, pointing_pa,
             )
             xs, ys = omj.fpa_to_sca(payload, xf, yf)

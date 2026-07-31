@@ -1,8 +1,9 @@
 """Shared pipeline utilities for Roman grism simulation scripts.
 
-Extracted from ``build_star_grism_image.py`` so that both the star-only and
-unified simulation scripts share the same I/O, batching, and source-selection
-helpers.
+Originally extracted from the star-only pipeline so that it and the unified
+simulation script could share the same I/O, batching, and source-selection
+helpers. The star-only script was removed in the sky->FPA precision work; this
+module is now used solely by ``scripts/build_grism_image.py``.
 
 Not added to ``__init__.py`` — scripts import directly::
 

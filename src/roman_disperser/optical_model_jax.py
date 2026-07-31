@@ -9,10 +9,35 @@ Notes:
     and mirror the class’s alternate code path.
 - Function naming: the polynomial mapping of FPA→MPA coordinates is exposed
     as `get_mpa_coords` (renamed from `get_map_coords` for clarity).
+
+Precision convention
+--------------------
+Two rules, both learned the hard way (see `get_fpa_pos`):
+
+1. **Absolute sky coordinates are float64 and stay on the host in NumPy;
+   everything downstream of the tangent-plane difference is float32 and lives
+   in JAX.** Right ascension in degrees is a large number whose *difference*
+   from the pointing is small, so it must be differenced at float64 before it
+   ever reaches JAX. Once differenced, the surviving quantities are bounded by
+   the field radius (~0.4 deg) and float32 carries them to ~1e-3 px, which is
+   far below anything we care about.
+
+2. **Every matmul-class JAX op carries `precision='highest'`.** With
+   `jax_enable_x64` off, XLA:GPU serves an unannotated float32 `dot_general` as
+   TF32 on Ampere and later — a 10-bit mantissa, eps ~ 4.9e-4 — while the same
+   op on CPU is exact. That divergence is invisible to a CPU-only test suite.
+
+   Annotate each site individually; do **not** reach for the process-global
+   `JAX_DEFAULT_MATMUL_PRECISION` or `jax.config.update(...)`. A global default
+   would mask a missing annotation rather than surface it, and setting it from
+   library code would silently change the numerics of any other JAX work
+   sharing the interpreter — including code that legitimately wants TF32.
+   `tests/test_precision_convention.py` enforces the annotation by AST scan.
 """
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 
 def make_sca_payload(model, sca: int, order: str = "1"):
@@ -243,8 +268,121 @@ def get_pa_rotation(pa):
     ])
 
 
+def sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec):
+    """Offsets of sources from the pointing, on the tangent plane (degrees).
+
+    Host-side (NumPy, float64) by design — see rule 1 of the precision
+    convention in the module docstring. Right ascension in degrees is a large
+    number whose difference from the pointing is small, so differencing it at
+    float32 destroys the very quantity we need:
+
+        pointing RA     cast-then-subtract      subtract-then-cast
+              10 deg           0.0062 px             0.000098 px
+             150 deg           0.0999 px             0.000098 px
+             260 deg           0.3995 px             0.000098 px
+
+    Differencing first makes the error independent of where the telescope
+    points, which is the entire purpose of this function existing separately
+    from the JAX rotation that follows it.
+
+    .. warning::
+        This still uses the flat-sky approximation
+        :math:`\\Delta\\alpha \\cos\\delta` rather than a gnomonic (TAN)
+        projection, and therefore has **no right-ascension wrap handling**. A
+        field straddling RA = 0 raises rather than silently mis-placing its
+        sources; see the guard below and issue #19. The gnomonic
+        replacement fixes both, since a tangent-plane transform uses sin/cos of
+        (ra - ra0) and is periodic by construction.
+
+    Args:
+        ra, dec: source coordinates in degrees (1D arrays)
+        pointing_ra, pointing_dec: telescope pointing in degrees (scalars)
+
+    Returns:
+        dx, dy: offsets from the pointing in degrees, float64 NumPy arrays
+
+    Raises:
+        TypeError: if ra or dec arrive as float32 (e.g. a JAX array with
+            x64 disabled). By then the quantisation has already happened and
+            upcasting cannot undo it, so refuse rather than silently produce
+            the pointing-dependent error this function exists to remove.
+        ValueError: if any source lies more than 180 deg from the pointing in
+            right ascension, which means the field crosses RA = 0.
+    """
+    for name, value in (("ra", ra), ("dec", dec)):
+        dtype = getattr(value, "dtype", None)
+        if dtype is not None and np.dtype(dtype) == np.float32:
+            raise TypeError(
+                f"{name} arrived as float32: absolute sky coordinates were "
+                "quantised before the tangent-plane differencing, which is "
+                "the error this function exists to prevent (rule 1 of the "
+                "precision convention). Pass float64 host arrays -- e.g. "
+                "df['ra'].values, not jnp.array(df['ra'].values)."
+            )
+    ra = np.asarray(ra, dtype=np.float64)
+    dec = np.asarray(dec, dtype=np.float64)
+    pointing_ra = np.float64(pointing_ra)
+    pointing_dec = np.float64(pointing_dec)
+
+    dra = ra - pointing_ra
+
+    # Exact test for a meridian-crossing field: no threshold to tune, and no
+    # false positives, since the science field is ~0.4 deg across.
+    if dra.size and np.abs(dra).max() > 180.0:
+        raise ValueError(
+            "Field appears to cross RA = 0: |ra - pointing_ra| exceeds 180 deg "
+            f"(max {np.abs(dra).max():.4f} deg). The flat-sky transform has no "
+            "wrap handling and would place these sources ~360 deg off the focal "
+            "plane, where they are silently culled by the detector bounding box. "
+            "Refusing rather than dropping them. See issue #19; fixed "
+            "by the gnomonic projection."
+        )
+
+    dx = dra * np.cos(np.deg2rad(dec))
+    dy = dec - pointing_dec
+    return dx, dy
+
+
+def get_fpa_pos_from_offsets(dx, dy, pointing_pa):
+    """Rotate tangent-plane offsets into FPA coordinates (JAX, jittable).
+
+    This is the JAX half of the sky->FPA transform. Its inputs are already
+    small (bounded by the field radius, ~0.4 deg), so float32 is accurate to
+    ~1e-3 px here and no float64 is needed — see rule 1 of the precision
+    convention.
+
+    Args:
+        dx, dy: tangent-plane offsets in degrees, from `sky_to_tangent_offsets`
+        pointing_pa: position angle in degrees (scalar)
+
+    Returns:
+        xfpa, yfpa: FPA coordinates in degrees
+    """
+    xy = jnp.stack([jnp.asarray(dx), jnp.asarray(dy)])  # [2, N]
+    rot_matrix = get_pa_rotation(pa=pointing_pa)
+    # precision='highest' is mandatory, not stylistic: without it XLA:GPU runs
+    # this float32 dot as TF32 (10-bit mantissa) on Ampere and later, which
+    # displaced every source in the 2026-07 SSC line-grid package by a median
+    # 1.84 px and up to 7.08 px. The same op on CPU is exact, so no CPU-only
+    # test can see it. Note `@` takes no precision argument -- jnp.matmul does.
+    xy = jnp.matmul(rot_matrix, xy, precision='highest')
+    xfpa = -xy[0, :]
+    yfpa = -xy[1, :]
+    return xfpa, yfpa
+
+
 def get_fpa_pos(ra, dec, pointing_ra, pointing_dec, pointing_pa):
-    """Convert sky coordinates to FPA position (JAX version).
+    """Convert sky coordinates to FPA position.
+
+    Thin composition of `sky_to_tangent_offsets` (host, float64) and
+    `get_fpa_pos_from_offsets` (JAX, float32). Split so that the differencing
+    happens at float64 before anything reaches the GPU.
+
+    .. note::
+        **Not jit-compilable**, deliberately: the float64 differencing is host
+        NumPy. Jit `get_fpa_pos_from_offsets` instead, which is the part that
+        belongs on the device anyway. In production this runs once per pointing
+        on a few thousand sources, so it is not on any hot path.
 
     Args:
         ra, dec: source coordinates in degrees (1D arrays)
@@ -254,14 +392,8 @@ def get_fpa_pos(ra, dec, pointing_ra, pointing_dec, pointing_pa):
     Returns:
         xfpa, yfpa: FPA coordinates in degrees
     """
-    dx = (ra - pointing_ra) * jnp.cos(jnp.deg2rad(dec))
-    dy = dec - pointing_dec
-    xy = jnp.stack([dx, dy])  # [2, N]
-    rot_matrix = get_pa_rotation(pa=pointing_pa)
-    xy = rot_matrix @ xy
-    xfpa = -xy[0, :]
-    yfpa = -xy[1, :]
-    return xfpa, yfpa
+    dx, dy = sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec)
+    return get_fpa_pos_from_offsets(dx, dy, pointing_pa)
 
 
 # -------- polynomial functions --------
