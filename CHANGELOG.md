@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-31
+
 ### Fixed
 - **Sky→FPA source placement was wrong on GPU (TF32).** The position-angle
   rotation in `optical_model_jax.get_fpa_pos` was an unannotated float32
@@ -49,6 +51,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compared positions in degrees at `ATOL = 1e-3`, which is 33 px — loose enough
   to pass a 1.84 px displacement. Adds an independent astropy TAN oracle and
   float64 golden values.
+- Showcase visualization scripts (`scripts/`) and figures (`figures/`):
+  - `make_showcase_figure.py` — 3-panel "same sky, three views" of the
+    acceptance/roll test products at RA≈10/Dec≈0: imaging (L3 coadd) | grism |
+    prism, all at the same pointing (RA=10/Dec=0/PA=0, SCA3) so the grism and
+    prism show identical objects. Marks the brightest stars with order-1 trace
+    boxes and an N/E compass.
+  - `make_roll_figure.py` — 2×2 of the same grism field at three telescope rolls
+    (PA=0/10/180), showing the dispersion rotating/flipping with roll.
+  - `compute_showcase_traces.py` / `compute_roll_traces.py` — precompute the
+    marker stars' order-1 traces via the optical model (run in the
+    `roman_disperser`/`roman_disperser_prism` envs); the figure scripts run in
+    the `roman_l2_job` env to read the L2/L3 ASDFs.
 
 ### Changed
 - **`get_fpa_pos` is no longer jit-compilable**, deliberately: its float64
@@ -84,20 +98,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Replaced by a gnomonic projection in the next release, which also fixes the
   RA wrap above (a tangent-plane transform is periodic in the RA difference).
   See issue #5.
-
-### Added
-- Showcase visualization scripts (`scripts/`) and figures (`figures/`):
-  - `make_showcase_figure.py` — 3-panel "same sky, three views" of the
-    acceptance/roll test products at RA≈10/Dec≈0: imaging (L3 coadd) | grism |
-    prism, all at the same pointing (RA=10/Dec=0/PA=0, SCA3) so the grism and
-    prism show identical objects. Marks the brightest stars with order-1 trace
-    boxes and an N/E compass.
-  - `make_roll_figure.py` — 2×2 of the same grism field at three telescope rolls
-    (PA=0/10/180), showing the dispersion rotating/flipping with roll.
-  - `compute_showcase_traces.py` / `compute_roll_traces.py` — precompute the
-    marker stars' order-1 traces via the optical model (run in the
-    `roman_disperser`/`roman_disperser_prism` envs); the figure scripts run in
-    the `roman_l2_job` env to read the L2/L3 ASDFs.
 
 ## [0.10.0] - 2026-06-12
 

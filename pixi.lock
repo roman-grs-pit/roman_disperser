@@ -5054,8 +5054,8 @@ packages:
   requires_python: '>=3.11'
 - pypi: ./
   name: roman-disperser
-  version: 0.10.0
-  sha256: 9e172e5bc59485d04a7ed8cb941013d5475458e95843015e934dedf6147cb4f2
+  version: 0.11.0
+  sha256: a60b88eb040960a3ef71727a249c8311c3bc5db1049f97d278e59950259ae8f7
   requires_dist:
   - numpy>=2.0
   - jax>=0.7
@@ -5070,7 +5070,6 @@ packages:
   - synphot>=1.6.1,<2 ; extra == 'full'
   - pytest>=9.0.2,<10 ; extra == 'full'
   requires_python: '>=3.12'
-  editable: true
 - pypi: git+https://github.com/roman-grs-pit/romanisim.git?branch=extra_counts#988ebcccc71aa2775f6afef1f9a3a963d761b833
   name: romanisim
   version: 0.1.dev560+g988ebcccc
