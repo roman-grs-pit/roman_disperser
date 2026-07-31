@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-31
+
+Stage 3 of the precision/reproducibility sequence (stages 1 and 2 were
+0.11.0 and 0.12.0): reproducible per-SCA noise and self-identifying
+products. No placement or flux change — the noiseless MODEL extension is
+bit-identical to 0.12.0.
+
+### Changed
+- **Per-SCA RNG keys are now folded from the SCA number** (issue #20).
+  Previously keys came from `jax.random.split(pointing_key, len(sca_list))`
+  indexed by *list position*, so a `scas: [5]` run gave SCA 5 the key an
+  18-SCA run gave SCA 1, and no subset run could reproduce a full run's
+  noise. Keys are now `jax.random.fold_in(pointing_key, sca_num)`
+  (`pipeline.make_sca_keys`), making them independent of which other SCAs
+  are in the run. **ISIM noise realisations change by construction** for
+  every SCA relative to ≤0.12.0; MODEL is unaffected. Old products remain
+  reconstructible from their `RNDSEED0`/`RNDSEED1` header cards via
+  `jax.random.wrap_key_data`. A 1-SCA ISIM bit-identity check is now a
+  valid regression gate for a full 18-SCA run.
+
+### Added
+- **`CODEVER` and `GITSHA` provenance cards in every FITS product** (both
+  quick and batch mode; previously `GITSHA` was batch-only and `CODEVER`
+  did not exist), written unconditionally by `pipeline.write_fits`.
+  `CODEVER` is the installed package version; `GITSHA` is the full commit
+  SHA of the pipeline checkout, with a `-dirty` suffix when the working
+  tree has uncommitted changes — a SHA over uncommitted changes identifies
+  nothing. The per-pointing metadata YAML likewise gains `codever` and
+  carries `git_sha` in both modes.
+- `tests/test_pipeline.py` — first coverage of the RNG-key path
+  (subset-invariance, distinctness, the exact fold-in derivation) and of
+  the provenance cards round-tripping through a written FITS file.
+
 ## [0.12.0] - 2026-07-31
 
 ### Changed
