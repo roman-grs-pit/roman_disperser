@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-31
+
+### Changed
+- **Sky→FPA now uses a proper gnomonic (TAN) projection.**
+  `sky_to_tangent_offsets` replaces the flat-sky approximation
+  (`Δα·cos δ`, `Δδ`) with the exact tangent-plane projection, closing
+  issues #5 and #19 together (stage 2 of the sky→FPA precision work; stage 1
+  was 0.11.0). Source placement moves by the size of the flat-sky error being
+  removed — third order in the offset at the equator but second order off it
+  (North error `Δα² sin(2δ₀)/4`, worst at δ₀ = 45°): over a ±0.4° field,
+  ~0.06 px at Dec 0 growing to ~20 px at Dec 60. The golden-value literals
+  shifted by 0.064 / 1.294 / 4.509 / 19.739 px (equator → Dec 60) on
+  regeneration. **Any product simulated off the equator before this release
+  carries the flat-sky placement error** (in addition to the GPU TF32 error
+  fixed in 0.11.0 if applicable); equatorial products (e.g. the SSC line-grid
+  pointing at Dec 0.0–0.95) are affected only at the ≲0.1 px level.
+- The implementation is a **verbatim transcription** of the derivation
+  notebook (`docs/reference/tangent_plane_derivation.ipynb`, steps 1–3:
+  rotate the pointing to the pole in 3-D, project by dividing by z), same
+  NumPy float64 operations in the same order. Tests exec the `tangent_plane`
+  cell straight from the committed notebook and assert **bitwise** equality,
+  so the arithmetic must not be "cleaned up" independently of the notebook.
+
+### Added
+- `docs/reference/tangent_plane_derivation.ipynb` — the derivation of record
+  for the projection and the rotation conventions, including the proof that
+  the legacy rotation construction (`pa + 180 − 60` plus double negation)
+  equals `R_NE(−(PA + focal_pa))`, and the Taylor expansion of the flat-sky
+  error. Committed byte-for-byte from the executed original apart from one
+  scrubbed stderr line.
+- `optical_model_jax.FOCAL_PA_DEG = -60.0` — the focal-plane orientation
+  constant, previously a bare literal inside `get_pa_rotation` (numerically a
+  no-op), with a convention note in the docstring.
+- `TestGnomonicNotebookOracle` — the exec-from-notebook oracle: bitwise
+  projection equality plus rotation-convention equivalence of the full
+  `get_fpa_pos` against the notebook over a PA × declination grid (worst
+  case 2.6e-3 px, float32-rotation round-off). The independent astropy TAN
+  oracle now asserts agreement (< 0.01 px at Dec 0/30/60/85) instead of
+  characterising the flat-sky error.
+
+### Removed
+- The meridian-crossing `ValueError` in `sky_to_tangent_offsets`: the
+  gnomonic projection is periodic in RA by construction, so a field
+  straddling RA = 0 is now simply placed correctly (the previously-xfailed
+  meridian test passes and the marker is gone). The float32 `TypeError`
+  guard is **kept, permanently** — quantisation of absolute RA happens
+  before the projection can help.
+
 ## [0.11.0] - 2026-07-31
 
 ### Fixed
