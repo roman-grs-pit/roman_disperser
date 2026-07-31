@@ -61,7 +61,6 @@ else:
     )
 
 import hashlib
-import subprocess
 
 import yaml
 import jax
@@ -81,21 +80,9 @@ from roman_disperser.pipeline import (
     make_batched_star_fori, disperse_batched_stars,
     make_batched_galaxy_fori, disperse_batched_galaxies,
     write_fits, write_png, write_mosaic_png, write_mosaic_from_directory,
+    get_code_version, get_git_sha, make_sca_keys,
 )
 import roman_disperser.optical_model_jax as omj
-
-
-def get_git_sha():
-    """Return the current git commit SHA, or 'unknown' if not in a repo."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=5,
-            cwd=Path(__file__).parent,
-        )
-        return result.stdout.strip() if result.returncode == 0 else "unknown"
-    except Exception:
-        return "unknown"
 
 
 def make_pointing_key(seed, pointing_filename, plan, pass_, segment,
@@ -107,6 +94,10 @@ def make_pointing_key(seed, pointing_filename, plan, pass_, segment,
     - Same seed + same pointing file + same exposure → same key
     - Slicing or reordering the ECSV does not change keys
     - Different pointing files get different keys (filename salt)
+
+    Per-SCA keys are folded from this key and the SCA *number* (see
+    ``pipeline.make_sca_keys``), so as of v0.13.0 the invariance extends to
+    SCAs: slicing the SCA list does not change any SCA's key either.
 
     Parameters
     ----------
@@ -571,12 +562,10 @@ def process_pointing(
     galaxy_npix_os = pipeline["galaxy_npix_os"]
     oversample = pipeline["oversample"]
 
-    # Split pointing key into per-SCA keys
+    # Per-SCA keys folded from the SCA number (list-independent; issue #20)
     sca_keys = {}
     if pointing_key is not None:
-        split_keys = jax.random.split(pointing_key, len(sca_list))
-        for i, sca_num in enumerate(sca_list):
-            sca_keys[sca_num] = split_keys[i]
+        sca_keys = make_sca_keys(pointing_key, sca_list)
 
     log(f"\nPointing: RA={pointing_ra}, Dec={pointing_dec}, PA={pointing_pa}")
     log(f"Output:   {output_dir}")
@@ -1018,6 +1007,8 @@ def process_pointing(
             "pa": pointing_pa,
         },
         "exptime": exptime,
+        "codever": get_code_version(),
+        "git_sha": get_git_sha(),
         "seed": seed,
         "pointing_key": pointing_key_data,
         "sca_keys": {
@@ -1538,9 +1529,9 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
             f"PA={row['PA']:.1f}, exptime={exptime:.2f}s")
         log(f"{'='*60}")
 
-        # Extra FITS header fields for this pointing
+        # Extra FITS header fields for this pointing (CODEVER/GITSHA are
+        # written by write_fits itself)
         extra_headers = {
-            "GITSHA": (git_sha, "Git commit SHA of pipeline code"),
             "MA_TABLE": (int(row["MA_TABLE_NUMBER"]),
                          "MA table number"),
             "PLAN": (int(row["PLAN"]), "APT plan number"),
@@ -1551,9 +1542,9 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
             "EXPOSURE": (int(row["EXPOSURE"]), "APT exposure number"),
         }
 
-        # Extra metadata for the YAML file
+        # Extra metadata for the YAML file (git_sha/codever are written by
+        # process_pointing itself)
         extra_meta = {
-            "git_sha": git_sha,
             "pointing_file": str(Path(pointings_path).name),
             "apt": {
                 "plan": int(row["PLAN"]),

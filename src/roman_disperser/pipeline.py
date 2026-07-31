@@ -11,6 +11,10 @@ Not added to ``__init__.py`` — scripts import directly::
 """
 
 import re
+import subprocess
+from functools import lru_cache
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 import yaml
@@ -36,6 +40,106 @@ ORDERS = ["0", "1", "2"]
 LAM_MIN = 0.9   # microns
 LAM_MAX = 2.0   # microns
 SENSITIVITY_MAP_FILE = "sensitivity_map.yaml"
+
+
+# ---------------------------------------------------------------------------
+# Provenance
+# ---------------------------------------------------------------------------
+# Every product must be identifiable by inspection (FITS header / meta YAML),
+# not by which directory it sits in: shipped packages get copied around, and
+# the placement fixes of v0.11-v0.13 mean visually similar products can differ
+# by pixels. CODEVER identifies the release; GITSHA the exact commit (plus
+# dirty state, since a SHA over uncommitted changes identifies nothing).
+
+@lru_cache(maxsize=1)
+def get_code_version():
+    """Return the installed ``roman_disperser`` package version.
+
+    Note: under an editable install this is the version recorded at the last
+    ``pixi install``, not necessarily the live ``pyproject.toml`` — the
+    release process reinstalls at every version bump, which keeps them equal.
+    """
+    try:
+        return _pkg_version("roman_disperser")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+@lru_cache(maxsize=1)
+def get_git_sha():
+    """Return the pipeline code's git commit SHA for provenance.
+
+    The full 40-char SHA of HEAD in the checkout containing this module,
+    with ``-dirty`` appended when the working tree has uncommitted changes.
+    Returns ``"unknown"`` outside a git checkout (e.g. a non-editable
+    install). Cached, so git runs once per process (~0.1 s on NFS).
+    """
+    try:
+        cwd = Path(__file__).resolve().parent
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10, cwd=cwd,
+        )
+        if head.returncode != 0:
+            return "unknown"
+        sha = head.stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=30, cwd=cwd,
+        )
+        if status.returncode == 0 and status.stdout.strip():
+            sha += "-dirty"
+        return sha
+    except Exception:
+        return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# RNG keys
+# ---------------------------------------------------------------------------
+
+def make_sca_keys(pointing_key, sca_list):
+    """Derive per-SCA RNG keys by folding the SCA number into the pointing key.
+
+    Each SCA's key depends only on ``(pointing_key, sca_number)`` — never on
+    which other SCAs are in the run or their order — so a subset run draws
+    from the same key as the full run for the SCAs they share. This removes
+    the RNG obstacle to using a 1-SCA run as a regression gate for a full
+    18-SCA production run.
+
+    Caveat (measured 2026-07-31, a10g): identical keys do *not* imply
+    bit-identical ISIM on GPU. Scatter-add accumulation is
+    non-deterministic run-to-run at the float32-epsilon level (~1e-7
+    relative in MODEL), which flips a handful of Poisson draws (~88 of 2.9M
+    nonzero pixels in a 1-SCA test). ``--xla_gpu_deterministic_ops=true``
+    restores determinism but was measured >100x slower — impractical here.
+    Gates on GPU products should therefore compare MODEL with
+    ``np.allclose`` / relative-sum tolerances (the existing acceptance
+    gates' ~1e-9 ``rel_sum_diff`` is exactly this noise floor), not
+    bitwise; exact ISIM bit-identity requires a deterministic backend.
+
+    History: before v0.13.0 keys came from ``jax.random.split`` indexed by
+    *position* in ``sca_list``, so ``scas: [5]`` gave SCA 5 the key an
+    18-SCA run gave SCA 1 (issue #20). ISIM realisations from earlier
+    versions therefore differ from v0.13.0+ by construction; the noiseless
+    MODEL extension is unaffected.
+
+    Parameters
+    ----------
+    pointing_key : jax.random.key
+        Per-pointing key (see ``make_pointing_key`` in
+        ``scripts/build_grism_image.py``).
+    sca_list : iterable of int
+        SCA numbers (1-18).
+
+    Returns
+    -------
+    dict mapping sca number (int) -> jax.random.key
+    """
+    return {
+        int(sca): jax.random.fold_in(pointing_key, int(sca))
+        for sca in sca_list
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +455,10 @@ def write_fits(model_np, isim_np, output_file, pointing_ra, pointing_dec,
     contains the noiseless count-rate image (counts/s).  ISIM extension
     contains the Poisson-sampled image (counts).
 
+    ``CODEVER`` and ``GITSHA`` provenance cards are written unconditionally
+    (see the Provenance section above) — callers must not pass them via
+    ``extra_headers``.
+
     Parameters
     ----------
     model_np : ndarray
@@ -378,6 +486,11 @@ def write_fits(model_np, isim_np, output_file, pointing_ra, pointing_dec,
     primary.header["SEED"] = (seed, "Top-level RNG seed")
     primary.header["RNDSEED0"] = (int(rng_key_data[0]), "JAX RNG key word 0")
     primary.header["RNDSEED1"] = (int(rng_key_data[1]), "JAX RNG key word 1")
+    primary.header["CODEVER"] = (get_code_version(),
+                                 "roman_disperser package version")
+    # Comment kept short: a 40-char SHA (+ '-dirty') leaves only ~19 chars
+    # of comment inside the 80-char card before astropy truncates.
+    primary.header["GITSHA"] = (get_git_sha(), "pipeline git commit")
 
     if extra_headers:
         for key, val in extra_headers.items():
