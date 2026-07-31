@@ -252,16 +252,36 @@ def fpa_to_mpa(payload, xfpa, yfpa):
     return xmpa, ympa
 
 
+# Fixed orientation of the FPA coordinate system relative to the telescope,
+# in degrees East of North. An instrument constant, not a tunable: the total
+# on-sky orientation of the focal plane is (pointing PA + FOCAL_PA_DEG).
+FOCAL_PA_DEG = -60.0
+
+
 def get_pa_rotation(pa):
     """Return 2x2 rotation matrix for a given position angle (JAX version).
 
+    Convention note (this construction confuses everyone, including its
+    authors): together with the negation of both components in
+    `get_fpa_pos_from_offsets`, the net operation is R_math(pa - 60) -- the
+    +180 here and the negation there cancel exactly. This matrix is the math
+    (counterclockwise) convention, which on the sky (x = East pointing left)
+    rotates North toward *West*; with the opposite angle sign it is identical
+    to the North-toward-East matrix R_NE(-(pa + FOCAL_PA_DEG)) used in the
+    derivation notebook, i.e. the inverse rotation that takes sky-aligned
+    tangent-plane coordinates into a focal plane oriented at
+    (pa + FOCAL_PA_DEG) on the sky. Full derivation and a numerical proof of
+    the equivalence: docs/reference/tangent_plane_derivation.ipynb, and the
+    executable pin in
+    `tests/test_optical_model_jax.py::TestGnomonicNotebookOracle`.
+
     Args:
-        pa: position angle in degrees (scalar)
+        pa: position angle in degrees, East of North (scalar)
 
     Returns:
         2x2 rotation matrix (JAX array)
     """
-    theta = jnp.deg2rad(pa + 180 - 60)
+    theta = jnp.deg2rad(pa + 180 + FOCAL_PA_DEG)
     return jnp.array([
         [jnp.cos(theta), -jnp.sin(theta)],
         [jnp.sin(theta),  jnp.cos(theta)],
@@ -269,7 +289,33 @@ def get_pa_rotation(pa):
 
 
 def sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec):
-    """Offsets of sources from the pointing, on the tangent plane (degrees).
+    """Gnomonic (TAN) offsets of sources from the pointing (degrees).
+
+    Projects (ra, dec) onto the plane tangent to the celestial sphere at the
+    pointing, returning sky-aligned tangent-plane coordinates
+    (:math:`\\xi` = East, :math:`\\eta` = North) in degrees. The algorithm
+    rotates the pointing to the North Pole in 3-D (an RA shift folded into the
+    Cartesian conversion, then :math:`R_y(\\delta_0 - \\pi/2)`) and projects by
+    dividing by the z component. It is a **verbatim transcription of steps
+    1-3 of the derivation notebook**,
+    ``docs/reference/tangent_plane_derivation.ipynb`` — same operations in the
+    same order, so
+    `tests/test_optical_model_jax.py::TestGnomonicNotebookOracle` can assert
+    exact (bitwise) equality against the notebook function executed straight
+    from that file. Do not "clean up" the arithmetic here without updating
+    that contract.
+
+    This replaced the flat-sky approximation
+    (:math:`\\Delta\\alpha \\cos\\delta`, :math:`\\Delta\\delta`; issues #5 and
+    #19). The flat-sky errors it removes — derived in the notebook's Taylor
+    expansion — are third order in the offset at the equator
+    (:math:`\\theta^3/3`) but pick up a **second-order** North error
+    :math:`\\Delta\\alpha^2 \\sin(2\\delta_0)/4` off the equator (worst at
+    :math:`\\delta_0 = 45^\\circ`): over a ±0.4 deg field, a median 0.12 px at
+    Dec 0 grows to ~20 px at Dec 60. Because the projection uses sin/cos of
+    (ra - ra0), it is periodic in RA by construction, so a field straddling
+    RA = 0 needs no wrap handling — the former meridian-crossing ValueError
+    guard is gone.
 
     Host-side (NumPy, float64) by design — see rule 1 of the precision
     convention in the module docstring. Right ascension in degrees is a large
@@ -283,31 +329,24 @@ def sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec):
 
     Differencing first makes the error independent of where the telescope
     points, which is the entire purpose of this function existing separately
-    from the JAX rotation that follows it.
-
-    .. warning::
-        This still uses the flat-sky approximation
-        :math:`\\Delta\\alpha \\cos\\delta` rather than a gnomonic (TAN)
-        projection, and therefore has **no right-ascension wrap handling**. A
-        field straddling RA = 0 raises rather than silently mis-placing its
-        sources; see the guard below and issue #19. The gnomonic
-        replacement fixes both, since a tangent-plane transform uses sin/cos of
-        (ra - ra0) and is periodic by construction.
+    from the JAX rotation that follows it. The gnomonic projection does not
+    change this: float32 quantisation of *absolute* RA (~0.5 px at RA ≈ 260
+    deg) happens before sin/cos of the difference can help, so the float32
+    guard below is permanent.
 
     Args:
         ra, dec: source coordinates in degrees (1D arrays)
         pointing_ra, pointing_dec: telescope pointing in degrees (scalars)
 
     Returns:
-        dx, dy: offsets from the pointing in degrees, float64 NumPy arrays
+        dx, dy: tangent-plane offsets (xi East, eta North) in degrees,
+            float64 NumPy arrays
 
     Raises:
         TypeError: if ra or dec arrive as float32 (e.g. a JAX array with
             x64 disabled). By then the quantisation has already happened and
             upcasting cannot undo it, so refuse rather than silently produce
             the pointing-dependent error this function exists to remove.
-        ValueError: if any source lies more than 180 deg from the pointing in
-            right ascension, which means the field crosses RA = 0.
     """
     for name, value in (("ra", ra), ("dec", dec)):
         dtype = getattr(value, "dtype", None)
@@ -319,28 +358,36 @@ def sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec):
                 "precision convention). Pass float64 host arrays -- e.g. "
                 "df['ra'].values, not jnp.array(df['ra'].values)."
             )
-    ra = np.asarray(ra, dtype=np.float64)
-    dec = np.asarray(dec, dtype=np.float64)
-    pointing_ra = np.float64(pointing_ra)
-    pointing_dec = np.float64(pointing_dec)
+    # Transcription of tangent_plane() steps 1-3 from
+    # docs/reference/tangent_plane_derivation.ipynb (bit-exact contract).
+    ra_rad = np.deg2rad(np.asarray(ra, dtype=float))
+    dec_rad = np.deg2rad(np.asarray(dec, dtype=float))
+    ra0 = np.deg2rad(np.float64(pointing_ra))
+    dec0 = np.deg2rad(np.float64(pointing_dec))
 
-    dra = ra - pointing_ra
+    # Step 1 + 2a: shift RA so the pointing is at RA = 0, then convert to 3-D
+    # Cartesian coordinates on the unit sphere.
+    da = ra_rad - ra0
+    cos_dec = np.cos(dec_rad)
+    x = cos_dec * np.cos(da)
+    y = cos_dec * np.sin(da)
+    z = np.sin(dec_rad)
 
-    # Exact test for a meridian-crossing field: no threshold to tune, and no
-    # false positives, since the science field is ~0.4 deg across.
-    if dra.size and np.abs(dra).max() > 180.0:
-        raise ValueError(
-            "Field appears to cross RA = 0: |ra - pointing_ra| exceeds 180 deg "
-            f"(max {np.abs(dra).max():.4f} deg). The flat-sky transform has no "
-            "wrap handling and would place these sources ~360 deg off the focal "
-            "plane, where they are silently culled by the detector bounding box. "
-            "Refusing rather than dropping them. See issue #19; fixed "
-            "by the gnomonic projection."
-        )
+    # Step 2b: rotate about the y-axis by (dec0 - pi/2) to bring the pointing
+    # to the North Pole: cos(dec0 - pi/2) = sin(dec0), sin(dec0 - pi/2) =
+    # -cos(dec0).
+    sin_dec0 = np.sin(dec0)
+    cos_dec0 = np.cos(dec0)
+    xr = sin_dec0 * x - cos_dec0 * z
+    yr = y
+    zr = cos_dec0 * x + sin_dec0 * z
 
-    dx = dra * np.cos(np.deg2rad(dec))
-    dy = dec - pointing_dec
-    return dx, dy
+    # Step 3: gnomonic projection onto the tangent plane at the pole. yr
+    # points East, xr points -Dec, so xi = East, eta = North.
+    xi = yr / zr
+    eta = -xr / zr
+
+    return np.rad2deg(xi), np.rad2deg(eta)
 
 
 def get_fpa_pos_from_offsets(dx, dy, pointing_pa):
