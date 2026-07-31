@@ -311,8 +311,10 @@ def sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec):
     expansion — are third order in the offset at the equator
     (:math:`\\theta^3/3`) but pick up a **second-order** North error
     :math:`\\Delta\\alpha^2 \\sin(2\\delta_0)/4` off the equator (worst at
-    :math:`\\delta_0 = 45^\\circ`): over a ±0.4 deg field, a median 0.12 px at
-    Dec 0 grows to ~20 px at Dec 60. Because the projection uses sin/cos of
+    :math:`\\delta_0 = 45^\\circ`): over a ±0.4 deg field, median 0.12 px
+    (max 0.72 px) at Dec 0 growing to median ~9.6 px (max ~55 px) at Dec 60;
+    the golden-value literals shifted 0.064-19.7 px on regeneration.
+    Because the projection uses sin/cos of
     (ra - ra0), it is periodic in RA by construction, so a field straddling
     RA = 0 needs no wrap handling — the former meridian-crossing ValueError
     guard is gone.
