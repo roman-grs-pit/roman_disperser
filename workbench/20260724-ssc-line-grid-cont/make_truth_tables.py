@@ -25,19 +25,25 @@ checker). A per-run assertion cross-checks the first manifest row against
 ``predict_jax`` itself so this file cannot silently drift from the checker.
 
 Output: ``truth_lines.parquet`` + ``truth_lines_provenance.json`` in the
-pointing directory. Units: FITS pixel n has its centre at n.0; the optical
-model takes wavelengths in microns (lines.ecsv stores Angstroms).
+pointing directory. The parquet file also carries the provenance dict in its
+own file-level metadata (key ``roman_disperser_provenance``), so the table
+stays self-identifying when copied out of the pointing directory — same
+motivation as the CODEVER/GITSHA FITS cards: the v0.11-v0.13 placement fixes
+mean visually similar truth tables can differ by pixels. Units: FITS pixel n
+has its centre at n.0; the optical model takes wavelengths in microns
+(lines.ecsv stores Angstroms).
 """
 
 import argparse
 import json
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from astropy.table import Table
 
 # Truth positions are DOUBLE-precision evaluations of the optical model.
@@ -52,6 +58,7 @@ import jax.numpy as jnp
 import roman_disperser.optical_model_jax as omj
 from roman_disperser.optical_model import RomanOpticalModel
 from roman_disperser.paths import data_dir
+from roman_disperser.pipeline import get_code_version, get_git_sha
 
 # Reuse the reviewed scalar prediction path for the cross-check.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
@@ -138,20 +145,13 @@ def main():
         truth["x_pred"].between(DET_LO, DET_HI)
         & truth["y_pred"].between(DET_LO, DET_HI))
 
-    out_path = pdir / "truth_lines.parquet"
-    truth.to_parquet(out_path, index=False)
-
-    def _sha(repo):
-        try:
-            return subprocess.check_output(
-                ["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip()
-        except Exception:
-            return "NA"
-
     prov = {
         "written_utc": datetime.now(timezone.utc).isoformat(),
         "script": str(Path(__file__).resolve()),
-        "git_commit": _sha(str(Path(__file__).resolve().parents[2])),
+        # Same helpers (and -dirty convention) as the CODEVER/GITSHA FITS
+        # cards, so truth tables and images identify their code identically.
+        "codever": get_code_version(),
+        "git_commit": get_git_sha(),
         "pointing_dir": str(pdir.resolve()),
         "manifest": manifest_path.name,
         "catalog_dir": str(cdir.resolve()),
@@ -163,10 +163,19 @@ def main():
             "1-indexed FITS pixels; pixel n centred at n.0; "
             "array[i,j] <-> FITS (x,y)=(j+1,i+1)",
     }
+    out_path = pdir / "truth_lines.parquet"
+    arrow = pa.Table.from_pandas(truth, preserve_index=False)
+    arrow = arrow.replace_schema_metadata({
+        **(arrow.schema.metadata or {}),
+        b"roman_disperser_provenance": json.dumps(prov).encode(),
+    })
+    pq.write_table(arrow, out_path)
+
     (pdir / "truth_lines_provenance.json").write_text(
         json.dumps(prov, indent=2) + "\n")
     print(f"wrote {out_path}  ({len(truth)} rows, "
-          f"{prov['n_on_detector']} on-detector)")
+          f"{prov['n_on_detector']} on-detector, "
+          f"codever {prov['codever']}, git {prov['git_commit'][:12]})")
 
 
 if __name__ == "__main__":
