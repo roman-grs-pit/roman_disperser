@@ -11,8 +11,21 @@
 # no test ever ran anywhere that could tell the difference.
 #
 # So the CPU/GPU comparison is only worth anything if something actually runs
-# it on a GPU. This script is that something. It is cheap enough (~2-3 min,
-# roughly $0.06 on an a10g) to run on every merge to main.
+# it on a GPU. This script is that something. It is cheap enough (~3-4 min,
+# roughly $0.08 on an a10g) to run on every merge to main.
+#
+# It runs the WHOLE suite, deliberately. An earlier version listed only the
+# three test files that seemed GPU-relevant, which covered 3 of 12 files and
+# left ~173 tests -- the disperser, galaxy disperser, star disperser, PSF model,
+# Sersic and catalog code, all of which execute JAX on the GPU in production --
+# never once exercised on a GPU. That is the same mistake one level up: gating
+# only what you already suspect. TF32 happened to live in a file that would have
+# been on such a list; the next device-dependent defect need not.
+#
+# The one exclusion is `-m 'not slow'`, and it is not about GPU coverage: those
+# tests generate STPSF PSF caches, which take hours and are CPU-bound (STPSF has
+# no GPU path at all), so running them here would burn GPU-hours to exercise
+# NumPy. Generate caches with scripts/generate_psf_caches.py instead.
 #
 # Usage
 # -----
@@ -44,10 +57,6 @@ sbatch $WAIT_FLAG \
     --output="$LOG_DIR/gputests-%j.out" \
     --wrap="cd '$REPO_ROOT' && \
             pixi run -e cuda python -c 'import jax; print(\"devices:\", jax.devices())' && \
-            pixi run -e cuda python -m pytest \
-                tests/test_disperser_gpu.py \
-                tests/test_optical_model_jax.py \
-                tests/test_precision_convention.py \
-                -v -m 'not slow'"
+            pixi run -e cuda python -m pytest tests -v -m 'not slow'"
 
 echo "Submitted. Logs: $LOG_DIR/gputests-<jobid>.out"
