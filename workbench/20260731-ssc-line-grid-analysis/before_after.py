@@ -78,9 +78,18 @@ def embedded_provenance(campaign, suffix, variant, pa):
 def smoothness_rms(campaign, suffix, variant, pa):
     """Per-SCA rms [px] of (RA,Dec)->(xsca,ysca) after a degree-3 poly fit.
 
-    Tangent-plane offsets (u, v) about the per-SCA mean, so the fit is well
-    conditioned; degree 3 comfortably absorbs real optical distortion at SCA
-    scale while leaving the audit-era non-smoothness (~1 px) in the residual.
+    Per SCA: center sky coordinates on the per-SCA mean,
+    u = (ra - mean(ra)) cos(mean(dec)), v = dec - mean(dec) [deg] — a flat
+    local centering, not a formal projection (at 0.2 deg SCA scale the
+    difference is absorbed by the polynomial). Then fit x and y
+    independently by ordinary least squares to all monomials u^i v^j with
+    total degree i + j <= 3 (10 coefficients per axis):
+
+        xhat = sum_{i+j<=3} a_ij u^i v^j ;  yhat likewise.
+
+    Statistic: true rms of the 2-D residual, sqrt(<rx^2 + ry^2>). Degree 3
+    comfortably absorbs real optical distortion at SCA scale while leaving
+    the audit-era non-smoothness (~1 px) in the residual.
     """
     t = truth(campaign, suffix, variant, pa,
               ["catalog_index", "sca", "ra", "dec", "xsca", "ysca"])
@@ -94,7 +103,7 @@ def smoothness_rms(campaign, suffix, variant, pa):
         A = np.column_stack([u**i * v**j for i in range(4) for j in range(4 - i)])
         rx = g.xsca - A @ np.linalg.lstsq(A, g.xsca, rcond=None)[0]
         ry = g.ysca - A @ np.linalg.lstsq(A, g.ysca, rcond=None)[0]
-        rows.append((sca, float(np.hypot(rx, ry).std()), len(g)))
+        rows.append((sca, float(np.sqrt(np.mean(rx**2 + ry**2))), len(g)))
     return pd.DataFrame(rows, columns=["sca", "rms_px", "n"]).set_index("sca")
 
 
@@ -224,7 +233,7 @@ fig, ax = plt.subplots(figsize=(7, 3.6))
 ax.semilogy(sm_old.index, sm_old.rms_px, "o-", color=C_OLD, label="20260724 (pre-fix)")
 ax.semilogy(sm_new.index, sm_new.rms_px, "o-", color=C_NEW, label="20260731 (v0.13.0)")
 ax.axhspan(0.6, 2.9, color=C_OLD, alpha=0.12,
-           label="audit-reported range (varying metric/field)")
+           label="audit-reported range (0.6–2.9 px)")
 ax.set_xlabel("SCA")
 ax.set_ylabel("poly3 sky→pixel residual rms  [px]")
 ax.set_xticks(range(1, 19))

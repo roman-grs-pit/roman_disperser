@@ -149,12 +149,18 @@ for r in p2.runs:
     r.font.size = Pt(16)
     r.font.color.rgb = INK
 add_text(s, [
+    "/mnt/roman-science/grs/line-tests-20260731/        wave 1b rerun (stars, lines only)",
+    "/mnt/roman-science/grs/line-tests-20260731-cont/   wave 2 rerun (lines + continuum)",
+    "/mnt/roman-science/grs/line-tests-20260731-gal/    wave 3 rerun (Sersic galaxies)",
+    "/mnt/roman-science/grs/line-tests-20260731/analysis/   figures · tables · summary.json ·",
+    "                                                       briefing_v0130_rerun.md · this deck",
+    "/mnt/roman-science/grs/line-tests-20260724*/       original campaign (the before side)",
+], top=Inches(4.35), size=12.5, mono=True, line_gap=3)
+add_text(s, [
     "ADDENDUM to line_grid_wave1b_draft.pptx · 2026-07-31",
     "roman_disperser · branch feature/optical-model-line-test · commit 3d94b0f "
-    "(merges main 12b98fc = v0.13.0)",
-    "Stores: /mnt/roman-science/grs/line-tests-20260731{,-cont,-gal} · "
-    "identical catalogs to 20260724 · full details in briefing_v0130_rerun.md",
-], top=Inches(5.5), size=13, color=MUTED)
+    "(merges main 12b98fc = v0.13.0) · identical catalogs to 20260724",
+], top=Inches(6.35), size=13, color=MUTED)
 
 # ------------------------------------------------ 2 · what changed and why
 s = new_slide("What was rerun, and why")
@@ -210,16 +216,17 @@ add_text(s, [
 # ------------------------------------------------------ 5 · smoothness gate
 s = new_slide("Independent-validation smoothness defect: eliminated")
 h = add_figure(s, ANALYSIS / "fig4_smoothness.png", max_h_in=4.4,
-               caption="Per-SCA rms of the residual after a degree-3 "
-                       "polynomial fit of (RA, Dec) → (xsca, ysca), wave-1b "
-                       "stpsf PA 0 truth tables. Pre-fix: 0.39–1.09 px "
-                       "(the audit's non-smooth map). v0.13.0: "
-                       "1.1e-4–3.6e-4 px — smooth at float precision.")
+               caption="Per SCA: centre (RA·cosδ, Dec) on the SCA mean, fit "
+                       "x and y independently by least squares to all "
+                       "monomials uⁱvʲ with i+j ≤ 3; plot rms of the 2-D "
+                       "residual (wave-1b stpsf PA 0 truth tables). Pre-fix: "
+                       "0.70–2.69 px. v0.13.0: 1.8e-4–6.9e-4 px — smooth at "
+                       "float precision.")
 add_text(s, [
-    "The audit's one real defect (0.6–2.9 px rms non-smoothness, surviving "
+    "The audit's one real defect (0.6–2.9 px non-smoothness, surviving "
     "affine / degree-6 / TAN+SIP fits) was exactly the v0.11/v0.12 placement "
-    "bugs. Its open question — which code places sources — is answered: "
-    "get_fpa_pos.",
+    "bugs — the pre-fix range here reproduces the audit's numbers. Its open "
+    "question — which code places sources — is answered: get_fpa_pos.",
 ], top=Inches(6.55), size=13)
 
 # ------------------------------------------ 6 · replication + provenance
