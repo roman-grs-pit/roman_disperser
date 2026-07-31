@@ -84,7 +84,8 @@ Quick mode writes a single FITS, PNG, source manifest, and metadata YAML at the 
 | SEED       | Top-level RNG seed |
 | RNDSEED0   | JAX RNG key word 0 (per-SCA) |
 | RNDSEED1   | JAX RNG key word 1 (per-SCA) |
-| GITSHA     | Git commit SHA of pipeline code (batch mode) |
+| CODEVER    | roman_disperser package version |
+| GITSHA     | Git commit SHA of pipeline code; `-dirty` suffix if the working tree had uncommitted changes |
 | MA_TABLE   | MA table number from APT (batch mode) |
 | PLAN       | APT plan number (batch mode) |
 | PASS       | APT pass number (batch mode) |
@@ -136,7 +137,8 @@ Written to `grism_<name>_meta.yaml`. Fields:
 | `galaxy_npix` | Sersic image size in native pixels |
 | `oversample` | PSF oversampling factor |
 | `source_counts` | Per-SCA dict mapping order -> {stars, galaxies} counts |
-| `git_sha` | Git commit SHA of pipeline code (batch mode) |
+| `codever` | roman_disperser package version |
+| `git_sha` | Git commit SHA of pipeline code (`-dirty` suffix if uncommitted changes) |
 | `pointing_file` | ECSV filename (batch mode) |
 | `apt` | APT identifiers: plan, pass, segment, observation, visit, exposure, ma_table_number (batch mode) |
 
@@ -155,13 +157,29 @@ This design ensures:
 - **Slice-invariant**: processing a subset of pointings does not change any key
 - **File-isolated**: different ECSV files produce different keys even with the same seed
 
-The per-pointing key is then split into per-SCA keys for Poisson sampling:
+The per-pointing key is then folded with each SCA *number* to give per-SCA
+keys for Poisson sampling (`pipeline.make_sca_keys`):
 
 ```
 make_pointing_key(seed, filename, plan, pass, segment, obs, visit, exposure)
-  -> jax.random.split(n_scas)       # one key per SCA
-     -> jax.random.poisson(...)     # Poisson draw for that SCA
+  -> jax.random.fold_in(key, sca_num)   # one key per SCA, by SCA number
+     -> jax.random.poisson(...)         # Poisson draw for that SCA
 ```
+
+Because the fold uses the SCA number rather than the position in the SCA
+list, slice-invariance extends to SCAs: a `scas: [5]` run draws from the
+same key as a full 18-SCA run, removing the RNG obstacle to 1-SCA
+regression gates. **Before v0.13.0 the keys came from `jax.random.split`
+indexed by list position (issue #20), so ISIM realisations from earlier
+versions differ by construction; the noiseless MODEL extension is
+unaffected.**
+
+Note that identical keys do not imply bit-identical products on GPU:
+scatter-add accumulation is non-deterministic at the float32-epsilon level
+(~1e-7 relative in MODEL run-to-run, measured on a10g), which can flip a
+handful of Poisson counts. Compare GPU products with `np.allclose` /
+relative-sum tolerances rather than bitwise; `--xla_gpu_deterministic_ops`
+restores bit-identity but at a >100x slowdown.
 
 Per-SCA keys are stored in both FITS headers (`RNDSEED0`/`RNDSEED1`) and the metadata YAML, so individual SCAs can be reproduced by reconstructing the key:
 

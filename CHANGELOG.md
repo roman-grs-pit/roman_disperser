@@ -7,7 +7,137 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-31
+
+Stage 3 of the precision/reproducibility sequence (stages 1 and 2 were
+0.11.0 and 0.12.0): reproducible per-SCA noise and self-identifying
+products. No placement or flux change — the noiseless MODEL extension is
+bit-identical to 0.12.0.
+
+### Changed
+- **Per-SCA RNG keys are now folded from the SCA number** (issue #20).
+  Previously keys came from `jax.random.split(pointing_key, len(sca_list))`
+  indexed by *list position*, so a `scas: [5]` run gave SCA 5 the key an
+  18-SCA run gave SCA 1, and no subset run could reproduce a full run's
+  noise. Keys are now `jax.random.fold_in(pointing_key, sca_num)`
+  (`pipeline.make_sca_keys`), making them independent of which other SCAs
+  are in the run. **ISIM noise realisations change by construction** for
+  every SCA relative to ≤0.12.0; MODEL is unaffected. Old products remain
+  reconstructible from their `RNDSEED0`/`RNDSEED1` header cards via
+  `jax.random.wrap_key_data`. This removes the RNG obstacle to 1-SCA
+  regression gates for full 18-SCA runs — but note that GPU products are
+  not bit-reproducible even at fixed keys (scatter-add nondeterminism at
+  the f32-epsilon level, ~1e-7 relative in MODEL, measured a10g
+  2026-07-31; flips ~tens of Poisson counts per SCA), so GPU gates must
+  compare with tolerances (`allclose`, relative sums); bitwise gates
+  require a deterministic backend (`--xla_gpu_deterministic_ops` measured
+  >100x slower).
+
 ### Added
+- **`CODEVER` and `GITSHA` provenance cards in every FITS product** (both
+  quick and batch mode; previously `GITSHA` was batch-only and `CODEVER`
+  did not exist), written unconditionally by `pipeline.write_fits`.
+  `CODEVER` is the installed package version; `GITSHA` is the full commit
+  SHA of the pipeline checkout, with a `-dirty` suffix when the working
+  tree has uncommitted changes — a SHA over uncommitted changes identifies
+  nothing. The per-pointing metadata YAML likewise gains `codever` and
+  carries `git_sha` in both modes.
+- `tests/test_pipeline.py` — first coverage of the RNG-key path
+  (subset-invariance, distinctness, the exact fold-in derivation) and of
+  the provenance cards round-tripping through a written FITS file.
+
+## [0.12.0] - 2026-07-31
+
+### Changed
+- **Sky→FPA now uses a proper gnomonic (TAN) projection.**
+  `sky_to_tangent_offsets` replaces the flat-sky approximation
+  (`Δα·cos δ`, `Δδ`) with the exact tangent-plane projection, closing
+  issues #5 and #19 together (stage 2 of the sky→FPA precision work; stage 1
+  was 0.11.0). Source placement moves by the size of the flat-sky error being
+  removed — third order in the offset at the equator but second order off it
+  (North error `Δα² sin(2δ₀)/4`, worst at δ₀ = 45°): over a ±0.4° field,
+  ~0.06 px at Dec 0 growing to ~20 px at Dec 60. The golden-value literals
+  shifted by 0.064 / 1.294 / 4.509 / 19.739 px (equator → Dec 60) on
+  regeneration. **Any product simulated off the equator before this release
+  carries the flat-sky placement error** (in addition to the GPU TF32 error
+  fixed in 0.11.0 if applicable); equatorial products (e.g. the SSC line-grid
+  pointing at Dec 0.0–0.95) are affected only at the ≲0.1 px level.
+- The implementation is a **verbatim transcription** of the derivation
+  notebook (`docs/reference/tangent_plane_derivation.ipynb`, steps 1–3:
+  rotate the pointing to the pole in 3-D, project by dividing by z), same
+  NumPy float64 operations in the same order. Tests exec the `tangent_plane`
+  cell straight from the committed notebook and assert **bitwise** equality,
+  so the arithmetic must not be "cleaned up" independently of the notebook.
+
+### Added
+- `docs/reference/tangent_plane_derivation.ipynb` — the derivation of record
+  for the projection and the rotation conventions, including the proof that
+  the legacy rotation construction (`pa + 180 − 60` plus double negation)
+  equals `R_NE(−(PA + focal_pa))`, and the Taylor expansion of the flat-sky
+  error. Committed byte-for-byte from the executed original apart from one
+  scrubbed stderr line.
+- `optical_model_jax.FOCAL_PA_DEG = -60.0` — the focal-plane orientation
+  constant, previously a bare literal inside `get_pa_rotation` (numerically a
+  no-op), with a convention note in the docstring.
+- `TestGnomonicNotebookOracle` — the exec-from-notebook oracle: bitwise
+  projection equality plus rotation-convention equivalence of the full
+  `get_fpa_pos` against the notebook over a PA × declination grid (worst
+  case 2.6e-3 px, float32-rotation round-off). The independent astropy TAN
+  oracle now asserts agreement (< 0.01 px at Dec 0/30/60/85) instead of
+  characterising the flat-sky error.
+
+### Removed
+- The meridian-crossing `ValueError` in `sky_to_tangent_offsets`: the
+  gnomonic projection is periodic in RA by construction, so a field
+  straddling RA = 0 is now simply placed correctly (the previously-xfailed
+  meridian test passes and the marker is gone). The float32 `TypeError`
+  guard is **kept, permanently** — quantisation of absolute RA happens
+  before the projection can help.
+
+## [0.11.0] - 2026-07-31
+
+### Fixed
+- **Sky→FPA source placement was wrong on GPU (TF32).** The position-angle
+  rotation in `optical_model_jax.get_fpa_pos` was an unannotated float32
+  matmul. With `jax_enable_x64` off, XLA:GPU serves that as TF32 on Ampere and
+  later — a 10-bit mantissa, eps ≈ 4.9e-4 — while the identical op on CPU is
+  exact. Every source in a GPU run was placed at a perturbed focal-plane
+  position: median 1.84 px, up to 7.08 px, growing with field radius. Now uses
+  `jnp.matmul(..., precision='highest')`. **All grism/prism products generated
+  on GPU before this release carry the error**; the catalogue and manifest
+  RA/Dec are correct, only the placement was wrong, so the products remain
+  internally self-consistent. A consumer who re-runs their own disperser from
+  the catalogue coordinates will disagree with them.
+- **Absolute RA was silently downcast to float32 before differencing.** The
+  call site passed `jnp.array(ra)` from float64 pandas, quantising right
+  ascension *before* `(ra - pointing_ra)` — catastrophic cancellation, with an
+  error that scaled with the pointing: 0.006 px at RA 10, but 0.40 px at RA
+  260, where float32 ulp is 0.11 arcsec. The differencing now happens in float64
+  on the host (`sky_to_tangent_offsets`), making the accuracy independent of
+  where the telescope points (9.8e-5 px at every RA tested).
+
+### Added
+- `optical_model_jax.sky_to_tangent_offsets` (host, float64) and
+  `get_fpa_pos_from_offsets` (JAX, jit-compilable), the two halves of the
+  sky→FPA transform. `get_fpa_pos` composes them and keeps its signature.
+- `sky_to_tangent_offsets` **raises `TypeError` on float32 input** (including
+  JAX arrays, which are float32 with x64 disabled). By the time absolute RA is
+  float32 the quantisation has already happened and upcasting cannot undo it,
+  so a call site that wraps its catalogue columns in `jnp.array()` — how the
+  original defect shipped — now fails loudly instead of silently reintroducing
+  the pointing-dependent error. The cost is an O(1) dtype check on the host.
+- `tests/test_precision_convention.py`: AST scan asserting every matmul-class
+  JAX op in the package declares `precision=`, with self-tests pinning the
+  checker's own behaviour on known-good and known-bad forms. Runs on CPU in
+  milliseconds, so unlike the `has_gpu()`-guarded tests it cannot skip silently
+  on a GPU-less machine.
+- `scripts/slurm_run_tests.sh`: submits the GPU test suite to `gpu-med`. The
+  CPU/GPU tests existed but were never run anywhere with a GPU, which is why
+  the TF32 defect survived.
+- Sky→FPA tests now state tolerances in **pixels**. The previous cross-check
+  compared positions in degrees at `ATOL = 1e-3`, which is 33 px — loose enough
+  to pass a 1.84 px displacement. Adds an independent astropy TAN oracle and
+  float64 golden values.
 - Showcase visualization scripts (`scripts/`) and figures (`figures/`):
   - `make_showcase_figure.py` — 3-panel "same sky, three views" of the
     acceptance/roll test products at RA≈10/Dec≈0: imaging (L3 coadd) | grism |
@@ -20,6 +150,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     marker stars' order-1 traces via the optical model (run in the
     `roman_disperser`/`roman_disperser_prism` envs); the figure scripts run in
     the `roman_l2_job` env to read the L2/L3 ASDFs.
+
+### Changed
+- **`get_fpa_pos` is no longer jit-compilable**, deliberately: its float64
+  differencing is host NumPy. Jit `get_fpa_pos_from_offsets` instead. In
+  production the host half runs once per pointing over a few thousand sources
+  and is not on a hot path.
+
+### Known issues
+- **`get_fpa_pos` has no RA wrap handling; a field crossing RA = 0 is
+  refused.** `dx = ra - pointing_ra` gives +359.8 deg where the true separation
+  is −0.2 deg. Because `cone_search` uses a wrap-safe haversine, such sources
+  are correctly *selected*, then placed ~360 deg off the focal plane and
+  silently culled by the detector bounding box — vanishing from both image and
+  truth table with no error. Rather than mis-place them, `sky_to_tangent_offsets`
+  now raises when any source lies more than 180 deg from the pointing in RA.
+  Affects any pointing within ~0.4 deg of RA = 0; no run to date is affected.
+  Fixed for free by the gnomonic projection (next release), since a
+  tangent-plane transform uses sin/cos of the RA difference and is periodic.
+  See issue #19.
+- **The flat-sky approximation `Δα·cos δ` is still in use**, and is a larger
+  error than the TF32 defect for any pointing off the equator. The dominant term
+  is second order — `Δη ≈ -(tan δ₀ / 2)·u²` with `u = Δα·cos δ₀`, the curvature
+  of parallels — so it grows as `u²·tan δ₀`: quadratic in field radius, and zero
+  at the equator. Source displacement measured against an astropy TAN
+  projection over a ±0.4 deg field:
+
+  | pointing Dec | median | max |
+  |---|---|---|
+  | 0° | 0.12 px | 0.74 px |
+  | 30° | 6.75 px | 26.76 px |
+  | 60° | 20.25 px | 79.53 px |
+
+  Replaced by a gnomonic projection in the next release, which also fixes the
+  RA wrap above (a tangent-plane transform is periodic in the RA difference).
+  See issue #5.
 
 ## [0.10.0] - 2026-06-12
 

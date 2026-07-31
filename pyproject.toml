@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "roman_disperser"
-version = "0.10.0"
+version = "0.13.0"
 requires-python = ">=3.12"
 authors = [
     { name = "Nikhil Padmanabhan", email = "nikhil.padmanabhan@gmail.com" },

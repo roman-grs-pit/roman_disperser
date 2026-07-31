@@ -206,3 +206,140 @@ class TestCPUvsGPU:
             rtol=RTOL, atol=ATOL,
             err_msg="CPU and GPU get_trace_coeffs ids results do not match"
         )
+
+
+# Roman WFI plate scale, for stating position tolerances in pixels rather than
+# degrees. ATOL above is 2e-3 *degrees* = 65 px, which is a sensible tolerance
+# for an image comparison and a useless one for a position.
+PIXEL_SCALE_ARCSEC = 0.11
+
+
+def _deg_to_px(x):
+    return np.asarray(x) * 3600.0 / PIXEL_SCALE_ARCSEC
+
+
+class TestSkyToFPACPUvsGPU:
+    """The sky -> FPA transform must agree across devices, and with float64.
+
+    This is the regression test for the July 2026 TF32 defect. The rotation in
+    `get_fpa_pos` was an unannotated float32 matmul, which XLA:GPU lowered to
+    TF32 (10-bit mantissa) on Ampere while running it exactly on CPU. Sources
+    were placed a median 1.84 px -- up to 7.08 px -- from where the catalogue
+    said they were.
+
+    Two properties are asserted, and the second is the one that matters:
+
+    1. CPU and GPU agree. Catches a device-dependent lowering.
+    2. Both agree with an independent float64 NumPy evaluation. This is the
+       load-bearing check: if a future change made *both* devices wrong in the
+       same way, property 1 would still pass.
+
+    Tolerances are in pixels.
+    """
+
+    # Deliberately at a high absolute RA. Placement error from a float32
+    # downcast scales with |RA|, so a test at RA ~ 10 (the SSC pointing) is
+    # ~60x less sensitive to that failure mode than one at RA ~ 260.
+    POINTING = (260.0, -10.0, 120.0)
+
+    @staticmethod
+    def _reference_float64(ra, dec, pointing_ra, pointing_dec, pointing_pa):
+        """Evaluate the same transform in float64 NumPy, independently.
+
+        The projection is the *textbook* gnomonic formula (xi = cos d sin dra
+        / D etc.), a different derivation from the rotate-to-pole form in the
+        live code, so agreement checks the arithmetic and not just the
+        transcription. (Was the flat-sky formula until the gnomonic projection
+        landed; at this Dec -10 pointing the flat-sky reference differs from
+        the live code by ~1 px, far over the 1e-2 px bound below.)
+        """
+        rad = np.deg2rad
+        dra = rad(np.float64(ra)) - rad(np.float64(pointing_ra))
+        d, d0 = rad(np.float64(dec)), rad(np.float64(pointing_dec))
+        D = np.sin(d) * np.sin(d0) + np.cos(d) * np.cos(d0) * np.cos(dra)
+        dx = np.rad2deg(np.cos(d) * np.sin(dra) / D)
+        dy = np.rad2deg(
+            (np.sin(d) * np.cos(d0) - np.cos(d) * np.sin(d0) * np.cos(dra)) / D
+        )
+        theta = np.deg2rad(np.float64(pointing_pa) + 180.0 - 60.0)
+        rot = np.array([[np.cos(theta), -np.sin(theta)],
+                        [np.sin(theta), np.cos(theta)]])
+        xy = rot @ np.stack([dx, dy])
+        return -xy[0], -xy[1]
+
+    def _sources(self, n=512):
+        pointing_ra, pointing_dec, _ = self.POINTING
+        np.random.seed(2026)
+        ra = pointing_ra + np.random.uniform(-0.4, 0.4, size=n)
+        dec = pointing_dec + np.random.uniform(-0.4, 0.4, size=n)
+        return ra, dec
+
+    def test_cpu_and_gpu_agree(self):
+        """Same offsets rotated on CPU and on GPU must match sub-milli-pixel."""
+        pointing_ra, pointing_dec, pointing_pa = self.POINTING
+        ra, dec = self._sources()
+
+        dx, dy = omj.sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec)
+
+        cpu = jax.devices('cpu')[0]
+        gpu = jax.devices('gpu')[0]
+
+        x_cpu, y_cpu = omj.get_fpa_pos_from_offsets(
+            jax.device_put(jnp.asarray(dx), cpu),
+            jax.device_put(jnp.asarray(dy), cpu),
+            pointing_pa,
+        )
+        x_gpu, y_gpu = omj.get_fpa_pos_from_offsets(
+            jax.device_put(jnp.asarray(dx), gpu),
+            jax.device_put(jnp.asarray(dy), gpu),
+            pointing_pa,
+        )
+
+        diff_px = _deg_to_px(
+            np.hypot(np.asarray(x_cpu) - np.asarray(x_gpu),
+                     np.asarray(y_cpu) - np.asarray(y_gpu))
+        )
+        # Tolerance is ~10 float32 ulp, not bit-identity. At the field radius
+        # (~0.4 deg) one float32 ulp is 9.8e-4 px, and CPU and GPU legitimately
+        # differ by 0-2 ulp because their libm cos/sin disagree in the last bit
+        # when building the rotation matrix. Measured on an a10g: max 0.0020 px,
+        # quantised in exact ulp steps.
+        #
+        # This still separates the two regimes by ~180x: TF32 has eps 4.9e-4
+        # against float32's 1.2e-7, and reproduced the original defect at
+        # 1.84 px median / 7.08 px max.
+        assert diff_px.max() < 1e-2, (
+            f"CPU and GPU sky->FPA differ by {diff_px.max():.4f} px. If this "
+            "is ~1 px or more, the rotation matmul has lost precision='highest' "
+            "and is running as TF32 on the GPU."
+        )
+
+    @pytest.mark.parametrize("device_kind", ["cpu", "gpu"])
+    def test_matches_float64_reference(self, device_kind):
+        """Each device must match an independent float64 evaluation.
+
+        Guards against both devices being wrong in the same way, which a pure
+        CPU-vs-GPU comparison cannot see.
+        """
+        pointing_ra, pointing_dec, pointing_pa = self.POINTING
+        ra, dec = self._sources()
+
+        dx, dy = omj.sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec)
+        device = jax.devices(device_kind)[0]
+
+        x, y = omj.get_fpa_pos_from_offsets(
+            jax.device_put(jnp.asarray(dx), device),
+            jax.device_put(jnp.asarray(dy), device),
+            pointing_pa,
+        )
+
+        x_ref, y_ref = self._reference_float64(
+            ra, dec, pointing_ra, pointing_dec, pointing_pa
+        )
+        diff_px = _deg_to_px(
+            np.hypot(np.asarray(x) - x_ref, np.asarray(y) - y_ref)
+        )
+        assert diff_px.max() < 1e-2, (
+            f"{device_kind} sky->FPA differs from the float64 reference by "
+            f"{diff_px.max():.4f} px"
+        )

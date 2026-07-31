@@ -9,10 +9,35 @@ Notes:
     and mirror the class’s alternate code path.
 - Function naming: the polynomial mapping of FPA→MPA coordinates is exposed
     as `get_mpa_coords` (renamed from `get_map_coords` for clarity).
+
+Precision convention
+--------------------
+Two rules, both learned the hard way (see `get_fpa_pos`):
+
+1. **Absolute sky coordinates are float64 and stay on the host in NumPy;
+   everything downstream of the tangent-plane difference is float32 and lives
+   in JAX.** Right ascension in degrees is a large number whose *difference*
+   from the pointing is small, so it must be differenced at float64 before it
+   ever reaches JAX. Once differenced, the surviving quantities are bounded by
+   the field radius (~0.4 deg) and float32 carries them to ~1e-3 px, which is
+   far below anything we care about.
+
+2. **Every matmul-class JAX op carries `precision='highest'`.** With
+   `jax_enable_x64` off, XLA:GPU serves an unannotated float32 `dot_general` as
+   TF32 on Ampere and later — a 10-bit mantissa, eps ~ 4.9e-4 — while the same
+   op on CPU is exact. That divergence is invisible to a CPU-only test suite.
+
+   Annotate each site individually; do **not** reach for the process-global
+   `JAX_DEFAULT_MATMUL_PRECISION` or `jax.config.update(...)`. A global default
+   would mask a missing annotation rather than surface it, and setting it from
+   library code would silently change the numerics of any other JAX work
+   sharing the interpreter — including code that legitimately wants TF32.
+   `tests/test_precision_convention.py` enforces the annotation by AST scan.
 """
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 
 def make_sca_payload(model, sca: int, order: str = "1"):
@@ -227,24 +252,186 @@ def fpa_to_mpa(payload, xfpa, yfpa):
     return xmpa, ympa
 
 
+# Fixed orientation of the FPA coordinate system relative to the telescope,
+# in degrees East of North. An instrument constant, not a tunable: the total
+# on-sky orientation of the focal plane is (pointing PA + FOCAL_PA_DEG).
+FOCAL_PA_DEG = -60.0
+
+
 def get_pa_rotation(pa):
     """Return 2x2 rotation matrix for a given position angle (JAX version).
 
+    Convention note (this construction confuses everyone, including its
+    authors): together with the negation of both components in
+    `get_fpa_pos_from_offsets`, the net operation is R_math(pa - 60) -- the
+    +180 here and the negation there cancel exactly. This matrix is the math
+    (counterclockwise) convention, which on the sky (x = East pointing left)
+    rotates North toward *West*; with the opposite angle sign it is identical
+    to the North-toward-East matrix R_NE(-(pa + FOCAL_PA_DEG)) used in the
+    derivation notebook, i.e. the inverse rotation that takes sky-aligned
+    tangent-plane coordinates into a focal plane oriented at
+    (pa + FOCAL_PA_DEG) on the sky. Full derivation and a numerical proof of
+    the equivalence: docs/reference/tangent_plane_derivation.ipynb, and the
+    executable pin in
+    `tests/test_optical_model_jax.py::TestGnomonicNotebookOracle`.
+
     Args:
-        pa: position angle in degrees (scalar)
+        pa: position angle in degrees, East of North (scalar)
 
     Returns:
         2x2 rotation matrix (JAX array)
     """
-    theta = jnp.deg2rad(pa + 180 - 60)
+    theta = jnp.deg2rad(pa + 180 + FOCAL_PA_DEG)
     return jnp.array([
         [jnp.cos(theta), -jnp.sin(theta)],
         [jnp.sin(theta),  jnp.cos(theta)],
     ])
 
 
+def sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec):
+    """Gnomonic (TAN) offsets of sources from the pointing (degrees).
+
+    Projects (ra, dec) onto the plane tangent to the celestial sphere at the
+    pointing, returning sky-aligned tangent-plane coordinates
+    (:math:`\\xi` = East, :math:`\\eta` = North) in degrees. The algorithm
+    rotates the pointing to the North Pole in 3-D (an RA shift folded into the
+    Cartesian conversion, then :math:`R_y(\\delta_0 - \\pi/2)`) and projects by
+    dividing by the z component. It is a **verbatim transcription of steps
+    1-3 of the derivation notebook**,
+    ``docs/reference/tangent_plane_derivation.ipynb`` — same operations in the
+    same order, so
+    `tests/test_optical_model_jax.py::TestGnomonicNotebookOracle` can assert
+    exact (bitwise) equality against the notebook function executed straight
+    from that file. Do not "clean up" the arithmetic here without updating
+    that contract.
+
+    This replaced the flat-sky approximation
+    (:math:`\\Delta\\alpha \\cos\\delta`, :math:`\\Delta\\delta`; issues #5 and
+    #19). The flat-sky errors it removes — derived in the notebook's Taylor
+    expansion — are third order in the offset at the equator
+    (:math:`\\theta^3/3`) but pick up a **second-order** North error
+    :math:`\\Delta\\alpha^2 \\sin(2\\delta_0)/4` off the equator (worst at
+    :math:`\\delta_0 = 45^\\circ`): over a ±0.4 deg field, median 0.12 px
+    (max 0.72 px) at Dec 0 growing to median ~9.6 px (max ~55 px) at Dec 60;
+    the golden-value literals shifted 0.064-19.7 px on regeneration.
+    Because the projection uses sin/cos of
+    (ra - ra0), it is periodic in RA by construction, so a field straddling
+    RA = 0 needs no wrap handling — the former meridian-crossing ValueError
+    guard is gone.
+
+    Host-side (NumPy, float64) by design — see rule 1 of the precision
+    convention in the module docstring. Right ascension in degrees is a large
+    number whose difference from the pointing is small, so differencing it at
+    float32 destroys the very quantity we need:
+
+        pointing RA     cast-then-subtract      subtract-then-cast
+              10 deg           0.0062 px             0.000098 px
+             150 deg           0.0999 px             0.000098 px
+             260 deg           0.3995 px             0.000098 px
+
+    Differencing first makes the error independent of where the telescope
+    points, which is the entire purpose of this function existing separately
+    from the JAX rotation that follows it. The gnomonic projection does not
+    change this: float32 quantisation of *absolute* RA (~0.5 px at RA ≈ 260
+    deg) happens before sin/cos of the difference can help, so the float32
+    guard below is permanent.
+
+    Args:
+        ra, dec: source coordinates in degrees (1D arrays)
+        pointing_ra, pointing_dec: telescope pointing in degrees (scalars)
+
+    Returns:
+        dx, dy: tangent-plane offsets (xi East, eta North) in degrees,
+            float64 NumPy arrays
+
+    Raises:
+        TypeError: if ra or dec arrive as float32 (e.g. a JAX array with
+            x64 disabled). By then the quantisation has already happened and
+            upcasting cannot undo it, so refuse rather than silently produce
+            the pointing-dependent error this function exists to remove.
+    """
+    for name, value in (("ra", ra), ("dec", dec)):
+        dtype = getattr(value, "dtype", None)
+        if dtype is not None and np.dtype(dtype) == np.float32:
+            raise TypeError(
+                f"{name} arrived as float32: absolute sky coordinates were "
+                "quantised before the tangent-plane differencing, which is "
+                "the error this function exists to prevent (rule 1 of the "
+                "precision convention). Pass float64 host arrays -- e.g. "
+                "df['ra'].values, not jnp.array(df['ra'].values)."
+            )
+    # Transcription of tangent_plane() steps 1-3 from
+    # docs/reference/tangent_plane_derivation.ipynb (bit-exact contract).
+    ra_rad = np.deg2rad(np.asarray(ra, dtype=float))
+    dec_rad = np.deg2rad(np.asarray(dec, dtype=float))
+    ra0 = np.deg2rad(np.float64(pointing_ra))
+    dec0 = np.deg2rad(np.float64(pointing_dec))
+
+    # Step 1 + 2a: shift RA so the pointing is at RA = 0, then convert to 3-D
+    # Cartesian coordinates on the unit sphere.
+    da = ra_rad - ra0
+    cos_dec = np.cos(dec_rad)
+    x = cos_dec * np.cos(da)
+    y = cos_dec * np.sin(da)
+    z = np.sin(dec_rad)
+
+    # Step 2b: rotate about the y-axis by (dec0 - pi/2) to bring the pointing
+    # to the North Pole: cos(dec0 - pi/2) = sin(dec0), sin(dec0 - pi/2) =
+    # -cos(dec0).
+    sin_dec0 = np.sin(dec0)
+    cos_dec0 = np.cos(dec0)
+    xr = sin_dec0 * x - cos_dec0 * z
+    yr = y
+    zr = cos_dec0 * x + sin_dec0 * z
+
+    # Step 3: gnomonic projection onto the tangent plane at the pole. yr
+    # points East, xr points -Dec, so xi = East, eta = North.
+    xi = yr / zr
+    eta = -xr / zr
+
+    return np.rad2deg(xi), np.rad2deg(eta)
+
+
+def get_fpa_pos_from_offsets(dx, dy, pointing_pa):
+    """Rotate tangent-plane offsets into FPA coordinates (JAX, jittable).
+
+    This is the JAX half of the sky->FPA transform. Its inputs are already
+    small (bounded by the field radius, ~0.4 deg), so float32 is accurate to
+    ~1e-3 px here and no float64 is needed — see rule 1 of the precision
+    convention.
+
+    Args:
+        dx, dy: tangent-plane offsets in degrees, from `sky_to_tangent_offsets`
+        pointing_pa: position angle in degrees (scalar)
+
+    Returns:
+        xfpa, yfpa: FPA coordinates in degrees
+    """
+    xy = jnp.stack([jnp.asarray(dx), jnp.asarray(dy)])  # [2, N]
+    rot_matrix = get_pa_rotation(pa=pointing_pa)
+    # precision='highest' is mandatory, not stylistic: without it XLA:GPU runs
+    # this float32 dot as TF32 (10-bit mantissa) on Ampere and later, which
+    # displaced every source in the 2026-07 SSC line-grid package by a median
+    # 1.84 px and up to 7.08 px. The same op on CPU is exact, so no CPU-only
+    # test can see it. Note `@` takes no precision argument -- jnp.matmul does.
+    xy = jnp.matmul(rot_matrix, xy, precision='highest')
+    xfpa = -xy[0, :]
+    yfpa = -xy[1, :]
+    return xfpa, yfpa
+
+
 def get_fpa_pos(ra, dec, pointing_ra, pointing_dec, pointing_pa):
-    """Convert sky coordinates to FPA position (JAX version).
+    """Convert sky coordinates to FPA position.
+
+    Thin composition of `sky_to_tangent_offsets` (host, float64) and
+    `get_fpa_pos_from_offsets` (JAX, float32). Split so that the differencing
+    happens at float64 before anything reaches the GPU.
+
+    .. note::
+        **Not jit-compilable**, deliberately: the float64 differencing is host
+        NumPy. Jit `get_fpa_pos_from_offsets` instead, which is the part that
+        belongs on the device anyway. In production this runs once per pointing
+        on a few thousand sources, so it is not on any hot path.
 
     Args:
         ra, dec: source coordinates in degrees (1D arrays)
@@ -254,14 +441,8 @@ def get_fpa_pos(ra, dec, pointing_ra, pointing_dec, pointing_pa):
     Returns:
         xfpa, yfpa: FPA coordinates in degrees
     """
-    dx = (ra - pointing_ra) * jnp.cos(jnp.deg2rad(dec))
-    dy = dec - pointing_dec
-    xy = jnp.stack([dx, dy])  # [2, N]
-    rot_matrix = get_pa_rotation(pa=pointing_pa)
-    xy = rot_matrix @ xy
-    xfpa = -xy[0, :]
-    yfpa = -xy[1, :]
-    return xfpa, yfpa
+    dx, dy = sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec)
+    return get_fpa_pos_from_offsets(dx, dy, pointing_pa)
 
 
 # -------- polynomial functions --------

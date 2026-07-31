@@ -16,6 +16,19 @@ from roman_disperser.optical_model import RomanOpticalModel
 RTOL = 1e-5
 ATOL = 1e-3
 
+# Roman WFI plate scale, for stating position tolerances in pixels.
+#
+# ATOL above is in *degrees*, which at 0.11 arcsec/px is 33 px -- uselessly
+# loose for a position comparison, and one of the three reasons the 2026-07
+# TF32 defect (1.84 px median) went unnoticed. Position assertions below use
+# PIXEL_SCALE_ARCSEC to state their tolerance in pixels instead.
+PIXEL_SCALE_ARCSEC = 0.11
+
+
+def deg_to_px(x):
+    """Convert an angular quantity in degrees to WFI pixels."""
+    return np.asarray(x) * 3600.0 / PIXEL_SCALE_ARCSEC
+
 
 @pytest.fixture(scope="module")
 def optical_model():
@@ -473,49 +486,565 @@ class TestGetPARotation:
 
 
 class TestGetFPAPos:
-    """Test get_fpa_pos standalone function."""
+    """Test the sky -> FPA transform.
 
-    def test_compare_to_class(self, optical_model):
-        """Compare to class method calculate_fpa_pos."""
+    Tolerances here are stated in **pixels**, never in degrees. The suite that
+    shipped the 2026-07 TF32 defect compared FPA positions in degrees at
+    ATOL = 1e-3, which is 33 px -- loose enough to pass a 1.84 px displacement
+    without complaint.
+    """
+
+    def test_offset_from_legacy_flatsky_twin_is_the_known_approximation(
+        self, optical_model
+    ):
+        """Characterise the offset from the vendored flat-sky NumPy twin.
+
+        `optical_model.coords.calculate_fpa_pos` still carries the flat-sky
+        approximation, so since the gnomonic projection landed the two
+        implementations *genuinely differ* -- by the flat-sky error, which over
+        a +/-0.05 deg field at Dec -30 is dominated by the second-order North
+        term dra^2 sin(2 dec0)/4 from the derivation notebook: measured
+        0.013-0.18 px on this exact field. The upper bound is a loose ceiling
+        (a convention or rotation bug shows up at the full offset scale,
+        thousands of px); the lower bound proves the two implementations have
+        not silently converged (which would mean the gnomonic projection was
+        lost).
+        """
         np.random.seed(456)
         pointing_ra, pointing_dec, pointing_pa = 200.0, -30.0, 120.0
         ra = pointing_ra + np.random.uniform(-0.05, 0.05, size=10)
         dec = pointing_dec + np.random.uniform(-0.05, 0.05, size=10)
 
         xfpa_jax, yfpa_jax = omj.get_fpa_pos(
-            jnp.asarray(ra), jnp.asarray(dec), pointing_ra, pointing_dec, pointing_pa
+            ra, dec, pointing_ra, pointing_dec, pointing_pa
         )
         xfpa_class, yfpa_class = optical_model.coords.calculate_fpa_pos(
             ra, dec, pointing_ra, pointing_dec, pointing_pa
         )
 
-        np.testing.assert_allclose(xfpa_jax, xfpa_class, rtol=RTOL, atol=ATOL)
-        np.testing.assert_allclose(yfpa_jax, yfpa_class, rtol=RTOL, atol=ATOL)
+        d_px = deg_to_px(
+            np.hypot(np.asarray(xfpa_jax) - xfpa_class,
+                     np.asarray(yfpa_jax) - yfpa_class)
+        )
+
+        assert d_px.max() < 1.0, (
+            f"differs from the flat-sky twin by {d_px.max():.2f} px over a "
+            "0.05 deg field -- far more than the flat-sky approximation, so "
+            "this is a convention error, not the projection difference"
+        )
+        assert d_px.max() > 1e-3, (
+            "agrees with the flat-sky twin to float32 round-off -- the "
+            "gnomonic projection has been lost"
+        )
+
+    @pytest.mark.parametrize(
+        "pointing_ra", [10.0, 150.0, 260.0, 350.0],
+        ids=["ra010", "ra150", "ra260", "ra350"],
+    )
+    def test_accuracy_is_independent_of_pointing_ra(self, pointing_ra):
+        """The float64 differencing must remove the pointing-RA dependence.
+
+        Regression test for the silent float32 downcast at the old
+        `build_grism_image.py:614` call site. Passing absolute RA through
+        `jnp.array()` quantised it *before* the subtraction, so the placement
+        error scaled with the magnitude of RA -- 0.006 px at RA 10, but
+        0.40 px at RA 260, where float32 ulp is 0.11 arcsec, a full pixel.
+
+        Differencing at float64 first makes the residual depend only on the
+        (small) offset, so all four pointings must agree to the same accuracy.
+        """
+        pointing_dec, pointing_pa = 0.0, 0.0
+        np.random.seed(11)
+        dra = np.random.uniform(-0.2, 0.2, size=64)
+        ddec = np.random.uniform(-0.2, 0.2, size=64)
+        ra = pointing_ra + dra
+        dec = pointing_dec + ddec
+
+        xfpa, yfpa = omj.get_fpa_pos(
+            ra, dec, pointing_ra, pointing_dec, pointing_pa
+        )
+
+        # float64 reference for the same transform. The projection is the
+        # *textbook* gnomonic formula (xi = cos d sin dra / D etc.), a
+        # different derivation from the rotate-to-pole form in the live code,
+        # so this is an independent check of the arithmetic as well as of the
+        # RA-independence.
+        rad = np.deg2rad
+        dra, d, d0 = rad(ra) - rad(pointing_ra), rad(dec), rad(pointing_dec)
+        D = np.sin(d) * np.sin(d0) + np.cos(d) * np.cos(d0) * np.cos(dra)
+        dx64 = np.rad2deg(np.cos(d) * np.sin(dra) / D)
+        dy64 = np.rad2deg(
+            (np.sin(d) * np.cos(d0) - np.cos(d) * np.sin(d0) * np.cos(dra)) / D
+        )
+        theta = np.deg2rad(pointing_pa + 180 - 60)
+        rot = np.array([[np.cos(theta), -np.sin(theta)],
+                        [np.sin(theta), np.cos(theta)]])
+        xy64 = rot @ np.stack([dx64, dy64])
+
+        err_px = deg_to_px(
+            np.hypot(np.asarray(xfpa) + xy64[0], np.asarray(yfpa) + xy64[1])
+        )
+        assert err_px.max() < 1e-2, (
+            f"pointing RA {pointing_ra}: max error {err_px.max():.4f} px -- "
+            "accuracy still depends on absolute RA, so the differencing is "
+            "happening after a float32 downcast"
+        )
+
+    def test_offsets_are_float64_on_the_host(self):
+        """`sky_to_tangent_offsets` must not hand back float32.
+
+        The whole fix is that the subtraction happens at float64 before JAX
+        sees it. If this returns float32 the precision has already been lost,
+        no matter what the rest of the pipeline does.
+        """
+        ra = np.array([260.1, 260.2, 259.9])
+        dec = np.array([0.1, -0.1, 0.05])
+        dx, dy = omj.sky_to_tangent_offsets(ra, dec, 260.0, 0.0)
+        assert dx.dtype == np.float64
+        assert dy.dtype == np.float64
 
     def test_vectorized(self):
         """Verify works with arrays of (ra, dec) and scalar pointing params."""
         pointing_ra, pointing_dec, pointing_pa = 100.0, 10.0, 90.0
-        ra = jnp.array([100.01, 100.02, 99.99])
-        dec = jnp.array([10.01, 9.99, 10.02])
+        ra = np.array([100.01, 100.02, 99.99])
+        dec = np.array([10.01, 9.99, 10.02])
 
-        xfpa, yfpa = omj.get_fpa_pos(ra, dec, pointing_ra, pointing_dec, pointing_pa)
+        xfpa, yfpa = omj.get_fpa_pos(ra, dec, pointing_ra, pointing_dec,
+                                     pointing_pa)
 
         assert xfpa.shape == (3,)
         assert yfpa.shape == (3,)
 
     def test_jit_compilation(self):
-        """Verify get_fpa_pos is JIT-compilable."""
+        """The JAX half must stay jit-compilable.
+
+        `get_fpa_pos` itself is deliberately *not* jittable any more: its
+        float64 differencing is host NumPy, which is the point. The jittable
+        unit is now `get_fpa_pos_from_offsets`, which is the part that belongs
+        on the device. In production the host half runs once per pointing over
+        a few thousand sources and is not on any hot path.
+        """
         @jax.jit
-        def jitted_fpa_pos(ra, dec, pra, pdec, ppa):
-            return omj.get_fpa_pos(ra, dec, pra, pdec, ppa)
+        def jitted_from_offsets(dx, dy, ppa):
+            return omj.get_fpa_pos_from_offsets(dx, dy, ppa)
 
-        ra = jnp.array([150.01, 150.02])
-        dec = jnp.array([2.01, 1.99])
+        dx = jnp.array([0.01, 0.02])
+        dy = jnp.array([0.01, -0.01])
 
-        xfpa, yfpa = jitted_fpa_pos(ra, dec, 150.0, 2.0, 60.0)
+        xfpa, yfpa = jitted_from_offsets(dx, dy, 60.0)
         assert xfpa.shape == (2,)
         assert yfpa.shape == (2,)
         assert isinstance(xfpa, jnp.ndarray)
+
+    def test_composed_transform_is_not_jittable(self):
+        """Document the contract change: get_fpa_pos is host code now.
+
+        Pinned as a test rather than only a docstring so that a future attempt
+        to jit the whole transform fails loudly here, with the reason attached,
+        instead of silently reintroducing a float32 downcast of absolute RA.
+        """
+        @jax.jit
+        def jitted(ra, dec):
+            return omj.get_fpa_pos(ra, dec, 150.0, 2.0, 60.0)
+
+        # With the float32 guard in place the tracers (dtype float32) trip the
+        # TypeError; were the guard removed, np.asarray on a tracer raises
+        # TracerArrayConversionError instead. Either way this must not trace.
+        with pytest.raises((TypeError, jax.errors.TracerArrayConversionError)):
+            jitted(jnp.array([150.01, 150.02]), jnp.array([2.01, 1.99]))
+
+    def test_float32_input_is_refused(self):
+        """Quantised-before-differencing input must fail loudly.
+
+        `np.asarray(f32, dtype=np.float64)` would silently upcast values whose
+        precision is already gone, reintroducing the pointing-dependent error
+        at any call site that wraps its catalogue columns in `jnp.array()` --
+        which is exactly how the old build_grism_image.py call site shipped.
+        """
+        ra32 = np.array([260.1, 260.2], dtype=np.float32)
+        dec64 = np.array([0.1, -0.1])
+
+        with pytest.raises(TypeError, match="float32"):
+            omj.sky_to_tangent_offsets(ra32, dec64, 260.0, 0.0)
+        with pytest.raises(TypeError, match="float32"):
+            omj.sky_to_tangent_offsets(
+                dec64, ra32.astype(np.float32), 260.0, 0.0
+            )
+        # jnp arrays are float32 with x64 disabled and must be refused too.
+        with pytest.raises(TypeError, match="float32"):
+            omj.get_fpa_pos(
+                jnp.array([260.1, 260.2]), jnp.array([0.1, -0.1]),
+                260.0, 0.0, 0.0,
+            )
+
+
+class TestSkyToFPAMeridian:
+    """Behaviour of the sky -> FPA transform at the RA = 0 boundary.
+
+    The old flat-sky transform computed `ra - pointing_ra` with no wrap
+    handling, so a field straddling RA = 0 placed its sources ~360 deg off the
+    focal plane, where the detector bounding box silently culled them -- they
+    vanished from both the image and the truth table with no error and no NaN.
+    Stage 1 guarded this with a ValueError; the gnomonic projection (stage 2)
+    fixed it properly -- sin/cos of the RA difference are periodic by
+    construction -- so the guard is gone and these tests assert correct
+    placement instead. See issue #19.
+    """
+
+    def test_meridian_crossing_field_is_placed_correctly(self):
+        """A field straddling RA = 0 must be placed as a contiguous field.
+
+        Sources 0.2 deg apart on the sky must land 0.2 deg apart on the focal
+        plane regardless of which side of the meridian they sit on.
+        """
+        pointing_ra, pointing_dec, pointing_pa = 0.1, 0.0, 0.0
+        ra = np.array([359.9, 0.3])   # -0.2 and +0.2 deg from the pointing
+        dec = np.array([0.0, 0.0])
+
+        xfpa, yfpa = omj.get_fpa_pos(
+            ra, dec, pointing_ra, pointing_dec, pointing_pa
+        )
+
+        sep_px = deg_to_px(
+            np.hypot(np.asarray(xfpa)[1] - np.asarray(xfpa)[0],
+                     np.asarray(yfpa)[1] - np.asarray(yfpa)[0])
+        )
+        expected_px = deg_to_px(0.4)
+        assert abs(sep_px - expected_px) < 1.0, (
+            f"separation {sep_px:.1f} px, expected {expected_px:.1f} px"
+        )
+
+    def test_wrapped_and_unwrapped_ra_conventions_agree(self):
+        """RA given as 359.9 and as -0.1 must land in the same place.
+
+        Periodicity is the mechanism that makes the meridian safe, so pin it
+        directly: the projection may not care how the caller wraps RA.
+        """
+        dec = np.array([0.05, -0.05])
+        dx_a, dy_a = omj.sky_to_tangent_offsets(
+            np.array([359.9, 0.3]), dec, 0.1, 0.0
+        )
+        dx_b, dy_b = omj.sky_to_tangent_offsets(
+            np.array([-0.1, 0.3]), dec, 0.1, 0.0
+        )
+        # Not bitwise: sin/cos of (x - 2pi) and of x round differently. Any
+        # difference is trig round-off, ~1e-16 rad, i.e. ~1e-9 px.
+        np.testing.assert_allclose(dx_a, dx_b, rtol=0, atol=1e-12)
+        np.testing.assert_allclose(dy_a, dy_b, rtol=0, atol=1e-12)
+
+
+class TestSkyToFPAAgainstAstropy:
+    """Independent oracle: astropy's TAN (gnomonic) WCS.
+
+    The vendored NumPy twin shares this code's lineage *and* its flat-sky
+    approximation, so it cannot detect an error in the projection itself --
+    "a bug at both ends". astropy is a genuinely external implementation and is
+    therefore the oracle that matters for the gnomonic stage.
+
+    Comparisons here are made on **radial distance from the pointing**, which is
+    invariant under the PA rotation and the axis negations in
+    `get_fpa_pos_from_offsets`. That isolates the *projection*, which is what
+    astropy is authoritative about; the rotation and sign conventions are
+    covered separately by `test_matches_legacy_flatsky_reference`. Matching the
+    full PA/CDELT sign convention here as well would test the harness more than
+    the code.
+
+    With the gnomonic projection in place (stage 2), the live code and astropy
+    compute the same projection from independent code bases, so these now
+    assert *agreement* to float32-rotation round-off at every declination --
+    the stage-1 characterisation of the flat-sky error
+    (`test_flatsky_error_grows_with_declination`, bounds 2/40/120 px at Dec
+    0/30/60) is retired, replaced by `test_gnomonic_matches_astropy` below.
+    """
+
+    @staticmethod
+    def _tan_offsets(ra, dec, pointing_ra, pointing_dec):
+        """Gnomonic (TAN) tangent-plane offsets in degrees, from astropy.
+
+        NOTE: `world_to_pixel` returns **0-based** pixel coordinates while
+        `crpix` is 1-based FITS, so `crpix = [1, 1]` -- not [0, 0] -- puts the
+        tangent point at the origin. Getting this wrong displaces everything by
+        exactly (1, 1) deg, i.e. sqrt(2) deg = 46284 px, which is how it was
+        caught.
+        """
+        from astropy.wcs import WCS
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+
+        w = WCS(naxis=2)
+        w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        w.wcs.crval = [pointing_ra, pointing_dec]
+        w.wcs.crpix = [1.0, 1.0]
+        w.wcs.cdelt = [1.0, 1.0]  # 1 "pixel" == 1 degree
+        x, y = w.world_to_pixel(SkyCoord(np.asarray(ra) * u.deg,
+                                         np.asarray(dec) * u.deg))
+        return np.asarray(x), np.asarray(y)
+
+    @staticmethod
+    def _radius_px(xfpa, yfpa):
+        """Radial distance from the pointing, in pixels.
+
+        Invariant under the PA rotation and the axis negations, so it compares
+        projections rather than conventions.
+        """
+        return deg_to_px(np.hypot(np.asarray(xfpa), np.asarray(yfpa)))
+
+    def test_tangent_point_is_exact(self):
+        """A source at the pointing must land at the origin in both.
+
+        Guards the harness: if the astropy WCS is misconfigured (the crpix
+        off-by-one above), this fails before any science assertion does.
+        """
+        x, y = self._tan_offsets([150.0], [30.0], 150.0, 30.0)
+        assert deg_to_px(np.hypot(x, y)).max() < 1e-6
+
+        xfpa, yfpa = omj.get_fpa_pos(
+            np.array([150.0]), np.array([30.0]), 150.0, 30.0, 45.0
+        )
+        assert self._radius_px(xfpa, yfpa).max() < 1e-6
+
+    @pytest.mark.parametrize(
+        "pointing_dec",
+        [0.0, 30.0, 60.0, 85.0],
+        ids=["dec00", "dec30", "dec60", "dec85"],
+    )
+    def test_gnomonic_matches_astropy(self, pointing_dec):
+        """The projection must agree with astropy TAN at every declination.
+
+        The float64 projection halves agree to ~1e-13 deg (measured); the
+        comparison goes through `get_fpa_pos`, whose float32 rotation rounds
+        the radius at ~2e-3 px on a 0.4 deg offset, so 0.01 px is a
+        comfortable ceiling. In stage 1 this same comparison read 0.72 px at
+        Dec 0 and 54.8 px at Dec 60 (the flat-sky error, retired with it).
+        """
+        pointing_ra, pointing_pa = 150.0, 0.0
+        np.random.seed(7)
+        n = 512
+        ddec = np.random.uniform(-0.4, 0.4, size=n)
+        dra = np.random.uniform(-0.4, 0.4, size=n) / np.cos(
+            np.deg2rad(pointing_dec)
+        )
+        ra, dec = pointing_ra + dra, pointing_dec + ddec
+
+        xfpa, yfpa = omj.get_fpa_pos(
+            ra, dec, pointing_ra, pointing_dec, pointing_pa
+        )
+        x_tan, y_tan = self._tan_offsets(ra, dec, pointing_ra, pointing_dec)
+
+        diff_px = np.abs(
+            self._radius_px(xfpa, yfpa) - deg_to_px(np.hypot(x_tan, y_tan))
+        )
+        assert diff_px.max() < 0.01, (
+            f"gnomonic vs astropy TAN differs by {diff_px.max():.4f} px at "
+            f"Dec {pointing_dec} -- beyond float32-rotation round-off, so the "
+            "projection itself disagrees"
+        )
+
+    def test_agreement_is_excellent_for_a_small_field(self):
+        """Flat-sky and gnomonic must converge as the field shrinks.
+
+        Independent of the projection argument: any correct tangent-plane
+        transform agrees with flat-sky to second order in the offset. This
+        assertion therefore holds in **both** stages, and is the one that
+        catches a gross convention error rather than an approximation.
+        """
+        pointing_ra, pointing_dec, pointing_pa = 150.0, 30.0, 45.0
+        np.random.seed(3)
+        n = 64
+        ddec = np.random.uniform(-1e-3, 1e-3, size=n)
+        dra = np.random.uniform(-1e-3, 1e-3, size=n) / np.cos(
+            np.deg2rad(pointing_dec)
+        )
+        ra, dec = pointing_ra + dra, pointing_dec + ddec
+
+        xfpa, yfpa = omj.get_fpa_pos(
+            ra, dec, pointing_ra, pointing_dec, pointing_pa
+        )
+        x_tan, y_tan = self._tan_offsets(ra, dec, pointing_ra, pointing_dec)
+
+        diff_px = np.abs(
+            self._radius_px(xfpa, yfpa) - deg_to_px(np.hypot(x_tan, y_tan))
+        )
+        assert diff_px.max() < 0.01, (
+            f"differs by {diff_px.max():.4f} px over a 1e-3 deg field, where "
+            "flat-sky and gnomonic must coincide -- this is a convention bug, "
+            "not a projection difference"
+        )
+
+
+class TestGnomonicNotebookOracle:
+    """Pin the live code to the derivation notebook, executed verbatim.
+
+    `docs/reference/tangent_plane_derivation.ipynb` is the derivation of
+    record for the gnomonic projection (Nikhil's notebook, committed
+    byte-for-byte apart from one scrubbed stderr line). Rather than compare
+    against a copy of its code that could drift, these tests parse the
+    committed .ipynb and `exec` the cell that defines `tangent_plane`, so the
+    oracle *is* the notebook.
+
+    Two contracts:
+
+    1. `sky_to_tangent_offsets` is a verbatim transcription of the notebook's
+       steps 1-3 (same NumPy ops, same order), so with the notebook's Step-4
+       rotation made an exact identity (pa=0, focal_pa=0 -- cos(0)=1.0 and
+       sin(0)=0.0 exactly in IEEE) the two must agree **bitwise**.
+    2. The repo's rotation convention (`get_pa_rotation`'s R_math(pa+180-60)
+       plus the double negation in `get_fpa_pos_from_offsets`) equals the
+       notebook's R_NE(-(pa + focal_pa)) with focal_pa = -60 -- proven
+       algebraically in the notebook, enforced numerically here over a
+       PA x declination grid at float32-rotation tolerance.
+    """
+
+    @pytest.fixture(scope="class")
+    def notebook_tangent_plane(self):
+        """The `tangent_plane` function exec'd from the committed notebook."""
+        import json
+        from pathlib import Path
+
+        nb_path = (Path(__file__).resolve().parent.parent
+                   / "docs" / "reference" / "tangent_plane_derivation.ipynb")
+        nb = json.loads(nb_path.read_text())
+        cells = [
+            "".join(c["source"]) for c in nb["cells"]
+            if c["cell_type"] == "code"
+            and "def tangent_plane" in "".join(c["source"])
+        ]
+        assert len(cells) == 1, (
+            f"expected exactly one tangent_plane cell, found {len(cells)}"
+        )
+        namespace = {"np": np}
+        exec(cells[0], namespace)
+        return namespace["tangent_plane"]
+
+    @pytest.mark.parametrize(
+        "pointing_ra,pointing_dec",
+        [(10.0, 0.0), (150.0, 30.0), (180.0, 60.0), (0.1, -45.0),
+         (359.9, 85.0)],
+        ids=["equator", "dec30", "dec60", "meridian-neg45", "wrap-dec85"],
+    )
+    def test_projection_is_bitwise_identical_to_notebook(
+        self, notebook_tangent_plane, pointing_ra, pointing_dec
+    ):
+        """Steps 1-3 transcription: exact equality, not a tolerance.
+
+        `assert_array_equal`, deliberately: the implementation promises the
+        same operations in the same order, and in one process the same libm
+        calls on the same float64 inputs return the same bits. Any tolerance
+        here would let a silent "cleanup" of the arithmetic slip through.
+        """
+        rng = np.random.default_rng(42)
+        n = 256
+        dra = rng.uniform(-0.4, 0.4, n) / max(
+            np.cos(np.deg2rad(pointing_dec)), 0.01
+        )
+        ra = pointing_ra + dra
+        dec = pointing_dec + rng.uniform(-0.4, 0.4, n)
+
+        dx, dy = omj.sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec)
+        x_nb, y_nb = notebook_tangent_plane(
+            ra, dec, pointing_ra, pointing_dec, pointing_pa=0.0, focal_pa=0.0
+        )
+
+        np.testing.assert_array_equal(dx, x_nb)
+        np.testing.assert_array_equal(dy, y_nb)
+
+    @pytest.mark.parametrize("pointing_pa", [0.0, 33.0, 45.0, 90.0, 120.0,
+                                             180.0, 270.0])
+    @pytest.mark.parametrize("pointing_dec", [-60.0, -30.0, 0.0, 30.0, 60.0])
+    def test_rotation_convention_matches_notebook(
+        self, notebook_tangent_plane, pointing_pa, pointing_dec
+    ):
+        """Full transform vs the notebook with its focal_pa = -60 default.
+
+        A convention error (sign, transpose, wrong focal_pa) displaces sources
+        at the full offset scale -- thousands of px -- so the float32-rotation
+        tolerance of 1e-2 px (measured worst case 2.6e-3 px over this grid)
+        pins the convention with three orders of margin.
+        """
+        pointing_ra = 150.0
+        rng = np.random.default_rng(7)
+        n = 100
+        ra = pointing_ra + rng.uniform(-0.4, 0.4, n) / np.cos(
+            np.deg2rad(pointing_dec)
+        )
+        dec = pointing_dec + rng.uniform(-0.4, 0.4, n)
+
+        xfpa, yfpa = omj.get_fpa_pos(
+            ra, dec, pointing_ra, pointing_dec, pointing_pa
+        )
+        x_nb, y_nb = notebook_tangent_plane(
+            ra, dec, pointing_ra, pointing_dec, pointing_pa=pointing_pa
+        )
+
+        err_px = deg_to_px(
+            np.hypot(np.asarray(xfpa) - x_nb, np.asarray(yfpa) - y_nb)
+        )
+        assert err_px.max() < 1e-2, (
+            f"PA {pointing_pa}, Dec {pointing_dec}: differs from the notebook "
+            f"by {err_px.max():.2e} px -- rotation convention mismatch"
+        )
+
+    def test_focal_pa_constant_matches_notebook_default(
+        self, notebook_tangent_plane
+    ):
+        """FOCAL_PA_DEG must equal the notebook function's focal_pa default."""
+        import inspect
+        sig = inspect.signature(notebook_tangent_plane)
+        assert sig.parameters["focal_pa"].default == omj.FOCAL_PA_DEG
+
+
+class TestSkyToFPAGoldenValues:
+    """Golden values for the sky -> FPA transform, pinned as literals.
+
+    Independent of the vendored twin, astropy, and the derivation notebook: if
+    every implementation ever drifts together, these literals still pin the
+    numbers that were reviewed. Regenerated for the gnomonic stage (they were
+    flat-sky at PR #18), evaluated once in float64 NumPy as: gnomonic
+    projection (`sky_to_tangent_offsets`, verified bit-exact against the
+    derivation notebook) followed by the float64 rotation
+    (theta = pa + 180 - 60, xy = -rot @ [dx, dy]) and hardcoded. Shifts vs the
+    flat-sky literals they replaced, in the order below: 0.064 px, 1.294 px,
+    4.509 px, 19.739 px -- the flat-sky error at each field, growing with
+    declination exactly as the notebook's Taylor expansion predicts.
+    """
+
+    # (ra, dec, pointing_ra, pointing_dec, pointing_pa, xfpa, yfpa),
+    # all in degrees. The expected values are float64 literals.
+    CASES = [
+        # Equatorial, the SSC line-grid pointing.
+        (10.2, 0.15, 10.0, 0.0, 0.0,
+         0.22990530493434386, -0.09820515596685221),
+        # Mid-RA, where the old float32 downcast cost ~0.1 px. PA = 60 makes
+        # theta = 180 deg exactly, so xfpa = xi and yfpa = eta directly
+        # (flat-sky's hand-checkable yfpa = 0.1 exactly no longer holds:
+        # eta picks up the second-order dra^2 sin(2 dec0)/4 term, +1.3 px).
+        (150.35, 2.1, 150.0, 2.0, 60.0,
+         0.349769812838184, 0.10003924860138354),
+        # High RA, where the old downcast cost ~0.4 px.
+        (260.3, -10.2, 260.0, -10.0, 120.0,
+         0.320955859462984, 0.15563645674912038),
+        # High declination, where flat-sky departed most from gnomonic
+        # (19.7 px shift on regeneration).
+        (150.4, 60.25, 150.0, 60.0, 33.0,
+         0.2906256132541915, 0.13317732162336554),
+    ]
+
+    @pytest.mark.parametrize("case", CASES, ids=lambda c: f"ra{c[2]:g}")
+    def test_matches_golden_values(self, case):
+        ra, dec, pra, pdec, ppa, xfpa_gold, yfpa_gold = case
+
+        xfpa, yfpa = omj.get_fpa_pos(
+            np.array([ra]), np.array([dec]), pra, pdec, ppa
+        )
+
+        # Tolerance covers the float32 rotation in the live path against the
+        # float64 literals (offsets ~0.4 deg: float32 round-off plus the f32
+        # angle quantisation in get_pa_rotation, together well under 1e-2 px).
+        err_px = deg_to_px(
+            np.hypot(float(np.asarray(xfpa)[0]) - xfpa_gold,
+                     float(np.asarray(yfpa)[0]) - yfpa_gold)
+        )
+        assert err_px < 1e-2, f"{err_px:.4e} px from the pinned golden value"
 
 
 class TestMapCoords:
