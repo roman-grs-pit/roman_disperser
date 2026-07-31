@@ -177,6 +177,10 @@ ax.set_ylabel("Dec  [deg]")
 ax.set_title(f"Undispersed source-position shift, {OLD} → {NEW}\n"
              "wave 1b stpsf pa000 · arrows: pixel-space (Δx, Δy)")
 ax.set_aspect("equal")
+# Astronomical orientation: East (increasing RA) to the LEFT, North up.
+# Arrow components are pixel-space (Δx, Δy), so their on-screen direction is
+# schematic either way; the color (|shift|) carries the magnitude.
+ax.invert_xaxis()
 fig.tight_layout()
 fig.savefig(OUT / "fig1_shift_map.png")
 
