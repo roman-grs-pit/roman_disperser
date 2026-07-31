@@ -302,9 +302,23 @@ def sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec):
         dx, dy: offsets from the pointing in degrees, float64 NumPy arrays
 
     Raises:
+        TypeError: if ra or dec arrive as float32 (e.g. a JAX array with
+            x64 disabled). By then the quantisation has already happened and
+            upcasting cannot undo it, so refuse rather than silently produce
+            the pointing-dependent error this function exists to remove.
         ValueError: if any source lies more than 180 deg from the pointing in
             right ascension, which means the field crosses RA = 0.
     """
+    for name, value in (("ra", ra), ("dec", dec)):
+        dtype = getattr(value, "dtype", None)
+        if dtype is not None and np.dtype(dtype) == np.float32:
+            raise TypeError(
+                f"{name} arrived as float32: absolute sky coordinates were "
+                "quantised before the tangent-plane differencing, which is "
+                "the error this function exists to prevent (rule 1 of the "
+                "precision convention). Pass float64 host arrays -- e.g. "
+                "df['ra'].values, not jnp.array(df['ra'].values)."
+            )
     ra = np.asarray(ra, dtype=np.float64)
     dec = np.asarray(dec, dtype=np.float64)
     pointing_ra = np.float64(pointing_ra)

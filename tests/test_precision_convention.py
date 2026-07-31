@@ -82,8 +82,9 @@ def _scan(source, filename="<test>"):
 
 
 def _source_files():
+    # rglob, not glob: a future subpackage must not silently escape the scan.
     return sorted(
-        p for p in SRC_DIR.glob("*.py") if p.name not in VENDORED
+        p for p in SRC_DIR.rglob("*.py") if p.name not in VENDORED
     )
 
 

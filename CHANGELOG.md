@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `optical_model_jax.sky_to_tangent_offsets` (host, float64) and
   `get_fpa_pos_from_offsets` (JAX, jit-compilable), the two halves of the
   sky→FPA transform. `get_fpa_pos` composes them and keeps its signature.
+- `sky_to_tangent_offsets` **raises `TypeError` on float32 input** (including
+  JAX arrays, which are float32 with x64 disabled). By the time absolute RA is
+  float32 the quantisation has already happened and upcasting cannot undo it,
+  so a call site that wraps its catalogue columns in `jnp.array()` — how the
+  original defect shipped — now fails loudly instead of silently reintroducing
+  the pointing-dependent error. The cost is an O(1) dtype check on the host.
 - `tests/test_precision_convention.py`: AST scan asserting every matmul-class
   JAX op in the package declares `precision=`, with self-tests pinning the
   checker's own behaviour on known-good and known-bad forms. Runs on CPU in

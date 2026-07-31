@@ -198,9 +198,13 @@ def main():
     is_star = (meta_cone_reset["type"].values == "PSF")
     is_galaxy = (meta_cone_reset["type"].values == "SER")
 
+    # Float64 straight through: get_fpa_pos differences on the host before
+    # JAX sees anything. A jnp.array() wrap here would quantise absolute RA
+    # to float32 first -- and now raises TypeError rather than silently
+    # diverging from the pipeline this script exists to debug.
     xfpa, yfpa = omj.get_fpa_pos(
-        jnp.array(meta_cone_reset["ra"].values, dtype=jnp.float32),
-        jnp.array(meta_cone_reset["dec"].values, dtype=jnp.float32),
+        meta_cone_reset["ra"].values,
+        meta_cone_reset["dec"].values,
         pointing_ra, pointing_dec, pointing_pa,
     )
 

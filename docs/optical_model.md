@@ -16,7 +16,9 @@ This document describes the JAX functional implementation of the Roman Space Tel
 These are standalone functions (no payload needed) for converting between sky coordinates and FPA:
 
 - **`get_pa_rotation(pa)`**: Return 2×2 rotation matrix for a given position angle (degrees). Converts on-sky PA to focal plane coordinate system.
-- **`get_fpa_pos(ra, dec, pointing_ra, pointing_dec, pointing_pa)`**: Convert sky coordinates (RA, Dec) to FPA position (degrees) given telescope pointing and PA. Inputs are 1D arrays for (ra, dec) and scalars for pointing parameters.
+- **`sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec)`**: Difference sky coordinates against the pointing on the host in float64 NumPy. Raises `TypeError` on float32 input (the precision is already lost by then) and `ValueError` for a field crossing RA = 0. See the precision convention in the module docstring.
+- **`get_fpa_pos_from_offsets(dx, dy, pointing_pa)`**: Rotate tangent-plane offsets into FPA coordinates. The JAX, jit-compilable half of the transform.
+- **`get_fpa_pos(ra, dec, pointing_ra, pointing_dec, pointing_pa)`**: Convert sky coordinates (RA, Dec) to FPA position (degrees) given telescope pointing and PA. Composes the two functions above; **not jit-compilable** (the float64 differencing is host NumPy — jit `get_fpa_pos_from_offsets` instead). Pass float64 host arrays for (ra, dec), never `jnp.array(...)`.
 
 ### Optical Model Functions
 
@@ -38,7 +40,7 @@ These are standalone functions (no payload needed) for converting between sky co
 ## Design Notes
 
 - **No legacy support**: The JAX implementation uses the modern code path only (not `old_format`)
-- **JIT-compatible**: All functions use JAX operations for `jax.jit()` compilation
+- **JIT-compatible**: All functions use JAX operations for `jax.jit()` compilation, with one deliberate exception: `get_fpa_pos` (and `sky_to_tangent_offsets`) run on the host in float64 — jit `get_fpa_pos_from_offsets` instead
 - **Batch operations**: Vectorized to handle N points × M wavelengths efficiently
 - **Einstein summation**: Polynomial evaluation uses `jnp.einsum` for optimal performance
 

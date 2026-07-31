@@ -633,8 +633,35 @@ class TestGetFPAPos:
         def jitted(ra, dec):
             return omj.get_fpa_pos(ra, dec, 150.0, 2.0, 60.0)
 
-        with pytest.raises(Exception):
+        # With the float32 guard in place the tracers (dtype float32) trip the
+        # TypeError; were the guard removed, np.asarray on a tracer raises
+        # TracerArrayConversionError instead. Either way this must not trace.
+        with pytest.raises((TypeError, jax.errors.TracerArrayConversionError)):
             jitted(jnp.array([150.01, 150.02]), jnp.array([2.01, 1.99]))
+
+    def test_float32_input_is_refused(self):
+        """Quantised-before-differencing input must fail loudly.
+
+        `np.asarray(f32, dtype=np.float64)` would silently upcast values whose
+        precision is already gone, reintroducing the pointing-dependent error
+        at any call site that wraps its catalogue columns in `jnp.array()` --
+        which is exactly how the old build_grism_image.py call site shipped.
+        """
+        ra32 = np.array([260.1, 260.2], dtype=np.float32)
+        dec64 = np.array([0.1, -0.1])
+
+        with pytest.raises(TypeError, match="float32"):
+            omj.sky_to_tangent_offsets(ra32, dec64, 260.0, 0.0)
+        with pytest.raises(TypeError, match="float32"):
+            omj.sky_to_tangent_offsets(
+                dec64, ra32.astype(np.float32), 260.0, 0.0
+            )
+        # jnp arrays are float32 with x64 disabled and must be refused too.
+        with pytest.raises(TypeError, match="float32"):
+            omj.get_fpa_pos(
+                jnp.array([260.1, 260.2]), jnp.array([0.1, -0.1]),
+                260.0, 0.0, 0.0,
+            )
 
 
 class TestSkyToFPAMeridian:
@@ -860,49 +887,52 @@ class TestSkyToFPAAgainstAstropy:
 
 
 class TestSkyToFPAGoldenValues:
-    """Golden values for the sky -> FPA transform, computed at float64.
+    """Golden values for the sky -> FPA transform, pinned as literals.
 
-    Independent of both the vendored twin and astropy: if all three ever agree
-    on something wrong, these still pin the numbers that were reviewed. They
-    are the flat-sky values, so the gnomonic stage will need to regenerate them
-    -- deliberately, and as a reviewed diff rather than a silent drift.
+    Independent of both the vendored twin and astropy: if all three
+    implementations ever drift together, these literals still pin the numbers
+    that were reviewed at PR #18. They are the flat-sky values, evaluated once
+    in float64 NumPy from the flat-sky definition (dx = dra*cos(dec),
+    dy = ddec, theta = pa + 180 - 60, xy = -rot @ [dx, dy]) and hardcoded, so
+    the gnomonic stage will need to regenerate them -- deliberately, and as a
+    reviewed diff rather than a silent drift.
     """
 
-    # (ra, dec, pointing_ra, pointing_dec, pointing_pa) -> (xfpa, yfpa) in deg,
-    # evaluated in float64 NumPy from the flat-sky definition.
+    # (ra, dec, pointing_ra, pointing_dec, pointing_pa, xfpa, yfpa),
+    # all in degrees. The expected values are float64 literals.
     CASES = [
         # Equatorial, the SSC line-grid pointing.
-        (10.2, 0.15, 10.0, 0.0, 0.0),
-        # Mid-RA, where the old float32 downcast cost ~0.1 px.
-        (150.35, 2.1, 150.0, 2.0, 60.0),
+        (10.2, 0.15, 10.0, 0.0, 0.0,
+         0.22990346787326388, -0.09820448719277225),
+        # Mid-RA, where the old float32 downcast cost ~0.1 px. PA = 60 makes
+        # theta = 180 deg exactly, so xfpa = dx and yfpa = dy -- a case that
+        # can be checked by hand: 0.35 * cos(2.1 deg) and 0.1.
+        (150.35, 2.1, 150.0, 2.0, 60.0,
+         0.349764937822524, 0.10000000000000005),
         # High RA, where the old downcast cost ~0.4 px.
-        (260.3, -10.2, 260.0, -10.0, 120.0),
+        (260.3, -10.2, 260.0, -10.0, 120.0,
+         0.32083442195227907, 0.15570151963834),
         # High declination, where flat-sky departs most from gnomonic.
-        (150.4, 60.25, 150.0, 60.0, 33.0),
+        (150.4, 60.25, 150.0, 60.0, 33.0,
+         0.29035048180870987, 0.13264059965408329),
     ]
 
     @pytest.mark.parametrize("case", CASES, ids=lambda c: f"ra{c[2]:g}")
-    def test_matches_float64_reference(self, case):
-        ra, dec, pra, pdec, ppa = case
+    def test_matches_golden_values(self, case):
+        ra, dec, pra, pdec, ppa, xfpa_gold, yfpa_gold = case
 
         xfpa, yfpa = omj.get_fpa_pos(
             np.array([ra]), np.array([dec]), pra, pdec, ppa
         )
 
-        dx = (np.float64(ra) - np.float64(pra)) * np.cos(
-            np.deg2rad(np.float64(dec))
-        )
-        dy = np.float64(dec) - np.float64(pdec)
-        theta = np.deg2rad(ppa + 180.0 - 60.0)
-        rot = np.array([[np.cos(theta), -np.sin(theta)],
-                        [np.sin(theta), np.cos(theta)]])
-        xy = rot @ np.array([dx, dy])
-
+        # Tolerance covers the float32 rotation in the live path against the
+        # float64 literals (offsets ~0.4 deg: float32 round-off plus the f32
+        # angle quantisation in get_pa_rotation, together well under 1e-2 px).
         err_px = deg_to_px(
-            np.hypot(float(np.asarray(xfpa)[0]) + xy[0],
-                     float(np.asarray(yfpa)[0]) + xy[1])
+            np.hypot(float(np.asarray(xfpa)[0]) - xfpa_gold,
+                     float(np.asarray(yfpa)[0]) - yfpa_gold)
         )
-        assert err_px < 1e-2, f"{err_px:.4e} px from the float64 reference"
+        assert err_px < 1e-2, f"{err_px:.4e} px from the pinned golden value"
 
 
 class TestMapCoords:
