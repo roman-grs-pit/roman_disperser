@@ -15,8 +15,8 @@ This document describes the JAX functional implementation of the Roman Space Tel
 
 These are standalone functions (no payload needed) for converting between sky coordinates and FPA:
 
-- **`get_pa_rotation(pa)`**: Return 2×2 rotation matrix for a given position angle (degrees). Converts on-sky PA to focal plane coordinate system.
-- **`sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec)`**: Difference sky coordinates against the pointing on the host in float64 NumPy. Raises `TypeError` on float32 input (the precision is already lost by then) and `ValueError` for a field crossing RA = 0. See the precision convention in the module docstring.
+- **`get_pa_rotation(pa)`**: Return 2×2 rotation matrix for a given position angle (degrees). Converts on-sky PA to focal plane coordinate system. The focal-plane orientation constant is `FOCAL_PA_DEG = -60.0`; see the convention note in the docstring and the derivation in `docs/reference/tangent_plane_derivation.ipynb`.
+- **`sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec)`**: Gnomonic (TAN) projection of sky coordinates onto the tangent plane at the pointing, on the host in float64 NumPy — a verbatim transcription of the derivation notebook, pinned bit-exact by test. Returns (ξ East, η North) in degrees. Periodic in RA by construction (no meridian wrap handling needed). Raises `TypeError` on float32 input (the precision is already lost by then). See the precision convention in the module docstring.
 - **`get_fpa_pos_from_offsets(dx, dy, pointing_pa)`**: Rotate tangent-plane offsets into FPA coordinates. The JAX, jit-compilable half of the transform.
 - **`get_fpa_pos(ra, dec, pointing_ra, pointing_dec, pointing_pa)`**: Convert sky coordinates (RA, Dec) to FPA position (degrees) given telescope pointing and PA. Composes the two functions above; **not jit-compilable** (the float64 differencing is host NumPy — jit `get_fpa_pos_from_offsets` instead). Pass float64 host arrays for (ra, dec), never `jnp.array(...)`.
 

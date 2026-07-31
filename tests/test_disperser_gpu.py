@@ -244,11 +244,23 @@ class TestSkyToFPACPUvsGPU:
 
     @staticmethod
     def _reference_float64(ra, dec, pointing_ra, pointing_dec, pointing_pa):
-        """Evaluate the same transform in float64 NumPy, independently."""
-        dx = (np.float64(ra) - np.float64(pointing_ra)) * np.cos(
-            np.deg2rad(np.float64(dec))
+        """Evaluate the same transform in float64 NumPy, independently.
+
+        The projection is the *textbook* gnomonic formula (xi = cos d sin dra
+        / D etc.), a different derivation from the rotate-to-pole form in the
+        live code, so agreement checks the arithmetic and not just the
+        transcription. (Was the flat-sky formula until the gnomonic projection
+        landed; at this Dec -10 pointing the flat-sky reference differs from
+        the live code by ~1 px, far over the 1e-2 px bound below.)
+        """
+        rad = np.deg2rad
+        dra = rad(np.float64(ra)) - rad(np.float64(pointing_ra))
+        d, d0 = rad(np.float64(dec)), rad(np.float64(pointing_dec))
+        D = np.sin(d) * np.sin(d0) + np.cos(d) * np.cos(d0) * np.cos(dra)
+        dx = np.rad2deg(np.cos(d) * np.sin(dra) / D)
+        dy = np.rad2deg(
+            (np.sin(d) * np.cos(d0) - np.cos(d) * np.sin(d0) * np.cos(dra)) / D
         )
-        dy = np.float64(dec) - np.float64(pointing_dec)
         theta = np.deg2rad(np.float64(pointing_pa) + 180.0 - 60.0)
         rot = np.array([[np.cos(theta), -np.sin(theta)],
                         [np.sin(theta), np.cos(theta)]])
