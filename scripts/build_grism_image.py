@@ -817,10 +817,23 @@ def process_pointing(
                     jnp.array(gal_sel_meta["pa"].values, dtype=jnp.float32),
                     pointing_pa,
                 )
-                galaxy_images = sersic.make_sersic_images(
-                    r_eff_pix, n_sersic, ba, theta, galaxy_npix_os,
-                )
+                _BATCH_SIZE = 2048
+                all_images = []
+                for start in range(0, len(r_eff_pix), _BATCH_SIZE):
+                    end = min(start + _BATCH_SIZE, len(r_eff_pix))
+
+                    all_images.append(sersic.make_sersic_images(
+                        r_eff_pix[start:end], n_sersic[start:end],
+                        ba[start:end], theta[start:end], galaxy_npix_os,
+                    ))
+                galaxy_images = jnp.concatenate(all_images, axis=0)
+
+                # galaxy_images = sersic.make_sersic_images(
+                                #     r_eff_pix, n_sersic, ba, theta, galaxy_npix_os,
+                                # )
+
                 galaxy_images.block_until_ready()
+
                 log(f"    Sersic images: {n_galaxies_sel} galaxies "
                     f"({galaxy_images.nbytes / 1e6:.1f} MB) "
                     f"in {time.time() - t0:.2f}s")
