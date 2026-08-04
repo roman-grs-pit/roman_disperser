@@ -262,7 +262,7 @@ add_text(s, [
     "Not compared: ISIM noise realisations — v0.13.0's per-SCA keys change "
     "every draw by construction, and GPU scatter-add is non-deterministic "
     "(roman_disperser#22). All gates are MODEL images with tolerances.",
-    "Analysis: workbench/20260731-ssc-line-grid-analysis/before_after.py; "
+    "Analysis: workbench/20260731-ssc-line-grid/analysis/before_after.py; "
     "figures, per-SCA tables, summary.json and this deck live in "
     "line-tests-20260731/analysis/.",
 ], top=Inches(4.6), size=13, line_gap=8)

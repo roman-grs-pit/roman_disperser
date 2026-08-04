@@ -31,7 +31,7 @@ def psf_centroid_offsets(npz_path):
     """Per-wavelength PSF centroid offset (native px), averaged over the spatial
     grid. Returns (wl_um[Nwl], off_x[Nwl], off_y[Nwl])."""
     d = np.load(npz_path)
-    g = d["psf_grid"]                      # (nx, ny, nwl, P, P)
+    g = d["psf_grid"]                      # (ny, nx, nwl, P, P) -- y-first, see module docstring
     ov = int(d["oversample"])
     wl = np.array(d["wavelengths"], float)
     P = g.shape[-1]

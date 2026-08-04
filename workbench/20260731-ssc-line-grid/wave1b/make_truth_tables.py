@@ -58,22 +58,20 @@ from astropy.table import Table
 # (e.g. xcen * plate_scale) are genuine float32 arithmetic, not float64
 # arithmetic on rounded inputs.
 #
-# Measured over 25,695 rows of wave 1b STPSF PA 0 (2026-08-04 audit
-# reconciliation): these positions are bit-identical to the pipeline at its
-# default precision (0.0 px), and differ from the same model evaluated at true
-# float64 by 7.1967e-4 px max.
+# These values are also NOT the float32 numbers the renderer and checker used.
+# The flag puts them between the two endpoints, matching neither.
 #
-# That 7.2e-4 px offset is deterministic, NOT a float32 noise floor: ~99% of it
-# sits in a per-(SCA, order) constant, with only 2.7e-5 px rms of per-source
-# scatter about that constant. A downstream user can therefore tabulate and
-# correct it; do not describe it to them as an irreducible precision limit. At
-# matched precision the shipped reference implementation and the pipeline agree
-# to 1.7e-11 px, so the two are algebraically identical to round-off — the
-# offset is entirely the float32 constants above.
+# Measured, truth vs the shipped residuals.parquet predictions
+# (check_line_centering.predict_jax at JAX default float32), wave 1b STPSF PA 0,
+# order 1, 8,570 joined rows: ZERO rows agree bit-for-bit; median 5.3e-4 px,
+# p99 2.3e-3 px, max 3.4e-3 px. Against the same model rebuilt at true float64
+# the offset is 7.2e-4 px max (2026-08-04 audit reconciliation).
 #
-# The flag is retained because it must be set before any JAX array exists if it
-# is to have any effect at all, but on the current payload its measured effect
-# on these outputs is nil.
+# That float64 offset is deterministic, NOT a float32 noise floor: ~99% of it
+# sits in a per-(SCA, order) constant. A downstream user can tabulate and
+# correct it; do not describe it as an irreducible precision limit.
+#
+# x64 must be set before any JAX array exists or it has no effect at all.
 import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp

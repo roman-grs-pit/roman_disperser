@@ -21,7 +21,7 @@ Outputs (figures, summary.json, per-SCA tables) go to OUT (the S3 store's
 analysis/ dir), NOT the repo — deliverables live with the data by Nikhil's
 2026-07-31 decision. Run from the line_test worktree:
 
-    pixi run python workbench/20260731-ssc-line-grid-analysis/before_after.py
+    pixi run python workbench/20260731-ssc-line-grid/analysis/before_after.py
 
 Provenance: reads codever/gitsha back from the truth tables' embedded parquet
 metadata (roman_disperser_provenance) and records both sides in summary.json.

@@ -25,7 +25,7 @@ data/psf_cache
 
 # Source catalog artifacts (large, downloaded as assets)
 data/catalogs/metadata.parquet
-data/catalogs/seds.zarr/
+data/catalogs/seds.zarr
 
 # Vendored reference data (fetched by `roman-disperser-hydrate`, versioned in
 # roman_disperser_data releases; no longer tracked here). Globbed over element
