@@ -46,12 +46,31 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from astropy.table import Table
 
-# Truth positions are DOUBLE-precision evaluations of the optical model.
-# The rendering pipeline and checker run at JAX's default float32, whose
-# ULP at detector coordinates (~2000-4000 px) is ~0.5-1e-3 px; predictions
-# in residuals.parquet may therefore differ from these truth values by up
-# to ~1e-3 px. That jitter is numerical, not physical — the shipped truth
-# should not carry it. x64 must be enabled before any JAX array exists.
+# These truth positions are NOT double-precision evaluations of the optical
+# model, despite the x64 flag below — and the flag buys less than it looks
+# like it does. `make_sca_payload` returns an all-float32 payload (X_ij, Y_ij,
+# C_ijk, D_ijk, crpix1/2, pixel_scale, plate_scale, xy_center, and the wl
+# reference/min/max), and under JAX's promotion rules an operation with two
+# float32 operands stays float32 even with x64 enabled — so parts of the chain
+# (e.g. xcen * plate_scale) are genuine float32 arithmetic, not float64
+# arithmetic on rounded inputs.
+#
+# Measured over 25,695 rows of wave 1b STPSF PA 0 (2026-08-04 audit
+# reconciliation): these positions are bit-identical to the pipeline at its
+# default precision (0.0 px), and differ from the same model evaluated at true
+# float64 by 7.1967e-4 px max.
+#
+# That 7.2e-4 px offset is deterministic, NOT a float32 noise floor: ~99% of it
+# sits in a per-(SCA, order) constant, with only 2.7e-5 px rms of per-source
+# scatter about that constant. A downstream user can therefore tabulate and
+# correct it; do not describe it to them as an irreducible precision limit. At
+# matched precision the shipped reference implementation and the pipeline agree
+# to 1.7e-11 px, so the two are algebraically identical to round-off — the
+# offset is entirely the float32 constants above.
+#
+# The flag is retained because it must be set before any JAX array exists if it
+# is to have any effect at all, but on the current payload its measured effect
+# on these outputs is nil.
 import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp

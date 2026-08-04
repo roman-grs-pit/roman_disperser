@@ -56,11 +56,16 @@ def pdir(campaign, suffix, variant, pa):
 
 
 def med_ddisp(campaign, suffix, variant, pa):
-    """Per-SCA median d_disp [native px] from the closure residuals."""
+    """Per-SCA median d_disp [native px] from the closure residuals.
+
+    `d_disp` is written by check_line_centering as the projection of
+    (measured - predicted) onto the local dispersion tangent, with the detector
+    axis chosen per line from |u_disp| — it is NOT `x_meas - x_pred_jax`. Do not
+    reconstruct it here if the column is ever missing: that would silently
+    compare a different statistic on one side of the before/after. Fix the
+    closure run instead.
+    """
     r = pd.read_parquet(pdir(campaign, suffix, variant, pa) / "residuals.parquet")
-    if "d_disp" not in r.columns:
-        # closure stores measured & predicted; d_disp is along-dispersion (x).
-        r["d_disp"] = r["x_meas"] - r["x_pred_jax"]
     return r.groupby("sca")["d_disp"].median()
 
 
