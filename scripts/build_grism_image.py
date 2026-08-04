@@ -218,17 +218,16 @@ def validate_catalog(meta, store, wavelengths):
     # Galaxy sim partition existence
     galaxies = meta[meta["type"] == "SER"]
     if len(galaxies) > 0:
-        for sim_val in galaxies["sim"].unique():
-            key = f"galaxy_seds/sim_{sim_val}"
+        for (sim_val, component) in galaxies[["sim", "disk_spheroid"]].drop_duplicates().values:
+            key = f"galaxy_seds/sim_{sim_val}/{component}"
             if key not in store:
                 raise ValueError(f"Missing Zarr array for partition: {key}")
-            for sed_component in store[key]:
-                if store[key][sed_component].shape[1] != n_wl:
-                    raise ValueError(
-                        f"{key} has {store[key][sed_component].shape[1]} wavelength bins but the "
-                        f"catalog wavelength grid has {n_wl}. All SED arrays must "
-                        f"share the 'wavelengths' grid (see data/catalogs/README.md)."
-                    )
+            if store[key].shape[1] != n_wl:
+                raise ValueError(
+                    f"{key} has {store[key].shape[1]} wavelength bins but the "
+                    f"catalog wavelength grid has {n_wl}. All SED arrays must "
+                    f"share the 'wavelengths' grid (see data/catalogs/README.md)."
+                )
 
     # Morphology warnings
     if len(galaxies) > 0:
@@ -272,7 +271,8 @@ def trim_wavelength_grid(wavelengths):
 # the existing catalog and below the smallest known pathological value.
 _GALAXY_SED_VALUE_LIMIT = 1e-12
 
-
+#! This function needs to be updated to match current seds.zarr schema
+# NOTE: This likely comes with additional changes to pointing processing
 def load_galaxy_seds(store, galaxy_meta, wl_mask):
     """Load galaxy SEDs from Zarr, grouping by sim partition for efficient I/O.
 
@@ -299,8 +299,8 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
     bad_galaxies = []  # (sim, sed_index, n_bins, max_val)
 
     # Group by sim partition for sequential Zarr access
-    for sim_val, group in galaxy_meta.groupby("sim"):
-        key = f"galaxy_seds/sim_{sim_val}"
+    for (sim_val, component), group in galaxy_meta.groupby(["sim", "disk_spheroid"]):
+        key = f"galaxy_seds/sim_{sim_val}/{component}"
         arr = store[key]
         indices = group["sed_index"].values
         scales = group["flux_scale"].values.astype(np.float32)
