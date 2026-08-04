@@ -32,8 +32,9 @@ data/data-versions.lock
 data/psf_validation_results.csv
 data/psf_radial_validation.pkl
 
-# Workbench data files (large, per-study)
-workbench/*/data/
+# Workbench data files (large, per-study). `**` so it also covers studies with
+# a nested layout, e.g. workbench/<campaign>/<wave>/data/.
+workbench/**/data/
 
 # Temporary markdown file to edit prompts
 prompt.md

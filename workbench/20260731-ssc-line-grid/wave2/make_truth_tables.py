@@ -82,8 +82,10 @@ from roman_disperser.optical_model import RomanOpticalModel
 from roman_disperser.paths import data_dir
 from roman_disperser.pipeline import get_code_version, get_git_sha
 
-# Reuse the reviewed scalar prediction path for the cross-check.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+# Reuse the reviewed scalar prediction path for the cross-check. parents[3] is
+# the repo root from workbench/<campaign>/<wave>/ — if this file moves, the
+# import below fails loudly rather than picking up a stale checker.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 from check_line_centering import predict_jax  # noqa: E402
 
 DET_LO, DET_HI = 0.5, 4088.5  # FITS-pixel bounds of the 4088^2 science array
