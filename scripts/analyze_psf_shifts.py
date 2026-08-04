@@ -8,9 +8,12 @@ given a residuals table — shows the per-SCA residual equals that shift. This i
 the independent confirmation that the per-SCA offset is the PSF, not the optical
 model.
 
-PSF cache: `psf_grid` shape (Nx_spatial, Ny_spatial, Nwl, Ppix, Ppix), oversampled
-by `oversample`; wavelengths in microns. Offsets are reported in **native px**
-(oversampled centroid offset / oversample).
+PSF cache: `psf_grid` shape (Ny_spatial, Nx_spatial, Nwl, Ppix, Ppix) — spatial
+y first, per `psf_model` and `docs/psf_phase1_plan.md` — oversampled by
+`oversample`; wavelengths in microns. This script averages over both spatial
+axes, so its result is insensitive to that ordering, but do not copy the shape
+from here assuming x-first. Offsets are reported in **native px** (oversampled
+centroid offset / oversample).
 """
 
 import argparse
@@ -34,17 +37,17 @@ def psf_centroid_offsets(npz_path):
     P = g.shape[-1]
     yy, xx = np.mgrid[0:P, 0:P]
     cen = (P - 1) / 2.0
-    nx, ny, nwl = g.shape[:3]
+    ny, nx, nwl = g.shape[:3]
     ox = np.zeros(nwl); oy = np.zeros(nwl)
     for w in range(nwl):
         cx = cy = 0.0
-        for i in range(nx):
-            for j in range(ny):
+        for i in range(ny):
+            for j in range(nx):
                 p = g[i, j, w]; s = p.sum()
                 cx += (p * xx).sum() / s - cen
                 cy += (p * yy).sum() / s - cen
-        ox[w] = cx / (nx * ny) / ov
-        oy[w] = cy / (nx * ny) / ov
+        ox[w] = cx / (ny * nx) / ov
+        oy[w] = cy / (ny * nx) / ov
     return wl, ox, oy
 
 

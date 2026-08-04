@@ -21,8 +21,11 @@ that line's centre lands, and record full provenance:
 The prediction chain is sca_to_fpa -> trace_beam -> mpa_to_sca — the same
 call sequence as ``star_disperser._compute_dispersed_positions`` (what the
 simulator deposited) and ``check_line_centering.predict_jax`` (the reviewed
-checker). A per-run assertion cross-checks the first manifest row against
-``predict_jax`` itself so this file cannot silently drift from the checker.
+checker). A per-run assertion checks the first manifest row against
+``predict_jax``. Be clear on what that does and does not prove: both sides run
+in this process with x64 enabled, so it verifies the flatten/reshape batching
+in ``predict_batch`` against the scalar path — not agreement with the float32
+precision the simulator and checker actually run at.
 
 Output: ``truth_lines.parquet`` + ``truth_lines_provenance.json`` in the
 pointing directory. The parquet file also carries the provenance dict in its
