@@ -51,6 +51,19 @@ against, and their products are still live at
 `/mnt/roman-science/grs/line-tests-20260724{,-cont,-gal}/`, each with its
 `submit.sh`, configs, pointing ECSVs and `make_truth_tables.py` mirrored into
 `scripts/` beside the data. The wave-1b deck lives at that store too, and its
-figures and generator are in the research log
-(`2026-07-24/assets/`). Their repo history is preserved in this branch's merge
-commit — do not squash-merge it.
+figures and generator are in the research log (`2026-07-24/assets/`).
+
+Their repo history is preserved: the branch was merged with a merge commit, not
+squashed, precisely so that deleting them lost nothing. **But `git log` will not
+show it by default** — history simplification follows a single parent through the
+merge, and these paths do not exist in the result, so a plain
+`git log -- <path>` returns *empty* and reads as "never existed". Use
+`--full-history`:
+
+```bash
+# find the commits that added and removed a deleted campaign file
+git log --full-history --oneline -- workbench/20260724-ssc-line-grid-30x/submit.sh
+
+# recover its content from any commit that had it
+git show <commit>:workbench/20260724-ssc-line-grid-30x/submit.sh
+```
