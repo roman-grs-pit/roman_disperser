@@ -1,0 +1,19 @@
+# Grism gate (main-a): re-render SCA 5 of archived acceptance pointing
+# 001.001.001.001.004.002 (RA 8.722756, Dec 0.599108, PA 60, seed 42).
+# Archive: /mnt/roman-science/grs/acceptance-testing-20260430/spectro/2026-05-05/
+#   acceptance/output/acceptance-testing-spectro.sim_001.001.001.001.004.002/
+#   (rendered at v0.7.0-12-g5258db2 — predates v0.11/v0.12 position fixes and
+#   the v0.13 RNG scheme, so archive ISIM is unreachable by construction and
+#   archive MODEL is expected to differ at the position-fix level; the primary
+#   gate is branch vs unmodified-main.)
+# The one-row ECSV keeps the original stem: the stem salts the RNG key.
+# sensitivity/optical-model/psf paths resolve from $ROMAN_DISPERSER_DATA.
+output_dir: /data/npadman/1-Projects/roman/roman_disperser/prism_merge_fable_outputs/grism-main-a
+seed: 42
+scas: [5]
+cone_radius: 0.6
+star_batch_size: 1000
+galaxy_batch_size: 100
+galaxy_npix: 30
+cache_dir: /data/npadman/jax-cache-prism-merge-fable
+catalog_dir: /mnt/roman-science/grs/acceptance-testing-20260430/catalogs_padded
