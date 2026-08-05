@@ -1,6 +1,13 @@
 #!/usr/bin/env python
 """Estimate grism count rates and SNR to inform the catalog magnitude cutoff.
 
+**Grism only — raises for the prism.** The blocker is physics, not plumbing:
+the SNR here is per *resolution element*, and `R_GRISM = 461` at 1.45 um is
+the grism's resolving power. The prism is a much lower-resolution element, so
+reusing that number would not fail, it would quietly return a grism answer
+wearing a prism label. Supply a prism R(lambda) from the optical model or the
+SSC delivery before making this element-aware.
+
 For a flat-spectrum (AB) source at a given F158 magnitude, computes:
 1. Total detected count rate (counts/s) integrated over the 1st-order bandpass
 2. Count rate per resolution element (spectral R~461 at 1.45 μm)
@@ -57,6 +64,8 @@ Usage
     pixi run python scripts/magnitude_cutoff.py
 """
 
+import argparse
+
 import numpy as np
 from pathlib import Path
 from astropy.io import fits
@@ -71,6 +80,12 @@ import yaml
 from roman_disperser.refdata import FLAM_0AB_COEFF as AB_FLAM_CONST
 
 # Standard Roman grism exposure time (seconds)
+_PRISM_BLOCKER = (
+    "magnitude_cutoff.py is grism-only (asked for {element}). It needs a prism "
+    "R(lambda); R_GRISM = 461 at 1.45 um is the grism's resolving power and "
+    "would give a silently wrong SNR per resolution element."
+)
+
 EXPTIME = 190.22
 
 # Grism parameters
@@ -237,9 +252,30 @@ def snr_per_resel(source_rate, n_pix, zodi_rate, read_noise, exptime):
     return signal / np.sqrt(noise_sq)
 
 
+def _require_grism(element_arg=None):
+    """Refuse to run for the prism rather than produce a grism-shaped answer.
+
+    See docs/element_support.md. Porting this script was deliberately declined
+    during the prism merge; the blocker is named in the message.
+    """
+    from roman_disperser import elements
+    element = elements.get_element(element_arg)
+    if element.name != "grism":
+        raise NotImplementedError(_PRISM_BLOCKER.format(element=element.name))
+
+
 def main():
-    project_root = Path(__file__).resolve().parent.parent
-    sensitivity_dir = project_root / "data" / "sensitivities"
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--element", default=None, choices=["grism", "prism"],
+        help="Dispersing element (default: grism). Prism raises: see the "
+             "module docstring for the physics blocker.",
+    )
+    args = parser.parse_args()
+    _require_grism(args.element)
+
+    from roman_disperser import paths
+    sensitivity_dir = paths.sensitivity_dir()
 
     # Load 1st-order sensitivities for all SCAs
     print("Loading 1st-order sensitivity curves...")
