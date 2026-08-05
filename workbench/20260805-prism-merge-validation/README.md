@@ -69,3 +69,34 @@ pixi run python $V/compare_gate.py <A.fits> <B.fits> --label "branch vs main"
 `compare_gate.py` prints rel_sum_diff, max diffs, allclose failures,
 flux-weighted centroid shift, and ISIM count-flip statistics; thresholds and
 verdicts live in the writeup, not the tool.
+
+## Results (2026-08-05, SLURM 7086-7091, all a10g)
+
+GPU test suite (7089): **468 passed, 0 failed** (full suite, `-m 'not slow'`,
+both elements).
+
+MODEL comparisons (rel_sum_diff / pixels failing `allclose(rtol=1e-5,
+atol=1e-8*max)` / flux-weighted centroid shift):
+
+| Pair | rel_sum_diff | failing px | centroid shift [px] |
+|---|---|---|---|
+| main-a vs main-b (noise floor) | 1.1e-9 | 0 / 16.7M | 0.0000 |
+| **branch vs main (Q1 primary)** | **4.3e-11** | **0 / 16.7M** | **0.0000** |
+| prism-a vs prism-b (Q2 floor) | 1.8e-9 | 0 / 16.7M | 0.0000 |
+| main-a vs archive (grism) | 4.6e-5 | 16.4M | (+0.356, +0.161) |
+| branch vs archive (grism) | 4.6e-5 | 16.4M | (+0.356, +0.161) |
+| prism-a vs archive (prism) | 8.1e-5 | 13.8M | (−0.799, −0.132) |
+
+ISIM: branch and main derive **identical** per-SCA keys
+(fold_in reproduced bit-exactly); differing-count pixels out of 16.7M —
+main-a/b 132, branch-vs-main 135, prism-a/b 158 — all at the issue-#22 GPU
+scatter-add nondeterminism floor. Archive ISIMs differ everywhere, as
+predicted (old split-based keys; verified on CPU without a render).
+
+**Verdicts.** Q1: PASS — the branch's grism output is indistinguishable
+from unmodified `main` at the measured same-code noise floor, and its
+archive delta matches `main`'s to within 3 of 16.4M pixels (inherited
+v0.11/v0.12 position fixes, +0.36 px). Q2: PASS as smoke — prism renders
+deterministically at the same floor; vs the v0.8-era archive it conserves
+flux to 8e-5 with a sub-pixel position shift of the same character and
+cause as Q1's archive delta.
