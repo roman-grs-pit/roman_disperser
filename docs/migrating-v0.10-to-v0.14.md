@@ -59,15 +59,21 @@ must identify which era a FITS product is from, v0.13+ products carry
 ## API changes: what breaks loudly
 
 1. **`pipeline.ORDERS`, `pipeline.LAM_MIN`, `pipeline.LAM_MAX` are gone**
-   (v0.14.0). Orders and band are per-element now:
+   (v0.14.0). Orders and band are per-element now.
+
+   Before:
 
    ```python
-   # before                          # after
-   from roman_disperser.pipeline \
-       import ORDERS, LAM_MIN, LAM_MAX
-                                     from roman_disperser.elements import GRISM
-                                     ORDERS = GRISM.orders          # ("0", "1", "2")
-                                     LAM_MIN, LAM_MAX = GRISM.lam_min, GRISM.lam_max
+   from roman_disperser.pipeline import ORDERS, LAM_MIN, LAM_MAX
+   ```
+
+   After:
+
+   ```python
+   from roman_disperser.elements import GRISM
+
+   ORDERS = GRISM.orders                        # ("0", "1", "2")
+   LAM_MIN, LAM_MAX = GRISM.lam_min, GRISM.lam_max   # 0.9, 2.0 um
    ```
 
    `pipeline.load_sensitivities(...)` and `select_sources_per_order(...)`
@@ -84,9 +90,12 @@ must identify which era a FITS product is from, v0.13+ products carry
    `sky_to_tangent_offsets` (the float64 host half) outside.
 
 3. **`psf_model` selects PSFs by STPSF filter, not by hardcoded order maps**
-   (v0.14.0). `order=` still works for the grism (the default mapping is
-   applied); code that relied on unknown orders silently mapping to
-   `ORDER<n>` cache filenames now gets an exception. For the prism, pass
+   (v0.14.0). This only affects you if you *generate* PSF caches yourself or
+   load them with non-grism orders — ordinary use (loading the vendored grism
+   caches with `order="0"`/`"1"`/`"2"`) is unchanged, because the grism
+   default mapping is applied automatically. What changed: code that relied
+   on unknown orders silently mapping to `ORDER<n>` cache filenames now gets
+   an exception, and prism caches are selected by passing
    `stpsf_filter=element.stpsf_filters[order]`.
 
 4. **Meridian/float32 guards.** Code paths that used to produce silently

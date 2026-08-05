@@ -208,7 +208,9 @@ Batch mode takes two input files: a YAML config (`--config`) and an ECSV pointin
 
 ### YAML Config
 
-Simulation parameters and data paths (see `scripts/example_grism_config.yaml`):
+Simulation parameters and data paths (see `scripts/example_grism_config.yaml`
+and `scripts/example_prism_config.yaml`; regenerate the template with
+`--generate-config`):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

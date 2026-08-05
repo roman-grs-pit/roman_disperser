@@ -46,24 +46,30 @@ pytest -q tests -m "not slow"
 ```python
 import jax.numpy as jnp
 from roman_disperser.optical_model import RomanOpticalModel
+from roman_disperser.elements import GRISM  # or PRISM — see elements.py
 from roman_disperser import optical_model_jax as omj, paths, psf_model, star_disperser
 
+# The dispersing element bundles the per-element constants: spectral orders,
+# band, STPSF filters, and data-file names. GRISM is the default everywhere.
+element = GRISM
+
 # Load optical model and create payloads (paths resolve the hydrated data dir)
-model = RomanOpticalModel(str(paths.optical_model_path()))
+model = RomanOpticalModel(str(paths.data_dir() / element.optical_model_file))
 optical_payload = omj.make_sca_payload(model, sca=5, order="1")
 psf_payload = psf_model.get_or_make_psf_payload(
-    detector="WFI05", order="1", cache_dir=str(paths.psf_cache_dir())
+    detector="WFI05", order="1", stpsf_filter=element.stpsf_filters["1"],
+    cache_dir=str(paths.psf_cache_dir()),
 )
 
 # Create a JIT-compiled star disperser
 disperse = star_disperser.make_star_disperser(psf_payload, optical_payload)
 
-# Disperse a star (wavelengths in microns)
-wavelengths = jnp.linspace(0.9, 2.0, 5500)
+# Disperse a star (wavelengths in microns, spanning the element's band)
+wavelengths = jnp.linspace(element.lam_min, element.lam_max, 5500)
 flux = jnp.ones_like(wavelengths)
 output = jnp.zeros((4088, 4088), dtype=jnp.float32)
-output = disperse(xsca_star=2000.0, ysca_star=2000.0,
-                  wavelengths=wavelengths, star_flux=flux, output=output)
+output = disperse(xsca=2000.0, ysca=2000.0,
+                  wavelengths=wavelengths, flux=flux, output=output)
 ```
 
 ### Galaxy Dispersion
@@ -141,8 +147,9 @@ pytest -v tests/test_psf_model.py           # PSF model tests
 - `psf_allsca_validation.ipynb` — All 18 SCAs × 2 orders validation
 - `sensitivities.ipynb`, `g0v-star.ipynb` — Sensitivity-curve and stellar-SED explorations
 
-The demo notebooks predate prism support and demonstrate the grism (the
-default element); see `notebooks/README.md` for status notes and
+The demo notebooks demonstrate the grism (the default element);
+`stars_and_galaxies_demo.ipynb` ends with a section dispersing the same
+field through the prism. See `notebooks/README.md` for status notes and
 `notebooks/archive/` for retired notebooks that no longer track the current
 API.
 
@@ -188,6 +195,8 @@ roman_disperser/
 │   ├── synphot/                   # F158/F184 bandpass and templates
 │   └── psf_cache/                 # PSF grids, both elements (54 files, ~6.0 GB)
 ├── docs/
+├── workbench/                     # Dated one-off campaigns and validation records
+├── figures/                       # Published showcase figures (see scripts/make_*_figure.py)
 ├── pixi.toml
 └── pyproject.toml
 ```

@@ -241,8 +241,8 @@ Once installed and reference data hydrated:
   ```
   The grism is the default; add `element: prism` to the config (or
   `--element prism`) for the prism. See `scripts/example_grism_config.yaml`
-  and `scripts/example_pointings.ecsv` for examples, and
-  `docs/grism_pipeline.md` for details. The batch pipeline processes all 18
+  / `scripts/example_prism_config.yaml` and `scripts/example_pointings.ecsv`
+  for examples, and `docs/grism_pipeline.md` for details. The batch pipeline processes all 18
   SCAs per pointing and is substantially faster on a GPU.
   (`build_grism_image.py` is the deprecated pre-v0.14 name and still works.)
 
