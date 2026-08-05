@@ -89,3 +89,19 @@ raises on:
 `tests/test_elements.py` asserts the same pairing for every declared element
 without needing a run, so a future reference-data delivery that moves a band
 edge trips a test rather than a production job.
+
+## Optical-model versioning (design note)
+
+Each element record carries `optical_model_file`, a filename that includes
+the upstream delivery version (`..._v0.8.yaml`). This is a **default**, not
+a binding: the pipeline config `optical_model:` key,
+`pipeline.resolve_paths(optical_model_path=...)`, and
+`RomanOpticalModel(path)` all accept explicit paths, and
+`validate_against_model` guards element identity and band (not version)
+whichever file is loaded. So running against a different or newer model is
+an explicit-path change, not a code change — but the *default* moves only by
+editing `elements.py` in lockstep with the data release that ships the new
+YAML. If workflows emerge that hold several model versions side by side
+(e.g. delivery comparisons), the filename should probably move out of the
+element record into the data manifest; that is an open design question, not
+an accident.

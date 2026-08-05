@@ -959,6 +959,31 @@ class TestPSFCaching:
         assert call_count[0] == 1
         assert result is simple_payload
 
+    def test_get_or_make_non_grism_filter_requires_wavelengths(self):
+        """A non-grism stpsf_filter with default wavelengths must raise.
+
+        The default wavelength grid is the grism band, and the band is baked
+        into the cache filename — a PRISM call without wavelengths would look
+        up (and silently regenerate) a 0.90-2.00um cache instead of finding
+        the vendored 0.75-1.85um one. This bit the demo notebook on
+        2026-08-05: it generated a wrong-band prism cache into the shared
+        reference-data directory.
+        """
+        with pytest.raises(ValueError, match="wrong-band"):
+            psf_model.get_or_make_psf_payload(
+                detector='WFI05', order='1', stpsf_filter='PRISM',
+                verbose=False,
+            )
+
+        # Passing the element band explicitly is the fix — this must NOT
+        # raise at the wavelength-default stage (no cache_dir would proceed
+        # to slow generation, so only check the guard via a fake cache dir
+        # miss being the *next* failure mode is out of scope here).
+        from roman_disperser import elements
+        wl = elements.psf_cache_wavelengths(elements.PRISM)
+        assert wl[0] == pytest.approx(0.75)
+        assert wl[-1] == pytest.approx(1.85)
+
     def test_get_or_make_uses_cache(self, simple_payload, tmp_path, monkeypatch):
         """Test that get_or_make_psf_payload uses cache on second call."""
         call_count = [0]

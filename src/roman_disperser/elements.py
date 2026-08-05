@@ -56,7 +56,17 @@ class DispersingElement:
     # order -> STPSF filter name. A dict field means elements are not
     # hashable (hash() raises); key registries on element.name instead.
     stpsf_filters: dict
-    optical_model_file: str    # YAML filename in the data dir
+    # Default optical-model YAML filename in the data dir, including the
+    # upstream delivery version. This is a DEFAULT, not a binding: every
+    # consumer accepts an explicit path (config `optical_model:`,
+    # `resolve_paths(optical_model_path=...)`, or `RomanOpticalModel(path)`
+    # directly), and `validate_against_model` checks element identity and
+    # band regardless of which file was loaded. The field pins the
+    # currently-blessed delivery and is updated in lockstep with
+    # reference-data releases; a workflow comparing several model versions
+    # passes paths explicitly rather than editing this record. (Tracked as
+    # a design question — see the repo issue on optical-model versioning.)
+    optical_model_file: str
     sensitivities_subdir: str  # sensitivity FITS subdir in the data dir
     bandpass: str              # BANDPASS value in APT ECSV pointing tables
 

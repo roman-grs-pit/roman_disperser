@@ -775,8 +775,22 @@ def get_or_make_psf_payload(
     load_psf_payload : Load from specific file
     save_psf_payload : Save to specific file
     """
-    # Setup defaults (same as make_psf_payload) - wavelengths in microns
+    # Setup defaults (same as make_psf_payload) - wavelengths in microns.
+    # The default grid is the GRISM band. For any other filter that default
+    # is a trap, not a convenience: the band is baked into the cache filename,
+    # so a PRISM call without wavelengths would look up (and silently
+    # regenerate!) a 0.90-2.00um cache instead of finding the vendored
+    # 0.75-1.85um one -- wrong band, wasted STPSF time, and a polluted cache
+    # directory. Refuse instead.
     if wavelengths is None:
+        if stpsf_filter is not None and not str(stpsf_filter).startswith("GRISM"):
+            raise ValueError(
+                f"stpsf_filter={stpsf_filter!r} with no wavelengths: the default "
+                f"wavelength grid is the grism band (0.90-2.00 um), which would "
+                f"select or generate a wrong-band PSF cache for this filter. "
+                f"Pass the element's band explicitly, e.g. "
+                f"wavelengths=elements.psf_cache_wavelengths(element)."
+            )
         wavelengths = np.arange(0.9, 2.01, 0.02)
     wavelengths = np.asarray(wavelengths)
 
