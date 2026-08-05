@@ -2,8 +2,6 @@
 Tests for catalog utilities (source selection).
 """
 
-import os
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -11,15 +9,14 @@ import pytest
 
 import roman_disperser.optical_model_jax as omj
 from roman_disperser.catalog import select_sources
+from roman_disperser import paths
 from roman_disperser.optical_model import RomanOpticalModel
 
 
 @pytest.fixture(scope="module")
 def optical_model():
     """Load optical model once for all tests."""
-    pixi_root_path = os.environ.get("PIXI_PROJECT_ROOT", ".")
-    fn = os.path.join(pixi_root_path, "data/Roman_grism_OpticalModel_v0.8.yaml")
-    return RomanOpticalModel(fn)
+    return RomanOpticalModel(str(paths.optical_model_path()))
 
 
 def brute_force_select(payload, xfpa, yfpa, wl_min=0.9, wl_max=2.0,
@@ -163,3 +160,42 @@ class TestSelectSources:
         mask = jitted_select(xfpa, yfpa)
         assert mask.shape == (2,)
         assert mask.all()
+
+
+class TestSelectSourcesPrism:
+    """Prism spot-check of the brute-force comparison above.
+
+    The main test classes keep their grism fixture (they parametrize over the
+    grism's three orders); the prism has one order and a different band, so
+    it gets its own no-false-negatives check with the prism band explicit.
+    """
+
+    @pytest.mark.parametrize("sca", [1, 5, 18])
+    def test_vs_brute_force(self, sca):
+        from roman_disperser import elements, paths
+        element = elements.get_element("prism")
+        model = RomanOpticalModel(
+            str(paths.data_dir() / element.optical_model_file)
+        )
+        payload = omj.make_sca_payload(model, sca=sca, order="1")
+
+        np.random.seed(42)
+        n_sources = 200
+        xsca = np.random.uniform(-500, 5000, size=n_sources)
+        ysca = np.random.uniform(-500, 5000, size=n_sources)
+        xfpa, yfpa = omj.sca_to_fpa(payload, xsca, ysca)
+
+        mask_fast = np.asarray(select_sources(
+            payload, xfpa, yfpa,
+            wl_min=element.lam_min, wl_max=element.lam_max,
+        ))
+        mask_brute = brute_force_select(
+            payload, xfpa, yfpa,
+            wl_min=element.lam_min, wl_max=element.lam_max,
+        )
+
+        false_negatives = mask_brute & ~mask_fast
+        assert not false_negatives.any(), (
+            f"SCA {sca}: {false_negatives.sum()} false negatives "
+            f"out of {mask_brute.sum()} brute-force positives"
+        )

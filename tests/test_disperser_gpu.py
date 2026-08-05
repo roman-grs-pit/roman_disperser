@@ -5,14 +5,13 @@ These tests verify that CPU and GPU produce identical results
 when using the disperser functions.
 """
 
-import os
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import roman_disperser.optical_model_jax as omj
+from roman_disperser import paths
 from roman_disperser.optical_model import RomanOpticalModel
 from roman_disperser.disperser import disperse_2d1d_sca
 
@@ -55,9 +54,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def model():
     """Load optical model once for all tests."""
-    pixi_root_path = os.environ.get("PIXI_PROJECT_ROOT", ".")
-    fn = os.path.join(pixi_root_path, "data/Roman_grism_OpticalModel_v0.8.yaml")
-    return RomanOpticalModel(fn)
+    return RomanOpticalModel(str(paths.optical_model_path()))
 
 
 class TestCPUvsGPU:

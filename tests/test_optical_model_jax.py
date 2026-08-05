@@ -3,13 +3,13 @@ Tests for functional optical model (optical_model_jax).
 Compares JAX-based transforms against class-based implementation.
 """
 
-import os
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import roman_disperser.optical_model_jax as omj
+from roman_disperser import paths
 from roman_disperser.optical_model import RomanOpticalModel
 
 # Tolerances for float32 precision (YAML has limited decimal places)
@@ -33,9 +33,7 @@ def deg_to_px(x):
 @pytest.fixture(scope="module")
 def optical_model():
     """Load optical model once for all tests."""
-    pixi_root_path = os.environ.get("PIXI_PROJECT_ROOT", ".")
-    fn = os.path.join(pixi_root_path, "data/Roman_grism_OpticalModel_v0.8.yaml")
-    return RomanOpticalModel(fn)
+    return RomanOpticalModel(str(paths.optical_model_path()))
 
 class TestSCAtoMPA:
     """Test SCA to MPA coordinate transformation."""
@@ -1252,3 +1250,63 @@ class TestTraceBeam:
         assert isinstance(xmpa, jnp.ndarray)
         assert isinstance(ympa, jnp.ndarray)
 
+
+
+class TestTraceBeamPrism:
+    """Prism counterpart of TestTraceBeam.test_compare_to_class.
+
+    The rest of this file keeps its grism fixture: the order lists ("0"/"2")
+    and the pinned sky-to-FPA values are grism-specific. What is genuinely
+    element-dependent in the JAX implementation is the wavelength transform
+    (linear grism vs log prism, handled generically in make_sca_payload /
+    trace_beam), so this class pins the prism path against the class
+    implementation for the prism's single order.
+    """
+
+    @pytest.fixture(scope="class")
+    def prism_model(self):
+        from roman_disperser import elements, paths
+        element = elements.get_element("prism")
+        return RomanOpticalModel(
+            str(paths.data_dir() / element.optical_model_file)
+        )
+
+    @pytest.mark.parametrize("sca", [1, 5, 18])
+    def test_compare_to_class(self, prism_model, sca):
+        """JAX trace_beam matches the class implementation (log transform)."""
+        assert prism_model.wl_transform == "log"
+        payload = omj.make_sca_payload(prism_model, sca=sca, order="1")
+
+        np.random.seed(42)
+        n_points = 200
+        naxis1 = prism_model.detmod["naxis1"]
+        naxis2 = prism_model.detmod["naxis2"]
+        xsca = np.random.uniform(0.5, naxis1 + 0.5, size=n_points)
+        ysca = np.random.uniform(0.5, naxis2 + 0.5, size=n_points)
+        xfpa, yfpa = prism_model.coords.convert_sca_to_fpa(
+            xsca=xsca, ysca=ysca, sca=sca
+        )
+
+        wl_array = prism_model.wl_grid
+        n_wl = len(wl_array)
+
+        trace_mpa_x = np.empty((n_points, n_wl))
+        trace_mpa_y = np.empty((n_points, n_wl))
+        for i in range(n_points):
+            coeff = prism_model._get_beam_trace(
+                xref_fpa=xfpa[i], yref_fpa=yfpa[i], sca=sca, width=1,
+                order="1",
+            )
+            trace_mpa_x[i, :] = coeff["trace_mpa_x"].reshape(-1)
+            trace_mpa_y[i, :] = coeff["trace_mpa_y"].reshape(-1)
+
+        xfpa_full = np.repeat(xfpa, n_wl)
+        yfpa_full = np.repeat(yfpa, n_wl)
+        wl_full = np.tile(wl_array, n_points)
+        xmpa_jax, ympa_jax = omj.trace_beam(payload, xfpa_full, yfpa_full,
+                                            wl_full)
+        xmpa_jax = xmpa_jax.reshape(n_points, n_wl)
+        ympa_jax = ympa_jax.reshape(n_points, n_wl)
+
+        np.testing.assert_allclose(xmpa_jax, trace_mpa_x, rtol=RTOL, atol=ATOL)
+        np.testing.assert_allclose(ympa_jax, trace_mpa_y, rtol=RTOL, atol=ATOL)
