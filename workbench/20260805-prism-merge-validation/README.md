@@ -93,6 +93,16 @@ main-a/b 132, branch-vs-main 135, prism-a/b 158 — all at the issue-#22 GPU
 scatter-add nondeterminism floor. Archive ISIMs differ everywhere, as
 predicted (old split-based keys; verified on CPU without a render).
 
+Post-validation regression check (SLURM 7092, 2026-08-05 13:31Z): after the
+script rename (`build_dispersed_image.py` + deprecated `build_grism_image.py`
+shim) and the `output_prefix` change (commit `6668871`), the grism gate was
+re-rendered **through the shim** and compared against the validated
+`8907ce0` render: MODEL rel_sum 8.3e-10, 0/16.7M failing pixels, zero
+centroid shift; ISIM identical keys, 140 count-flip pixels — at the
+same-code noise floor. Output naming unchanged (`grism_*`, element default).
+Config: `../../..//prism_merge_fable_outputs/config-branch-rename.yaml`
+(non-repo), output `grism-branch-rename/`.
+
 **Verdicts.** Q1: PASS — the branch's grism output is indistinguishable
 from unmodified `main` at the measured same-code noise floor, and its
 archive delta matches `main`'s to within 3 of 16.4M pixels (inherited
