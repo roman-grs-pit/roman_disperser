@@ -5,13 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.14.0] - 2026-08-05
 
 Prism support (`feature/prism-merge-fable`): the package now simulates
 **both** WFI dispersing elements — the G150 grism (default, unchanged
 behaviour) and the P127 prism (opt-in) — rebuilt on current `main` rather
 than merged from the frozen `prism` branch, which stays as the record of the
-original attempt.
+original attempt. Chosen over the parallel `feature/prism-merge-opus` attempt
+after a head-to-head comparison (both agree at the same-code GPU noise floor;
+see `workbench/20260805-prism-merge-validation/`), with that branch's four
+distinguishing features grafted in. Full suite green at the release tree:
+CPU 474 passed / 0 failed, GPU (a10g, `-m 'not slow'`) 472 passed / 0 failed
+(SLURM 7096).
 
 ### Added
 - **`roman_disperser.elements`** — the dispersing-element registry. A
