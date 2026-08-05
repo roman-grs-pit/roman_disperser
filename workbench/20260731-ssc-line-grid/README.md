@@ -93,18 +93,30 @@ Wording only; the code is correct and the figures are what they claim to plot.
 - `scripts/analyze_psf_shifts.py` — the docstring says the per-SCA residual
   *"equals"* the PSF centroid shift and calls this *"confirmation"*. The script
   reports only Pearson `r`, which is scale-invariant and cannot support
-  "equals". Fitted properly: `r` = 0.974 (x) / 0.991 (y) but slope 0.764 (x) /
-  0.737 (y), so roughly 25% of the per-SCA offset is **not** accounted for by
-  the PSF shift. The qualitative conclusion — the offset is PSF-dominated —
-  stands; "equals" does not.
+  "equals". Fitted properly: `r` = 0.974 (x) / 0.991 (y), but the slope through
+  the origin is 0.805 (x) / 0.736 (y) — so roughly 20–25% of the per-SCA offset
+  is **not** accounted for by the PSF stamp shift. The qualitative conclusion —
+  the offset is PSF-dominated — stands; "equals" does not.
 - `scripts/check_line_centering.py` — *"the method validated to reach ~0.02
   px"* names no statistic and no dataset. Measured on the shipped wave-1b
   residuals (STPSF, PA 0, 5,288 boxes): `d_disp` median −0.016, MAD 0.040,
   **rms 0.076 px**. ~0.02 px is the method's noise floor under the idealised
   centred-Gaussian PSF, not the accuracy of the delivered STPSF products.
-- `scripts/make_gaussian_psf_cache.py` — *"a per-SCA ~0.05 px centroid offset"*
-  is the floor, not the typical value: measured across all 18 GRISM1 caches the
-  offset spans 0.050–0.141 px, median ≈0.074.
+- `scripts/make_gaussian_psf_cache.py` — *"a per-SCA ~0.05 px centroid offset in
+  the line-centering residual"* is **substantially accurate**; an earlier draft
+  of this README wrongly called it a floor, by measuring the wrong quantity.
+  Two distinct numbers are in play and are easy to conflate:
+
+  | quantity | range over 18 SCAs | median |
+  |---|---|---|
+  | (a) PSF **stamp** centroid offset in the cache | 0.050–0.141 px | 0.074 |
+  | (b) per-SCA median **line-centering residual** | 0.016–0.129 px | 0.058 |
+
+  The sentence names **(b)**, whose median is 0.058 — so "~0.05 px" is fair.
+  They differ because the residual is only ~0.77× the stamp shift (see the
+  `analyze_psf_shifts` entry above). The one real caveat is that (b) spans a
+  factor of 8 across SCAs, so "~0.05 px" is a median quoted as if it were
+  uniform.
 - `analysis/before_after.py` figure 4 overlays the audit-reported 0.6–2.9 px
   band on a **2-D** rms, `sqrt(<rx² + ry²>)`. For isotropic residuals a 2-D rms
   is √2× the per-axis rms, and which the audit reported is not recorded
