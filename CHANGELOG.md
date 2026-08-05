@@ -70,9 +70,12 @@ original attempt.
   keep working unchanged. It will be removed in a later release.
 
 ### Unchanged (deliberately)
-- The `grism_` output filename prefix is kept for both elements — changing
-  it would break `roman_l2_job` glob patterns and archived-run comparisons;
-  products are distinguished by the `OPTELEM` header.
+- Grism products keep their `grism_` filename prefix. The prefix now
+  defaults to the **element name** (`prism_` for prism runs) and is
+  configurable via `output_prefix:` — pin `output_prefix: grism` to mimic
+  the prism branch's historical naming. `roman_l2_job` drivers that glob
+  `grism_*` need that pin (or a glob update) before any prism L2 wrap.
+  `--mosaic` now discovers any `*_detSCA*.fits` prefix.
 - `scripts/build_star_grism_image.py` stays deleted (removed in `0881597`
   for duplicating the sky→FPA call site); it was not resurrected from the
   prism branch.

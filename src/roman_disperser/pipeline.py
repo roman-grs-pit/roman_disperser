@@ -656,7 +656,8 @@ def write_mosaic_from_directory(pointing_dir, optical_model_path=None,
                                 linear_width=0.01):
     """Generate a focal-plane mosaic PNG from per-SCA FITS files in a directory.
 
-    Scans ``pointing_dir`` for files matching ``grism_*_detSCA*.fits`` (or
+    Scans ``pointing_dir`` for files matching ``*_detSCA*.fits`` (any
+    output prefix — ``grism_``, ``prism_``, or a custom one; falls back to
     the legacy ``SCA*.fits`` pattern) and reads the MODEL extension from
     each.  This can be run standalone after the main pipeline without
     reprocessing any sources.
@@ -677,7 +678,7 @@ def write_mosaic_from_directory(pointing_dir, optical_model_path=None,
     # Discover SCA FITS files (try new naming first, fall back to legacy)
     sca_images = {}
     sca_list = []
-    fits_files = sorted(pointing_dir.glob("grism_*_detSCA*.fits"))
+    fits_files = sorted(pointing_dir.glob("*_detSCA*.fits"))
     if not fits_files:
         fits_files = sorted(pointing_dir.glob("SCA*.fits"))
     for fpath in fits_files:
@@ -697,7 +698,10 @@ def write_mosaic_from_directory(pointing_dir, optical_model_path=None,
         return
 
     sca_list.sort()
-    prefix = f"grism_{pointing_dir.name}"
+    # Name the mosaic after the discovered files' own prefix (the part
+    # before "_detSCA"); legacy SCA*.fits inputs get the historical name.
+    m = re.match(r"(.+)_detSCA\d+$", fits_files[0].stem)
+    prefix = m.group(1) if m else f"grism_{pointing_dir.name}"
     png_file = str(pointing_dir / f"{prefix}_mosaic.png")
     write_mosaic_png(sca_images, sca_list, model, png_file,
                      linear_width=linear_width)

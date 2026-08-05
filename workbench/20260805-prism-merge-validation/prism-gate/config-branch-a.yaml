@@ -12,6 +12,10 @@
 output_dir: /data/npadman/1-Projects/roman/roman_disperser/prism_merge_fable_outputs/prism-branch-a
 seed: 42
 element: prism
+# Pin the historical prefix: the archive and the recorded gate renders use
+# grism_* names (the prism-branch never renamed outputs); default would now
+# be prism_*.
+output_prefix: grism
 scas: [5]
 cone_radius: 0.6
 star_batch_size: 1000

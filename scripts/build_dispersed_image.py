@@ -538,6 +538,7 @@ def process_pointing(
     verbose=True,
     extra_headers=None,
     extra_meta=None,
+    output_prefix=None,
 ):
     """Process a single pointing: select sources, generate spectra, disperse.
 
@@ -564,6 +565,11 @@ def process_pointing(
         Written to the primary HDU of each per-SCA FITS file.
     extra_meta : dict, optional
         Additional fields to include in the per-pointing metadata YAML.
+    output_prefix : str, optional
+        Leading tag on every output filename
+        (``<prefix>_<dirname>_detSCA05.fits`` etc.). Default: the element
+        name — ``grism`` for grism runs (unchanged historical naming),
+        ``prism`` for prism runs.
 
     Returns
     -------
@@ -577,10 +583,11 @@ def process_pointing(
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    prefix = f"grism_{output_dir.name}"
 
     meta = pipeline["meta"]
     element = pipeline["element"]
+    prefix = f"{output_prefix or element.name}_{output_dir.name}"
+
     sca_list = pipeline["sca_list"]
     star_batch_size = pipeline["star_batch_size"]
 
@@ -1168,10 +1175,11 @@ def build_dispersed_image(
         exptime=exptime, pointing_key=pointing_key, seed=seed,
         verbose=verbose,
     )
+    element_name = pipeline["element"].name
 
     # Move from tmp layout to single-file output, renaming to match
     # the user-specified output stem (e.g. test_sca5.fits → test_sca5_*)
-    tmp_prefix = f"grism_{tmp_dir.name}"
+    tmp_prefix = f"{element_name}_{tmp_dir.name}"
     out_stem = output_file.stem
     out_dir = output_file.parent
 
@@ -1231,6 +1239,13 @@ seed: 42
 # the pointing ECSV are processed (GRISM / PRISM).  The optical model is
 # validated against the element at load time; a mismatch raises.
 element: grism
+
+# -- Output filename prefix (optional) ---------------------------------------
+# Leading tag on every product filename: <prefix>_<dirname>_detSCA05.fits.
+# Default: the element name ("grism" / "prism"). Set explicitly to pin a
+# different tag (e.g. output_prefix: grism to mimic historical prism-branch
+# naming). Downstream consumers that glob grism_* (roman_l2_job) care.
+# output_prefix: grism
 
 # -- Detectors ---------------------------------------------------------------
 # Which SCAs to simulate.  Use "all" for 1-18, or list specific numbers.
@@ -1639,6 +1654,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
             verbose=verbose,
             extra_headers=extra_headers,
             extra_meta=extra_meta,
+            output_prefix=cfg.get("output_prefix"),
         )
 
     total = time.time() - t_all

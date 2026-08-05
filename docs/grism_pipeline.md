@@ -49,6 +49,9 @@ pixi run -e cuda python scripts/build_dispersed_image.py \
 
 Output directories are named from the ECSV filename and APT identifiers:
 
+The filename prefix defaults to the element name (`grism_` / `prism_`);
+override with the `output_prefix` config key.
+
 ```
 output_dir/
   {ecsv_basename}_{plan}.{pass}.{segment}.{observation}.{visit}.{exposure}/
@@ -213,6 +216,7 @@ Simulation parameters and data paths (see `scripts/example_grism_config.yaml`):
 | `seed` | int | *(required)* | RNG seed for reproducibility |
 | `element` | str | `grism` | Dispersing element: `grism` or `prism`. Sets the orders, band, default data paths, STPSF filters, and which `BANDPASS` rows of the pointing table are processed. The optical model is validated against it at load time (band/orders/`optical_element` mismatch raises). |
 | `scas` | `"all"` or list[int] | `"all"` | SCAs to simulate (1-18) |
+| `output_prefix` | str | element name | Leading tag on product filenames (`<prefix>_<dirname>_detSCA05.fits`). Historical runs and `roman_l2_job` globs use `grism` |
 | `star_batch_size` | int | 1000 | Stars per JIT batch |
 | `galaxy_batch_size` | int | 100 | Galaxies per JIT batch |
 | `galaxy_npix` | int | 30 | Sersic image size in native pixels |
