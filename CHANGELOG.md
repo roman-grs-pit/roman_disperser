@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-08-05
+
+The optical-model line-centering validation harness and the SSC line-grid
+campaign, plus a pre-merge cleanup pass. **No change to simulation behaviour**
+— placement, flux and noise are identical to 0.13.0; the full suite is green on
+CPU (401 passed) and GPU (407 passed, a10g).
+
+### Added
+- **`roman_disperser.refdata.FLAM_0AB_COEFF`** (newly public) — f_lambda of a
+  0-AB-mag flat-f_nu source, stored as the product `3.631e-20 * 2.99792458e18`
+  so the derivation *is* the value. Previously two hand-rounded copies
+  (`0.10885`, `0.108866`, a 1.5e-4 relative spread) lived in separate scripts.
+- Line-centering validation tools in `scripts/`: `build_line_test_catalog.py`
+  (synthetic emission-line catalogs), `check_line_centering.py` (predict line
+  positions from the optical model and centroid them in the rendered image),
+  `analyze_psf_shifts.py` and `make_gaussian_psf_cache.py` (PSF-shift controls).
+- `workbench/20260731-ssc-line-grid/` — waves 1b/2/3 of the SSC line-grid
+  campaign rerun on 0.13.0, plus the before/after analysis and addendum-deck
+  generator, and a **README recording known labelling defects in the delivered
+  products** (`F158`/`flux_scale` are the flux anchor rather than synthetic
+  photometry — 3.425 mag off for the two lines-only waves; `lines.ecsv` asserts
+  a continuum the lines-only catalogs do not contain).
+
+### Changed
+- `scripts/magnitude_cutoff.py` imports `FLAM_0AB_COEFF` instead of its own
+  rounded literal. Its cutoff moves by 4.3e-5 relative.
+- `.gitignore`: vendored `data/` entries no longer carry a trailing slash, so
+  they match when a worktree symlinks them at the shared cache instead of
+  hydrating locally; the optical model is globbed over element and version;
+  workbench data is ignored at any depth (`workbench/**/data/`).
+
+### Removed
+- `scripts/{line_test_pointing.ecsv,line_test_config.yaml,slurm_line_test.sh}` —
+  the pointing file carried `MA_TABLE_NUMBER=1` against 1036 in every campaign
+  from 20260724 on, and `MA_TABLE` reaches romanisim's `--ma_table_number`, so
+  it selects the L2 readout pattern. No product was affected. `example_pointings
+  .ecsv` already covers the same field correctly.
+- `scripts/{make_report_figures.py,compare_controls.py}` and the superseded
+  `20260723` / `20260724-*` line-grid campaigns. Products and mirrored recipes
+  remain at `/mnt/roman-science/grs/line-tests-20260724{,-cont,-gal}/`.
+
+### Fixed
+- `make_truth_tables.py` described its output as "DOUBLE-precision evaluations
+  of the optical model". It is neither that nor the float32 values the renderer
+  used: `make_sca_payload` returns an all-float32 payload, and JAX keeps
+  float32⊗float32 in float32 even with x64 enabled. Measured against the shipped
+  `residuals.parquet` (8,570 rows): zero bit-identical, median 5.3e-4 px, max
+  3.4e-3 px; against true float64, 7.2e-4 px max, ~99% of it a deterministic
+  per-(SCA, order) constant.
+- `analyze_psf_shifts.py` documented `psf_grid` as x-first, contradicting
+  `psf_model`'s y-first convention.
+- `before_after.py` no longer reconstructs `d_disp` as `x_meas - x_pred_jax`
+  when the column is absent — a different statistic from the checker's
+  projection onto the local dispersion tangent.
+
 ## [0.13.0] - 2026-07-31
 
 Stage 3 of the precision/reproducibility sequence (stages 1 and 2 were
