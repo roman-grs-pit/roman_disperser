@@ -47,6 +47,31 @@ import jax
 
 from .psf_utils import sca_to_stpsf_position, stpsf_to_sca_position
 
+# Default order -> STPSF filter map. The grism is the package's default
+# dispersing element; other elements (prism) pass ``stpsf_filter``
+# explicitly — the per-element mapping lives on
+# ``roman_disperser.elements.DispersingElement.stpsf_filters``.
+GRISM_FILTERS = {'0': 'GRISM0', '1': 'GRISM1'}
+
+
+def resolve_stpsf_filter(order, stpsf_filter=None):
+    """Return the STPSF filter name to use for a spectral order.
+
+    An explicit ``stpsf_filter`` always wins (this is how non-grism elements
+    reach the PSF machinery). With none given, the grism defaults apply, and
+    an order outside them raises rather than guessing — a wrong filter here
+    silently produces a wrong PSF cache.
+    """
+    if stpsf_filter is not None:
+        return stpsf_filter
+    if order not in GRISM_FILTERS:
+        raise ValueError(
+            f"No default STPSF filter for order {order!r} (grism defaults "
+            f"cover {sorted(GRISM_FILTERS)}). Pass stpsf_filter explicitly, "
+            f"e.g. element.stpsf_filters[order]."
+        )
+    return GRISM_FILTERS[order]
+
 
 # ============================================================================
 # CACHING UTILITIES
@@ -60,6 +85,7 @@ def get_cache_filename(
     spatial_grid,
     fov_arcsec,
     oversample,
+    stpsf_filter=None,
 ):
     """
     Generate a standardized cache filename for a PSF payload.
@@ -98,9 +124,7 @@ def get_cache_filename(
     x_grid = np.asarray(spatial_grid['x'])
     y_grid = np.asarray(spatial_grid['y'])
 
-    # Map order to filter name
-    filter_map = {'0': 'GRISM0', '1': 'GRISM1'}
-    filter_name = filter_map.get(order, f'ORDER{order}')
+    filter_name = resolve_stpsf_filter(order, stpsf_filter)
 
     # Grid dimensions
     n_y = len(y_grid)
@@ -173,6 +197,9 @@ def save_psf_payload(payload, filepath, verbose=True):
         # Metadata
         'detector': np.array(payload['detector'], dtype='S'),  # byte string
         'order': np.array(payload['order'], dtype='S'),
+        # STPSF filter used (absent in caches from before prism support)
+        'stpsf_filter': np.array(
+            payload.get('stpsf_filter') or 'unknown', dtype='S'),
         'stpsf_version': np.array(stpsf_version, dtype='S'),
         'save_timestamp': np.array(time.time()),
     }
@@ -276,6 +303,9 @@ def load_psf_payload(filepath, verbose=True):
             'oversample': int(data['oversample']),
             'detector': decode_bytes(data['detector']),
             'order': decode_bytes(data['order']),
+            # Caches from before prism support have no stpsf_filter field
+            'stpsf_filter': (decode_bytes(data['stpsf_filter'])
+                             if 'stpsf_filter' in data else 'unknown'),
         }
 
         # Optional timing info
@@ -325,7 +355,8 @@ def _generate_single_cache(args):
     warnings.filterwarnings('ignore', message='.*outside the range.*')
     warnings.filterwarnings('ignore', message='.*clipping to closest.*')
 
-    detector, order, cache_path, wavelengths, spatial_grid, fov_arcsec, oversample = args
+    (detector, order, cache_path, wavelengths, spatial_grid,
+     fov_arcsec, oversample, stpsf_filter) = args
 
     # Get shared counter if available (set by _init_worker)
     try:
@@ -341,6 +372,7 @@ def _generate_single_cache(args):
             spatial_grid=spatial_grid,
             fov_arcsec=fov_arcsec,
             oversample=oversample,
+            stpsf_filter=stpsf_filter,
             progress_counter=counter,
         )
         save_psf_payload(payload, cache_path, verbose=False)
@@ -350,7 +382,8 @@ def _generate_single_cache(args):
 
 
 def _make_psf_payload_with_progress(
-    detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, progress_counter=None
+    detector, order, wavelengths, spatial_grid, fov_arcsec, oversample,
+    stpsf_filter=None, progress_counter=None
 ):
     """
     Internal version of make_psf_payload that updates a shared progress counter.
@@ -364,13 +397,8 @@ def _make_psf_payload_with_progress(
     warnings.filterwarnings('ignore', message='.*Attempted to get aberrations.*')
     warnings.filterwarnings('ignore', message='.*outside the range.*')
 
-    # Map order to STPSF filter name
-    filter_map = {'0': 'GRISM0', '1': 'GRISM1'}
-    if order not in filter_map:
-        raise ValueError(f"Invalid order '{order}'. Must be '0' or '1'.")
-
     wfi = stpsf.roman.WFI()
-    wfi.filter = filter_map[order]
+    wfi.filter = resolve_stpsf_filter(order, stpsf_filter)
     wfi.detector = detector
 
     x_grid = np.asarray(spatial_grid['x'])
@@ -427,6 +455,7 @@ def generate_all_psf_caches(
     oversample=4,
     skip_existing=True,
     n_workers=1,
+    stpsf_filters=None,
     verbose=True,
 ):
     """
@@ -443,6 +472,10 @@ def generate_all_psf_caches(
         Directory to store cache files (will be created if needed)
     orders : tuple, optional
         Spectral orders to generate (default: ('0', '1') for GRISM0 and GRISM1)
+    stpsf_filters : dict, optional
+        Mapping order -> STPSF filter name, e.g.
+        ``element.stpsf_filters`` from ``roman_disperser.elements``.
+        Default: the grism mapping (GRISM0/GRISM1).
     detectors : list, optional
         List of detector names (default: all 18 WFI detectors)
     wavelengths : array_like, optional
@@ -508,8 +541,12 @@ def generate_all_psf_caches(
 
     for detector in detectors:
         for order in orders:
+            stpsf_filter = resolve_stpsf_filter(
+                order, (stpsf_filters or {}).get(order)
+            )
             filename = get_cache_filename(
-                detector, order, wavelengths, spatial_grid, fov_arcsec, oversample
+                detector, order, wavelengths, spatial_grid, fov_arcsec,
+                oversample, stpsf_filter=stpsf_filter,
             )
             cache_path = cache_dir / filename
 
@@ -518,7 +555,8 @@ def generate_all_psf_caches(
             else:
                 tasks.append((
                     detector, order, str(cache_path),
-                    wavelengths, spatial_grid, fov_arcsec, oversample
+                    wavelengths, spatial_grid, fov_arcsec, oversample,
+                    stpsf_filter,
                 ))
 
     total_combinations = len(detectors) * len(orders)
@@ -569,6 +607,7 @@ def generate_all_psf_caches(
                     spatial_grid=task[4],
                     fov_arcsec=task[5],
                     oversample=task[6],
+                    stpsf_filter=task[7],
                     verbose=verbose,  # Show inner progress bar
                 )
                 save_psf_payload(payload, cache_path, verbose=False)
@@ -683,6 +722,7 @@ def get_or_make_psf_payload(
     oversample=4,
     cache_dir=None,
     force_regenerate=False,
+    stpsf_filter=None,
     verbose=True,
 ):
     """
@@ -756,13 +796,15 @@ def get_or_make_psf_payload(
             spatial_grid=spatial_grid,
             fov_arcsec=fov_arcsec,
             oversample=oversample,
+            stpsf_filter=stpsf_filter,
             verbose=verbose,
         )
 
     # Generate cache filepath
     cache_dir = Path(cache_dir)
     filename = get_cache_filename(
-        detector, order, wavelengths, spatial_grid, fov_arcsec, oversample
+        detector, order, wavelengths, spatial_grid, fov_arcsec, oversample,
+        stpsf_filter=stpsf_filter,
     )
     cache_path = cache_dir / filename
 
@@ -790,6 +832,7 @@ def get_or_make_psf_payload(
         spatial_grid=spatial_grid,
         fov_arcsec=fov_arcsec,
         oversample=oversample,
+        stpsf_filter=stpsf_filter,
         verbose=verbose,
     )
 
@@ -813,6 +856,7 @@ def make_psf_payload(
     spatial_grid=None,
     fov_arcsec=5.0,
     oversample=4,
+    stpsf_filter=None,
     verbose=True,
 ):
     """
@@ -938,10 +982,9 @@ def make_psf_payload(
     if not np.all(np.diff(y_grid) > 0):
         raise ValueError("Spatial y grid must be strictly increasing")
 
-    # Validate order before calling STPSF
-    valid_orders = {'0', '1'}
-    if order not in valid_orders:
-        raise ValueError(f"Invalid order '{order}'. Must be '0' or '1'.")
+    # Resolve the STPSF filter up front so an invalid order/filter pairing
+    # fails before any (slow) STPSF work starts.
+    stpsf_filter = resolve_stpsf_filter(order, stpsf_filter)
 
     # Compute PSF grid with timing
     if verbose:
@@ -953,13 +996,15 @@ def make_psf_payload(
         print(f"  This may take 5-6 minutes for default grid...")
 
     psf_grid, timing = _compute_psf_grid_with_timing(
-        detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, verbose
+        detector, order, wavelengths, spatial_grid, fov_arcsec, oversample,
+        verbose, stpsf_filter=stpsf_filter,
     )
 
     # Return JAX-compatible payload
     payload = {
         'detector': detector,
         'order': order,
+        'stpsf_filter': stpsf_filter,
         'wavelengths': jnp.array(wavelengths),
         'wl_grid': jnp.array(wavelengths),  # Alias for consistency with optical model
         'spatial_x': jnp.array(spatial_grid['x']),
@@ -987,7 +1032,8 @@ def make_psf_payload(
 
 
 def _compute_psf_grid_with_timing(
-    detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, verbose
+    detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, verbose,
+    stpsf_filter=None,
 ):
     """
     Compute PSF grid using STPSF with detailed timing information.
@@ -1029,16 +1075,8 @@ def _compute_psf_grid_with_timing(
 
     start_time = time.time()
 
-    # Map order to STPSF filter name
-    filter_map = {
-        '0': 'GRISM0',  # Zeroth order (undispersed)
-        '1': 'GRISM1',  # First order (dispersed)
-    }
-    if order not in filter_map:
-        raise ValueError(f"Invalid order '{order}'. Must be '0' or '1'.")
-
     wfi = stpsf.roman.WFI()
-    wfi.filter = filter_map[order]
+    wfi.filter = resolve_stpsf_filter(order, stpsf_filter)
     wfi.detector = detector
 
     x_grid = spatial_grid['x']

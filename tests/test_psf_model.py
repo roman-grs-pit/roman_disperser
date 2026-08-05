@@ -214,7 +214,7 @@ class TestPSFPayload:
 
     def test_invalid_order_raises_error(self):
         """Test that invalid order raises ValueError."""
-        with pytest.raises(ValueError, match="Invalid order"):
+        with pytest.raises(ValueError, match="No default STPSF filter"):
             psf_model.make_psf_payload(
                 order='99',  # Invalid
                 wavelengths=np.array([1.5]),  # microns
