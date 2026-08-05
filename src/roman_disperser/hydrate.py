@@ -59,6 +59,17 @@ ASSETS = {
                      done_marker="roman_wfi_f158.fits"),
     "psf": Asset("psf", "psf_cache", sca_filter=True),
     "catalog": Asset("catalog", "catalogs", extract=True, done_marker="metadata.parquet"),
+    # Prism assets. No releases exist yet (deliberately unpublished until the
+    # prism-merge attempts are compared), so the remote manifest carries no
+    # version for these keys and hydrate skips them with a message; once the
+    # releases are cut and the manifest gains the keys, they hydrate like any
+    # other asset. Prism PSF caches share psf_cache/ with the grism ones —
+    # filenames carry the STPSF filter (PRISM vs GRISM0/1), so no collision.
+    "optical_model_prism": Asset("optical_model_prism", ""),
+    "sensitivities_prism": Asset("sensitivities_prism", "sensitivities_prism",
+                                 extract=True,
+                                 done_marker="sensitivity_map.yaml"),
+    "psf_prism": Asset("psf_prism", "psf_cache", sca_filter=True),
 }
 
 # Bootstrap fallback used only when the remote manifest is unavailable. The

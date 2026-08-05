@@ -1,0 +1,25 @@
+# Prism gate (branch render a): re-render SCA 5 of the archived prism
+# single pointing (RA 10, Dec 0, PA 0, seed 42, exptime 452.42s from ECSV).
+# Archive: /mnt/roman-science/grs/prism-testing-20260527/spectro/2026-05-28/
+#   output/prism-single.sim_001.001.001.001.001.001/  (rendered from the
+#   prism branch at 3ec36ab, v0.8-era: flat-sky projection + old RNG scheme,
+#   so expect sub-pixel MODEL position shifts vs this render and an
+#   unreachable archive ISIM; render twice for a branch self-consistency
+#   floor instead.)
+# Catalog: the 7500 A-floor build on /mnt (catalog-v2 would fail the band
+#   coverage check, by design). PSF/sensitivities/optical model resolve from
+#   $ROMAN_DISPERSER_DATA via the prism element defaults.
+output_dir: /data/npadman/1-Projects/roman/roman_disperser/prism_merge_fable_outputs/prism-branch-a
+seed: 42
+element: prism
+# Pin the historical prefix: the archive and the recorded gate renders use
+# grism_* names (the prism-branch never renamed outputs); default would now
+# be prism_*.
+output_prefix: grism
+scas: [5]
+cone_radius: 0.6
+star_batch_size: 1000
+galaxy_batch_size: 100
+galaxy_npix: 30
+cache_dir: /data/npadman/jax-cache-prism-merge-fable
+catalog_dir: /mnt/roman-science/grs/prism-testing-20260527/catalogs

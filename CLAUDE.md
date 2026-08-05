@@ -4,7 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy. Main components:
+JAX-based optical model and disperser for Roman Space Telescope slitless spectroscopy — both WFI dispersing elements: the G150 **grism** (the default everywhere) and the P127 **prism** (opt-in via `element: prism` / `--element prism`). Main components:
+- **Elements** (`elements.py`): the dispersing-element registry — a `DispersingElement` is a frozen bundle of the per-element constants (orders, band, STPSF filters, data-file names); `validate_against_model()` raises on an element/optical-model mismatch. Host-side config only, never enters jitted code.
 - **Class-based** (`optical_model.py`): Reference implementation using NumPy
 - **JAX functional** (`optical_model_jax.py`): JIT-compilable, vectorized implementation
 - **Disperser** (`disperser.py`): Legacy 2D+1D galaxy disperser (replaced by `galaxy_disperser.py`)
@@ -13,7 +14,7 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
 - **PSF model** (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation
 - **Sérsic profiles** (`sersic.py`): JAX/vmap Sérsic profile generator for galaxy morphologies
 - **Pipeline** (`pipeline.py`): Shared utilities for grism simulation (I/O, batching, sensitivity loading)
-- **Unified pipeline script** (`scripts/build_grism_image.py`): Full-field grism simulation from a unified star+galaxy catalog
+- **Unified pipeline script** (`scripts/build_dispersed_image.py`): Full-field dispersed-image simulation (either element) from a unified star+galaxy catalog. `scripts/build_grism_image.py` is a deprecated forwarding alias.
 
 ## Design Documents
 
@@ -24,7 +25,8 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
  - @docs/star_dispersion.md : Star dispersion design phases and PSF interpolation approach.
  - @docs/psf_phase1_plan.md : PSF data model implementation plan with validation results.
  - @docs/galaxy_dispersion_plan.md : Design for the new galaxy disperser using Jacobian-based shape warping + PSF convolution.
- - @docs/grism_pipeline.md : User guide for `scripts/build_grism_image.py` (unified stars+galaxies pipeline, output format, config, catalog).
+ - @docs/grism_pipeline.md : User guide for `scripts/build_dispersed_image.py` (unified stars+galaxies pipeline, output format, config, catalog).
+ - @docs/element_support.md : Status table of grism/prism support per module and script, including the deliberate non-ports and the reference-data publication state.
 
 ## Commands
 
@@ -209,8 +211,10 @@ The unified pipeline (`build_grism_image.py`) sets `JAX_COMPILATION_CACHE_DIR=/t
 
 ### Reference data (vendored)
 
-All reference data — optical model (`Roman_grism_OpticalModel_v0.8.yaml`),
-sensitivities, synphot, PSF caches, catalogs — is **vendored**: not tracked in
+All reference data — optical models (`Roman_grism_OpticalModel_v0.8.yaml`,
+`Roman_prism_OpticalModel_v0.8.yaml`), sensitivities (`sensitivities/`,
+`sensitivities_prism/`), synphot, PSF caches (GRISM0/GRISM1/PRISM filenames
+share one `psf_cache/`), catalogs — is **vendored**: not tracked in
 this repo, fetched on demand from `roman_disperser_data` releases by
 `roman-disperser-hydrate` (`pixi run hydrate`). See `docs/data_vendoring_plan.md`.
 

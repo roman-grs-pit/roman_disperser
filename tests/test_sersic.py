@@ -279,9 +279,10 @@ class TestSkyPAToSCATheta:
         sky directions map to pixel directions.
         """
         import roman_disperser.optical_model_jax as omj
+        from roman_disperser import paths
         from roman_disperser.optical_model import RomanOpticalModel
 
-        model = RomanOpticalModel("data/Roman_grism_OpticalModel_v0.8.yaml")
+        model = RomanOpticalModel(str(paths.optical_model_path()))
         payload = omj.make_sca_payload(model, sca=5, order="1")
 
         pointing_ra = 10.0

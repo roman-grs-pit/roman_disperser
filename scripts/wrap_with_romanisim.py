@@ -1,9 +1,11 @@
-"""Wrap disperser grism FITS through romanisim to produce L2 ASDF products.
+"""Wrap disperser FITS through romanisim to produce L2 ASDF products.
 
-Walks ``--input-dir`` for ``grism_*_detSCA??.fits`` files (output from
-``build_grism_image.py``), launches ``romanisim-make-image`` per file as a
-subprocess, and writes L2 ASDF files to a sibling tree under ``--output-dir``
-with the same relative structure.
+Walks ``--input-dir`` for ``{grism,prism}_*_detSCA??.fits`` files (output
+from ``build_dispersed_image.py``; the prefix is the dispersing element, or
+whatever ``output_prefix`` was set to — narrow with ``--element`` or
+``--prefix``), launches ``romanisim-make-image`` per file as a subprocess,
+and writes L2 ASDF files to a sibling tree under ``--output-dir`` with the
+same relative structure.
 
 Run inside the romanisim pixi environment so ``romanisim-make-image`` is on
 PATH:
@@ -22,7 +24,7 @@ Header-driven arguments (read per FITS):
     RNDSEED0 ^ RNDSEED1      -> --rng_seed  (XOR fold to 32-bit)
 
 Static arguments (CLI-tunable; see --help):
-    --bandpass GRISM
+    --bandpass  (default: per file from the OPTELEM header card; see below)
     --usecrds --stpsf
     --nobj 0
     --extra-counts <fits> ISIM
@@ -35,6 +37,15 @@ hash is logged at startup so cross-worker drift can be detected from logs.
 
 Idempotent: outputs that already exist are skipped, so re-submitting after
 a partial completion just fills in the gaps.
+
+Bandpass resolution (per file): ``--bandpass`` if given explicitly, else the
+file's ``OPTELEM`` header card (written by the disperser since v0.13; the
+element name uppercased is the romanisim bandpass), else ``--element``
+uppercased, else ``GRISM`` (matching pre-OPTELEM products, which were all
+grism). This script runs in the *romanisim* pixi environment, where
+``roman_disperser`` is not importable — so the element->bandpass mapping is
+``name.upper()`` by convention here rather than an import of
+``roman_disperser.elements``; the two must stay consistent.
 """
 from __future__ import annotations
 
@@ -55,6 +66,11 @@ LOG = logging.getLogger("wrap-romanisim")
 
 DEFAULT_DATE = "2026-01-01T12:00:00.000"
 PA_OFFSET = -60.0  # WFICENPA - 60 -> --roll (mirrors archetype wrap script).
+
+# Dispersing elements this wrapper knows how to glob for and map to a
+# romanisim bandpass (see the module docstring for why this is not imported
+# from roman_disperser.elements).
+KNOWN_ELEMENTS = ("grism", "prism")
 
 
 @dataclasses.dataclass
@@ -83,7 +99,39 @@ def read_header_args(fits_path: Path) -> dict:
             "sca": int(h["DETNUM"]),
             "ma_table": int(h["MA_TABLE"]),
             "rng_seed": int(h["RNDSEED0"]) ^ int(h["RNDSEED1"]),
+            # Dispersing element ("grism"/"prism"); absent pre-v0.13.
+            "optelem": str(h["OPTELEM"]).lower() if "OPTELEM" in h else None,
         }
+
+
+def resolve_bandpass(optelem: str | None, cli_bandpass: str | None,
+                     cli_element: str | None, fits_name: str) -> str:
+    """Pick the romanisim bandpass for one file (see module docstring).
+
+    Precedence: explicit --bandpass > OPTELEM header > --element > GRISM.
+    An explicit CLI value that contradicts the header is honored (it is an
+    override) but logged, since it usually means the wrong flag on the wrong
+    run directory.
+    """
+    if cli_bandpass is not None:
+        if optelem is not None and cli_bandpass.upper() != optelem.upper():
+            LOG.warning("%s: --bandpass %s overrides OPTELEM=%s",
+                        fits_name, cli_bandpass, optelem)
+        return cli_bandpass
+    if optelem is not None:
+        if optelem not in KNOWN_ELEMENTS:
+            raise ValueError(
+                f"{fits_name}: unknown OPTELEM {optelem!r}; "
+                f"expected one of {KNOWN_ELEMENTS} "
+                f"(pass --bandpass explicitly to force)"
+            )
+        if cli_element is not None and cli_element != optelem:
+            LOG.warning("%s: OPTELEM=%s disagrees with --element %s; "
+                        "using the header", fits_name, optelem, cli_element)
+        return optelem.upper()
+    if cli_element is not None:
+        return cli_element.upper()
+    return "GRISM"
 
 
 def build_command(hdr: dict, fits_path: Path, out: Path,
@@ -107,7 +155,8 @@ def build_command(hdr: dict, fits_path: Path, out: Path,
 
 
 def wrap_one(fits_path: Path, input_root: Path, output_root: Path,
-             log_dir: Path, date: str, bandpass: str, level: int,
+             log_dir: Path, date: str, cli_bandpass: str | None,
+             cli_element: str | None, level: int,
              dry_run: bool) -> WrapResult:
     out = derive_output_path(fits_path, input_root, output_root)
     if out.exists():
@@ -123,6 +172,13 @@ def wrap_one(fits_path: Path, input_root: Path, output_root: Path,
     except (KeyError, OSError) as exc:
         return WrapResult(fits_path, out, "failed", 0.0, None, log_path,
                           note=f"header read error: {exc}")
+
+    try:
+        bandpass = resolve_bandpass(hdr["optelem"], cli_bandpass,
+                                    cli_element, fits_path.name)
+    except ValueError as exc:
+        return WrapResult(fits_path, out, "failed", 0.0, None, log_path,
+                          note=str(exc))
 
     cmd = build_command(hdr, fits_path, out, date, bandpass, level)
 
@@ -165,8 +221,20 @@ def main() -> None:
                    help="Total workers for round-robin partitioning")
     p.add_argument("--date", default=DEFAULT_DATE,
                    help=f"UTC date passed to romanisim --date (default: {DEFAULT_DATE})")
-    p.add_argument("--bandpass", default="GRISM",
-                   help="--bandpass to romanisim (default: GRISM)")
+    p.add_argument("--element", default=None, choices=list(KNOWN_ELEMENTS),
+                   help="Dispersing element. Narrows the input glob to "
+                        "<element>_* products and sets the bandpass for "
+                        "files with no OPTELEM header (default: glob both "
+                        "elements, bandpass from each file's header)")
+    p.add_argument("--bandpass", default=None,
+                   help="Force this --bandpass to romanisim for every file, "
+                        "overriding the OPTELEM header (default: resolve "
+                        "per file; see module docstring)")
+    p.add_argument("--prefix", default=None,
+                   help="Product filename prefix to glob for, without the "
+                        "trailing underscore (default: the --element, else "
+                        "both grism and prism). Use when output_prefix was "
+                        "overridden at simulation time.")
     p.add_argument("--level", type=int, default=2,
                    help="L1 (1) or L2 (2) output (default: 2)")
     p.add_argument("--dry-run", action="store_true",
@@ -201,8 +269,17 @@ def main() -> None:
         all_files.sort()
         source = f"manifest={args.manifest_file}"
     else:
-        all_files = sorted(args.input_dir.glob("**/grism_*_detSCA*.fits"))
-        source = f"glob={args.input_dir}"
+        if args.prefix is not None:
+            prefixes = [args.prefix]
+        elif args.element is not None:
+            prefixes = [args.element]
+        else:
+            prefixes = list(KNOWN_ELEMENTS)
+        all_files = sorted(
+            f for pfx in prefixes
+            for f in args.input_dir.glob(f"**/{pfx}_*_detSCA*.fits")
+        )
+        source = f"glob={args.input_dir} prefixes={prefixes}"
 
     if not all_files:
         LOG.error("No input FITS found (%s)", source)
@@ -229,7 +306,8 @@ def main() -> None:
         futures = {
             pool.submit(
                 wrap_one, f, args.input_dir, args.output_dir, log_dir,
-                args.date, args.bandpass, args.level, args.dry_run,
+                args.date, args.bandpass, args.element, args.level,
+                args.dry_run,
             ): f
             for f in my_files
         }

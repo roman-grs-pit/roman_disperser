@@ -1,6 +1,10 @@
-# Grism Pipeline (`scripts/build_grism_image.py`)
+# Dispersed-Image Pipeline (`scripts/build_dispersed_image.py`)
 
-Simulates Roman Space Telescope grism images from a unified source catalog containing both stars and galaxies. Disperses point sources (via `star_disperser`) and extended sources (via `galaxy_disperser` with per-source Sersic morphologies) through the optical model with wavelength-dependent PSFs, applies per-SCA sensitivity curves, and produces noiseless and Poisson-sampled FITS images.
+> Known as `build_grism_image.py` before prism support; that name remains as
+> a deprecated forwarding wrapper (identical CLI and behavior, plus a
+> FutureWarning) so existing drivers keep working.
+
+Simulates Roman Space Telescope dispersed images — G150 **grism** (default) or P127 **prism** (`element: prism`) — from a unified source catalog containing both stars and galaxies. Disperses point sources (via `star_disperser`) and extended sources (via `galaxy_disperser` with per-source Sersic morphologies) through the optical model with wavelength-dependent PSFs, applies per-SCA sensitivity curves, and produces noiseless and Poisson-sampled FITS images.
 
 ## Overview
 
@@ -16,26 +20,26 @@ The script has five modes:
 
 ```bash
 # Quick mode: single SCA
-pixi run -e cuda python scripts/build_grism_image.py \
+pixi run -e cuda python scripts/build_dispersed_image.py \
     --pointing-ra 9.5 --pointing-dec 0.95 --pointing-pa 0.0 \
     --sca 5 --output my_field.fits --seed 42
 
 # Batch mode: config + ECSV pointing table
-pixi run -e cuda python scripts/build_grism_image.py \
+pixi run -e cuda python scripts/build_dispersed_image.py \
     --config scripts/example_grism_config.yaml \
     --pointings pointings.ecsv
 
 # Generate a template config
-pixi run -e cuda python scripts/build_grism_image.py \
+pixi run -e cuda python scripts/build_dispersed_image.py \
     --generate-config my_config.yaml
 
 # Warmup JIT cache (single GPU)
-pixi run -e cuda python scripts/build_grism_image.py \
+pixi run -e cuda python scripts/build_dispersed_image.py \
     --config scripts/example_grism_config.yaml \
     --warmup-only --gpu 0 --cache-dir /path/to/jax-cache
 
 # Generate mosaic from existing pointing directory
-pixi run -e cuda python scripts/build_grism_image.py \
+pixi run -e cuda python scripts/build_dispersed_image.py \
     --mosaic /path/to/pointing_dir
 ```
 
@@ -44,6 +48,9 @@ pixi run -e cuda python scripts/build_grism_image.py \
 ### Directory Structure (Batch Mode)
 
 Output directories are named from the ECSV filename and APT identifiers:
+
+The filename prefix defaults to the element name (`grism_` / `prism_`);
+override with the `output_prefix` config key.
 
 ```
 output_dir/
@@ -82,6 +89,7 @@ Quick mode writes a single FITS, PNG, source manifest, and metadata YAML at the 
 | DETNUM     | SCA number (1-18) |
 | EXPTIME    | Exposure time [s] |
 | SEED       | Top-level RNG seed |
+| OPTELEM    | Dispersing element (`grism` / `prism`) |
 | RNDSEED0   | JAX RNG key word 0 (per-SCA) |
 | RNDSEED1   | JAX RNG key word 1 (per-SCA) |
 | CODEVER    | roman_disperser package version |
@@ -206,22 +214,24 @@ Simulation parameters and data paths (see `scripts/example_grism_config.yaml`):
 |-------|------|---------|-------------|
 | `output_dir` | str | *(required)* | Top-level output directory |
 | `seed` | int | *(required)* | RNG seed for reproducibility |
+| `element` | str | `grism` | Dispersing element: `grism` or `prism`. Sets the orders, band, default data paths, STPSF filters, and which `BANDPASS` rows of the pointing table are processed. The optical model is validated against it at load time (band/orders/`optical_element` mismatch raises). |
 | `scas` | `"all"` or list[int] | `"all"` | SCAs to simulate (1-18) |
+| `output_prefix` | str | element name | Leading tag on product filenames (`<prefix>_<dirname>_detSCA05.fits`). Historical runs use `grism` for both elements; `wrap_with_romanisim.py` — the consumer that globs these products — handles either prefix and reads `OPTELEM` per file |
 | `star_batch_size` | int | 1000 | Stars per JIT batch |
 | `galaxy_batch_size` | int | 100 | Galaxies per JIT batch |
 | `galaxy_npix` | int | 30 | Sersic image size in native pixels |
 | `cone_radius` | float | 0.6 | Initial cone search radius [deg] |
 | `cache_dir` | str | `/tmp/jax-cache-grism` | JAX compilation cache directory |
 | `catalog_dir` | str | `data/catalogs` | Path to unified catalog directory |
-| `sensitivity_dir` | str | `data/sensitivities` | Path to sensitivity FITS files |
-| `optical_model` | str | `data/Roman_grism_OpticalModel_v0.8.yaml` | Optical model YAML |
+| `sensitivity_dir` | str | per-element | Path to sensitivity FITS files (`data/sensitivities` grism, `data/sensitivities_prism` prism) |
+| `optical_model` | str | per-element | Optical model YAML (`Roman_grism_OpticalModel_v0.8.yaml` / `Roman_prism_OpticalModel_v0.8.yaml`) |
 | `psf_cache_dir` | str | `data/psf_cache` | Path to PSF cache directory |
 
 **Deprecated:** `batch_size` is accepted as an alias for `star_batch_size` with a warning.
 
 ### ECSV Pointing Table
 
-An astropy ECSV file with APT-format columns. Rows with `BANDPASS != 'GRISM'` are filtered out automatically. Required columns:
+An astropy ECSV file with APT-format columns. Rows whose `BANDPASS` does not match the active element (`GRISM` / `PRISM`) are filtered out automatically. Required columns:
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -235,7 +245,7 @@ An astropy ECSV file with APT-format columns. Rows with `BANDPASS != 'GRISM'` ar
 | `OBSERVATION` | int | APT observation number |
 | `VISIT` | int | APT visit number |
 | `EXPOSURE` | int | APT exposure number |
-| `BANDPASS` | str | Filter name (only `GRISM` rows are processed) |
+| `BANDPASS` | str | Filter name (only rows matching the active element are processed) |
 | `MA_TABLE_NUMBER` | int | MA table number (stored in FITS header) |
 
 ## Catalog Format
@@ -316,7 +326,7 @@ A typical multi-GPU run has two steps:
 CACHE=/path/to/jax-cache
 
 for i in 0 1 2 3; do
-  pixi run -e cuda python scripts/build_grism_image.py \
+  pixi run -e cuda python scripts/build_dispersed_image.py \
     --config cfg.yaml --warmup-only \
     --gpu $i --worker-index $i --num-workers 4 \
     --cache-dir $CACHE \
@@ -329,7 +339,7 @@ wait
 
 ```bash
 for i in 0 1 2 3; do
-  pixi run -e cuda python scripts/build_grism_image.py \
+  pixi run -e cuda python scripts/build_dispersed_image.py \
     --config cfg.yaml --pointings pointings.ecsv \
     --gpu $i --worker-index $i --num-workers 4 \
     --cache-dir $CACHE \
@@ -367,12 +377,23 @@ With 4-GPU parallel warmup, cold compile drops to ~5 min.
 - Output directories are named by APT identifiers, so workers never collide on output files.
 - RNG keys are derived from APT identifiers, so results are identical regardless of how pointings are partitioned across workers.
 
-## Hardcoded Assumptions
+## Per-Element Constants and Remaining Hardcoded Assumptions
 
-- **Wavelength range:** 0.9-2.0 microns
-- **Orders:** always `["0", "1", "2"]`
-- **Order 2 PSF:** reuses order 1 PSF cache (STPSF only provides `GRISM0` and `GRISM1`)
-- **FPA->SCA conversion:** uses the order `"1"` optical payload for the undispersed position
+Element-dependent values live on `roman_disperser.elements.DispersingElement`
+(no longer hardcoded):
+
+- **Wavelength range:** 0.9-2.0 um (grism) / 0.75-1.85 um (prism) — must match the optical-model YAML (validated at load).
+- **Orders:** `["0", "1", "2"]` (grism) / `["1"]` (prism).
+- **PSF filters:** grism order 2 reuses the order-1 (`GRISM1`) PSF cache — STPSF only provides `GRISM0`/`GRISM1`; the prism uses `PRISM`.
+
+Still hardcoded:
+
+- **FPA->SCA conversion:** uses the order `"1"` optical payload for the undispersed position (order `"1"` exists for both elements)
 - **Normalization band:** F158 (`roman, wfi, f158`)
 - **Detector size:** 4088 x 4088 pixels
 - **Galaxy morphology:** Sersic profiles generated at `oversample` x resolution
+
+(Output naming is *not* hardcoded: the filename prefix defaults to the element
+name and is overridable with `output_prefix` — see the config table. Products
+are authoritatively distinguished by the `OPTELEM` header and `element:` meta
+field, which is what `wrap_with_romanisim.py` reads.)
