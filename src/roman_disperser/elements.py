@@ -29,12 +29,20 @@ Conventions
   silently simulating the wrong band.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+import numpy as np
 
 # Tolerance for comparing element band edges against the optical-model YAML
 # (microns). The YAML values are exact decimals, so this only absorbs float
 # representation noise — any real disagreement is far larger.
 BAND_TOL_UM = 0.005
+
+# PSF-cache wavelength sampling (microns). The vendored PSF caches sample
+# the PSF every 0.02 um across each element's band — 56 samples for both
+# elements — and encode that grid in their filenames (0.90-2.00um grism,
+# 0.75-1.85um prism).
+PSF_WL_STEP_UM = 0.02
 
 
 @dataclass(frozen=True)
@@ -45,9 +53,9 @@ class DispersingElement:
     orders: tuple            # spectral orders the pipeline simulates (strings)
     lam_min: float           # simulated band, microns (== YAML wl_min)
     lam_max: float           # simulated band, microns (== YAML wl_max)
-    # dict is unhashable, so exclude it from the generated __hash__ (elements
-    # are only hashed if someone keys a dict on one; keying on .name is better)
-    stpsf_filters: dict = field(hash=False)  # order -> STPSF filter name
+    # order -> STPSF filter name. A dict field means elements are not
+    # hashable (hash() raises); key registries on element.name instead.
+    stpsf_filters: dict
     optical_model_file: str    # YAML filename in the data dir
     sensitivities_subdir: str  # sensitivity FITS subdir in the data dir
     bandpass: str              # BANDPASS value in APT ECSV pointing tables
@@ -140,3 +148,18 @@ def validate_against_model(element, model):
             f"dispersing element {element.name!r}: " + "; ".join(problems)
         )
     return element
+
+
+def psf_cache_wavelengths(element=None):
+    """PSF-grid wavelengths (microns) covering an element's band.
+
+    One sample every :data:`PSF_WL_STEP_UM` from ``lam_min`` to ``lam_max``
+    inclusive. Derived from the band rather than stored on the element so
+    the band edges remain the single source of truth — a stored wavelength
+    list could silently drift from them. Matches the vendored ``psf_cache``
+    filenames exactly.
+    """
+    element = get_element(element)
+    return np.arange(element.lam_min,
+                     element.lam_max + PSF_WL_STEP_UM / 2,
+                     PSF_WL_STEP_UM)

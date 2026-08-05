@@ -45,6 +45,9 @@ META="$OUTDIR/slurm-meta-${SLURM_JOB_ID}.env"
 
 echo "Gate render: checkout=$CHECKOUT config=$CONFIG"
 date -u
+# NB: uses the old script name deliberately — it must run on the unmodified
+# main checkout too, where build_dispersed_image.py does not exist; on the
+# branch it forwards through the deprecation shim.
 pixi run -e cuda python scripts/build_grism_image.py \
     --config "$CONFIG" --pointings "$ECSV" --force
 date -u

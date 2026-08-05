@@ -1,4 +1,8 @@
-# Grism Pipeline (`scripts/build_grism_image.py`)
+# Dispersed-Image Pipeline (`scripts/build_dispersed_image.py`)
+
+> Known as `build_grism_image.py` before prism support; that name remains as
+> a deprecated forwarding wrapper (identical CLI and behavior, plus a
+> FutureWarning) so existing drivers keep working.
 
 Simulates Roman Space Telescope dispersed images — G150 **grism** (default) or P127 **prism** (`element: prism`) — from a unified source catalog containing both stars and galaxies. Disperses point sources (via `star_disperser`) and extended sources (via `galaxy_disperser` with per-source Sersic morphologies) through the optical model with wavelength-dependent PSFs, applies per-SCA sensitivity curves, and produces noiseless and Poisson-sampled FITS images.
 
@@ -16,26 +20,26 @@ The script has five modes:
 
 ```bash
 # Quick mode: single SCA
-pixi run -e cuda python scripts/build_grism_image.py \
+pixi run -e cuda python scripts/build_dispersed_image.py \
     --pointing-ra 9.5 --pointing-dec 0.95 --pointing-pa 0.0 \
     --sca 5 --output my_field.fits --seed 42
 
 # Batch mode: config + ECSV pointing table
-pixi run -e cuda python scripts/build_grism_image.py \
+pixi run -e cuda python scripts/build_dispersed_image.py \
     --config scripts/example_grism_config.yaml \
     --pointings pointings.ecsv
 
 # Generate a template config
-pixi run -e cuda python scripts/build_grism_image.py \
+pixi run -e cuda python scripts/build_dispersed_image.py \
     --generate-config my_config.yaml
 
 # Warmup JIT cache (single GPU)
-pixi run -e cuda python scripts/build_grism_image.py \
+pixi run -e cuda python scripts/build_dispersed_image.py \
     --config scripts/example_grism_config.yaml \
     --warmup-only --gpu 0 --cache-dir /path/to/jax-cache
 
 # Generate mosaic from existing pointing directory
-pixi run -e cuda python scripts/build_grism_image.py \
+pixi run -e cuda python scripts/build_dispersed_image.py \
     --mosaic /path/to/pointing_dir
 ```
 
@@ -318,7 +322,7 @@ A typical multi-GPU run has two steps:
 CACHE=/path/to/jax-cache
 
 for i in 0 1 2 3; do
-  pixi run -e cuda python scripts/build_grism_image.py \
+  pixi run -e cuda python scripts/build_dispersed_image.py \
     --config cfg.yaml --warmup-only \
     --gpu $i --worker-index $i --num-workers 4 \
     --cache-dir $CACHE \
@@ -331,7 +335,7 @@ wait
 
 ```bash
 for i in 0 1 2 3; do
-  pixi run -e cuda python scripts/build_grism_image.py \
+  pixi run -e cuda python scripts/build_dispersed_image.py \
     --config cfg.yaml --pointings pointings.ecsv \
     --gpu $i --worker-index $i --num-workers 4 \
     --cache-dir $CACHE \

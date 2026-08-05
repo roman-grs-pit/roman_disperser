@@ -23,7 +23,8 @@ original attempt.
   mismatch (wrong `optical_element`, band disagreement beyond 0.005 um,
   undefined order) — never a warning. Host-side configuration only; nothing
   enters jit-compiled code.
-- `build_grism_image.py`: `element:` config key and `--element` CLI flag.
+- `build_dispersed_image.py` (né `build_grism_image.py`; see Deprecated):
+  `element:` config key and `--element` CLI flag.
   The element drives the wavelength trim, the ECSV `BANDPASS` row filter
   (`GRISM`/`PRISM`), per-order optical payloads, sensitivity loading, and
   PSF-cache selection. New provenance: `OPTELEM` card in every FITS primary
@@ -61,10 +62,17 @@ original attempt.
   instead of hand-built `$PIXI_PROJECT_ROOT/data/...` paths (issue #24 —
   they failed on any clean checkout).
 
+### Deprecated
+- `scripts/build_grism_image.py` — renamed to
+  **`scripts/build_dispersed_image.py`** (it simulates either element). The
+  old name remains as a forwarding wrapper with identical CLI, defaults and
+  outputs, emitting a `FutureWarning`; existing drivers (`roman_l2_job`)
+  keep working unchanged. It will be removed in a later release.
+
 ### Unchanged (deliberately)
-- The script keeps the name `build_grism_image.py` and the `grism_` output
-  filename prefix for both elements — renaming would break the
-  `roman_l2_job` drivers and archived-run comparisons for no science gain.
+- The `grism_` output filename prefix is kept for both elements — changing
+  it would break `roman_l2_job` glob patterns and archived-run comparisons;
+  products are distinguished by the `OPTELEM` header.
 - `scripts/build_star_grism_image.py` stays deleted (removed in `0881597`
   for duplicating the sky→FPA call site); it was not resurrected from the
   prism branch.

@@ -41,8 +41,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from roman_disperser import elements, psf_model
 
-import numpy as np
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -91,9 +89,9 @@ def main():
             seen.setdefault(element.stpsf_filters[o], o)
         orders = tuple(seen.values())
 
-    # PSF-grid wavelengths spanning the element band at 0.02 um spacing
-    # (56 samples for both elements; matches vendored cache filenames)
-    wavelengths = np.arange(element.lam_min, element.lam_max + 0.01, 0.02)
+    # PSF-grid wavelengths spanning the element band (matches the vendored
+    # cache filenames; see elements.PSF_WL_STEP_UM)
+    wavelengths = elements.psf_cache_wavelengths(element)
 
     # Parse detectors
     detectors = None

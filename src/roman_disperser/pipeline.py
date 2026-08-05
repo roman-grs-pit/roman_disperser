@@ -3,7 +3,8 @@
 Originally extracted from the star-only pipeline so that it and the unified
 simulation script could share the same I/O, batching, and source-selection
 helpers. The star-only script was removed in the sky->FPA precision work; this
-module is now used solely by ``scripts/build_grism_image.py``.
+module is now used solely by ``scripts/build_dispersed_image.py``
+(and its deprecated ``build_grism_image.py`` alias).
 
 Not added to ``__init__.py`` — scripts import directly::
 
@@ -131,7 +132,7 @@ def make_sca_keys(pointing_key, sca_list):
     ----------
     pointing_key : jax.random.key
         Per-pointing key (see ``make_pointing_key`` in
-        ``scripts/build_grism_image.py``).
+        ``scripts/build_dispersed_image.py``).
     sca_list : iterable of int
         SCA numbers (1-18).
 
