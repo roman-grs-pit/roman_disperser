@@ -1,18 +1,21 @@
 #!/usr/bin/env python
 """
-Generate PSF caches for all detectors and orders.
+Generate PSF caches for all detectors and orders of a dispersing element.
 
 This script pre-generates all PSF payloads needed for full-field validation.
-With default settings (4×4×56 grid, 18 SCAs × 2 orders = 36 payloads),
-this takes approximately 3-4 hours with 1 worker, or ~30-40 minutes with 8 workers.
+Grism defaults (4×4×56 grid, 18 SCAs × 2 STPSF filters = 36 payloads) take
+approximately 3-4 hours with 1 worker, or ~30-40 minutes with 8 workers; the
+prism (18 SCAs × 1 filter) takes half that.
 
 Usage:
     pixi run python scripts/generate_psf_caches.py
-    pixi run python scripts/generate_psf_caches.py --workers 8
+    pixi run python scripts/generate_psf_caches.py --element prism --workers 8
 
 Options:
     --cache-dir PATH    Cache directory (default: data/psf_cache)
-    --orders ORDERS     Comma-separated orders (default: 0,1)
+    --element NAME      Dispersing element, grism or prism (default: grism)
+    --orders ORDERS     Comma-separated orders (default: the element's orders
+                        with a distinct STPSF filter: 0,1 grism; 1 prism)
     --detectors DETS    Comma-separated detectors (default: all 18)
     --workers N         Number of parallel workers (default: 1)
     --no-skip           Regenerate even if cache exists
@@ -36,7 +39,9 @@ warnings.filterwarnings('ignore', message='.*clipping to closest.*')
 # Add src to path for development
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from roman_disperser import psf_model
+from roman_disperser import elements, psf_model
+
+import numpy as np
 
 
 def main():
@@ -48,8 +53,13 @@ def main():
         help='Cache directory (default: data/psf_cache)'
     )
     parser.add_argument(
-        '--orders', type=str, default='0,1',
-        help='Comma-separated orders to generate (default: 0,1)'
+        '--element', type=str, default='grism', choices=['grism', 'prism'],
+        help='Dispersing element (default: grism)'
+    )
+    parser.add_argument(
+        '--orders', type=str, default=None,
+        help='Comma-separated orders to generate (default: the element '
+             'orders with a distinct STPSF filter)'
     )
     parser.add_argument(
         '--detectors', type=str, default=None,
@@ -66,8 +76,24 @@ def main():
 
     args = parser.parse_args()
 
-    # Parse orders
-    orders = tuple(args.orders.split(','))
+    element = elements.get_element(args.element)
+
+    # Parse orders; by default generate one cache per distinct STPSF filter
+    # (grism order "2" reuses the order-1 cache, so it is not generated).
+    if args.orders:
+        orders = tuple(args.orders.split(','))
+        unknown = [o for o in orders if o not in element.stpsf_filters]
+        if unknown:
+            parser.error(f"orders {unknown} not defined for {element.name}")
+    else:
+        seen = {}
+        for o in element.orders:
+            seen.setdefault(element.stpsf_filters[o], o)
+        orders = tuple(seen.values())
+
+    # PSF-grid wavelengths spanning the element band at 0.02 um spacing
+    # (56 samples for both elements; matches vendored cache filenames)
+    wavelengths = np.arange(element.lam_min, element.lam_max + 0.01, 0.02)
 
     # Parse detectors
     detectors = None
@@ -78,7 +104,9 @@ def main():
     print("PSF Cache Generator")
     print("=" * 60)
     print(f"Cache directory: {args.cache_dir}")
-    print(f"Orders: {orders}")
+    print(f"Element: {element.name}")
+    print(f"Orders: {orders} "
+          f"(filters {[element.stpsf_filters[o] for o in orders]})")
     print(f"Detectors: {detectors or 'all 18'}")
     print(f"Workers: {args.workers}")
     print(f"Skip existing: {not args.no_skip}")
@@ -89,6 +117,8 @@ def main():
         cache_dir=args.cache_dir,
         orders=orders,
         detectors=detectors,
+        wavelengths=wavelengths,
+        stpsf_filters=element.stpsf_filters,
         skip_existing=not args.no_skip,
         n_workers=args.workers,
         verbose=True,

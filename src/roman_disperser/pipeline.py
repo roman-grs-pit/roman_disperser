@@ -28,6 +28,7 @@ from matplotlib.colors import AsinhNorm
 from PIL import Image
 
 from roman_disperser import catalog
+from roman_disperser import elements
 from roman_disperser import paths
 from roman_disperser.optical_model import RomanOpticalModel
 import roman_disperser.optical_model_jax as omj
@@ -35,10 +36,12 @@ import roman_disperser.optical_model_jax as omj
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+# The former module-level grism constants ORDERS / LAM_MIN / LAM_MAX were
+# removed when prism support landed: orders and band are per-element now and
+# live on a DispersingElement (see roman_disperser.elements). Anything that
+# still imports them fails loudly here rather than silently simulating the
+# wrong element.
 DETECTOR_SIZE = 4088
-ORDERS = ["0", "1", "2"]
-LAM_MIN = 0.9   # microns
-LAM_MAX = 2.0   # microns
 SENSITIVITY_MAP_FILE = "sensitivity_map.yaml"
 
 
@@ -147,28 +150,40 @@ def make_sca_keys(pointing_key, sca_list):
 # ---------------------------------------------------------------------------
 
 def resolve_paths(catalog_dir=None, sensitivity_dir=None,
-                  optical_model_path=None, psf_cache_dir=None):
-    """Resolve default reference-data paths.
+                  optical_model_path=None, psf_cache_dir=None,
+                  element=None):
+    """Resolve default reference-data paths for a dispersing element.
 
     Each ``None`` argument falls back to its default location under the
     vendored data directory (see :mod:`roman_disperser.paths` for how that
     directory is resolved — ``$ROMAN_DISPERSER_DATA``, then
-    ``$PIXI_PROJECT_ROOT/data``, then ``./data``).
+    ``$PIXI_PROJECT_ROOT/data``, then ``./data``). The element picks the
+    optical-model YAML and sensitivity subdirectory; the catalog and PSF
+    cache are shared (PSF cache filenames carry the STPSF filter name, so
+    both elements coexist in one directory).
 
     Parameters
     ----------
     catalog_dir : str or Path, optional
         Default: ``<data>/catalogs``.
     sensitivity_dir : str or Path, optional
-        Default: ``<data>/sensitivities``.
+        Default: ``<data>/<element.sensitivities_subdir>``.
     optical_model_path : str or Path, optional
-        Default: ``<data>/Roman_grism_OpticalModel_v0.8.yaml``.
+        Default: ``<data>/<element.optical_model_file>``.
     psf_cache_dir : str or Path, optional
         Default: ``<data>/psf_cache``.
+    element : str or DispersingElement, optional
+        Default: grism.
     """
+    element = elements.get_element(element)
+    data = paths.data_dir()
+    if sensitivity_dir is None:
+        sensitivity_dir = data / element.sensitivities_subdir
+    if optical_model_path is None:
+        optical_model_path = data / element.optical_model_file
     return (paths.catalog_dir(catalog_dir),
-            paths.sensitivity_dir(sensitivity_dir),
-            paths.optical_model_path(optical_model_path),
+            Path(sensitivity_dir),
+            Path(optical_model_path),
             paths.psf_cache_dir(psf_cache_dir))
 
 
@@ -191,22 +206,22 @@ def cone_search(ra, dec, pointing_ra, pointing_dec, radius_deg):
     return dist <= radius_deg
 
 
-def select_sources_per_order(
-    optical_payloads, xfpa, yfpa, orders=ORDERS,
-    wl_min=LAM_MIN, wl_max=LAM_MAX,
-):
+def select_sources_per_order(optical_payloads, xfpa, yfpa, orders,
+                             wl_min, wl_max):
     """For each order, determine which sources have traces on the detector.
 
     Parameters
     ----------
     optical_payloads : dict mapping order str -> payload
     xfpa, yfpa : jnp.ndarray [N]
-    orders : list of str
+    orders : iterable of str
+        The active element's orders (``element.orders``).
     wl_min, wl_max : float
-        Wavelength range (microns) for the trace bbox cull. Defaults to the
-        pipeline's LAM_MIN/LAM_MAX so the cull always covers the active band;
-        relying on catalog.select_sources defaults silently undersamples if
-        the active band differs from those defaults.
+        Wavelength range (microns) for the trace bbox cull — the active
+        element's band (``element.lam_min`` / ``element.lam_max``). Required
+        (no default): a default band silently under-culls whenever the active
+        element differs from it, which is exactly the single-element
+        assumption this signature exists to prevent.
 
     Returns
     -------
@@ -234,8 +249,8 @@ def select_sources_per_order(
 # Sensitivity curves
 # ---------------------------------------------------------------------------
 
-def load_sensitivities(sensitivity_dir, sca, wavelengths):
-    """Load and interpolate grism sensitivity curves for each order.
+def load_sensitivities(sensitivity_dir, sca, wavelengths, orders):
+    """Load and interpolate sensitivity curves for each order.
 
     Reads the sensitivity_map.yaml in the sensitivity directory to find
     the correct file for each SCA and order.
@@ -243,10 +258,13 @@ def load_sensitivities(sensitivity_dir, sca, wavelengths):
     Parameters
     ----------
     sensitivity_dir : str or Path
-        Directory containing sensitivity FITS files and sensitivity_map.yaml.
+        Directory containing sensitivity FITS files and sensitivity_map.yaml
+        (per-element: ``resolve_paths(element=...)`` picks the right one).
     sca : int
         SCA number (1-18).
     wavelengths : ndarray [N_wl] in microns.
+    orders : iterable of str
+        The active element's orders (``element.orders``).
 
     Returns
     -------
@@ -264,7 +282,7 @@ def load_sensitivities(sensitivity_dir, sca, wavelengths):
         )
 
     sensitivities = {}
-    for order in ORDERS:
+    for order in orders:
         fname = sens_map[sca_key][order]
         with fits.open(sensitivity_dir / fname) as hdul:
             wl_sens = hdul[1].data["WAVELENGTH"] / 1e4  # Angstrom -> micron

@@ -70,11 +70,11 @@ import pyarrow.parquet as pq
 import zarr
 
 from roman_disperser import (
-    galaxy_disperser, psf_model, sersic, star_disperser,
+    elements, galaxy_disperser, psf_model, sersic, star_disperser,
 )
 from roman_disperser.optical_model import RomanOpticalModel
 from roman_disperser.pipeline import (
-    DETECTOR_SIZE, ORDERS, LAM_MIN, LAM_MAX,
+    DETECTOR_SIZE,
     resolve_paths, cone_search, select_sources_per_order,
     load_sensitivities,
     make_batched_star_fori, disperse_batched_stars,
@@ -148,7 +148,17 @@ def load_catalog(catalog_dir):
     return meta, store, wavelengths
 
 
-def validate_catalog(meta, store, wavelengths):
+def psf_cache_wavelengths(element):
+    """PSF-grid wavelengths (microns) covering an element's band.
+
+    0.02 um spacing from lam_min to lam_max inclusive — 56 samples for both
+    elements, matching the vendored ``psf_cache`` filenames
+    (``0.90-2.00um`` grism, ``0.75-1.85um`` prism).
+    """
+    return np.arange(element.lam_min, element.lam_max + 0.01, 0.02)
+
+
+def validate_catalog(meta, store, wavelengths, element):
     """Validate catalog consistency.
 
     Checks wavelength coverage/spacing, required columns and types,
@@ -157,9 +167,12 @@ def validate_catalog(meta, store, wavelengths):
 
     Raises ValueError on hard errors; prints warnings for soft issues.
     """
-    # Wavelength coverage
-    wl_min_ang = LAM_MIN * 1e4
-    wl_max_ang = LAM_MAX * 1e4
+    # Wavelength coverage: the catalog must span the active element's band.
+    # This is a hard error, not a warning — a catalog that opens redward of
+    # lam_min would silently disperse nothing in the missing range (the
+    # grism-grid catalog-v2 vs the 7500 A prism band is the real case).
+    wl_min_ang = element.lam_min * 1e4
+    wl_max_ang = element.lam_max * 1e4
     if wavelengths[0] > wl_min_ang or wavelengths[-1] < wl_max_ang:
         raise ValueError(
             f"Catalog wavelengths [{wavelengths[0]:.0f}, {wavelengths[-1]:.0f}] A "
@@ -237,13 +250,15 @@ def validate_catalog(meta, store, wavelengths):
             print(f"  WARNING: {n_large} galaxies have half_light_radius > 1 arcsec")
 
 
-def trim_wavelength_grid(wavelengths):
-    """Trim the catalog wavelength grid to the grism range [9000, 20000] A.
+def trim_wavelength_grid(wavelengths, element):
+    """Trim the catalog wavelength grid to the element's band.
 
     Parameters
     ----------
     wavelengths : ndarray [N_wl]
         Full catalog wavelength grid in Angstroms.
+    element : DispersingElement
+        Sets the band: [9000, 20000] A grism, [7500, 18500] A prism.
 
     Returns
     -------
@@ -254,8 +269,8 @@ def trim_wavelength_grid(wavelengths):
     dlam_angstroms : float
         Wavelength spacing in Angstroms.
     """
-    wl_min_ang = LAM_MIN * 1e4  # 9000
-    wl_max_ang = LAM_MAX * 1e4  # 20000
+    wl_min_ang = element.lam_min * 1e4
+    wl_max_ang = element.lam_max * 1e4
     wl_mask = (wavelengths >= wl_min_ang) & (wavelengths <= wl_max_ang)
     wavelengths_trimmed = wavelengths[wl_mask]
     dlam_angstroms = float(wavelengths_trimmed[1] - wavelengths_trimmed[0])
@@ -353,6 +368,7 @@ def setup_pipeline(
     sensitivity_dir=None,
     optical_model_path=None,
     psf_cache_dir=None,
+    element=None,
     star_batch_size=1000,
     galaxy_batch_size=100,
     galaxy_npix=30,
@@ -372,6 +388,10 @@ def setup_pipeline(
         SCA numbers to prepare (1-18).
     catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir : str, optional
         Override default data paths.
+    element : str or DispersingElement, optional
+        Dispersing element to simulate (default: grism). Picks the orders,
+        band, default data paths, and STPSF filters; the loaded optical
+        model is validated against it.
     star_batch_size : int
         Number of stars per JIT batch (default: 1000).
     galaxy_batch_size : int
@@ -394,9 +414,14 @@ def setup_pipeline(
         if verbose:
             print(msg)
 
+    element = elements.get_element(element)
+    log(f"Dispersing element: {element.name} "
+        f"(orders {list(element.orders)}, "
+        f"{element.lam_min}-{element.lam_max} um)")
+
     catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir = \
         resolve_paths(catalog_dir, sensitivity_dir,
-                      optical_model_path, psf_cache_dir)
+                      optical_model_path, psf_cache_dir, element=element)
 
     # -- Load & validate catalog ---------------------------------------------
     log("Loading catalog...")
@@ -409,16 +434,16 @@ def setup_pipeline(
         f"in {timings['load_catalog']:.2f}s")
 
     log("Validating catalog...")
-    validate_catalog(meta, store, wavelengths_full)
+    validate_catalog(meta, store, wavelengths_full, element)
 
     # -- Trim wavelength grid ------------------------------------------------
     wavelengths_ang, wl_mask, dlam_angstroms = trim_wavelength_grid(
-        wavelengths_full
+        wavelengths_full, element
     )
     wavelengths_um = (wavelengths_ang / 1e4).astype(np.float32)
     wavelengths_jax = jnp.array(wavelengths_um)
     n_wavelength = len(wavelengths_um)
-    log(f"Wavelength grid: {LAM_MIN}-{LAM_MAX} um, "
+    log(f"Wavelength grid: {element.lam_min}-{element.lam_max} um, "
         f"{dlam_angstroms:.1f} A spacing, {n_wavelength} samples")
 
     # -- Load full star SED array (trimmed) ----------------------------------
@@ -433,6 +458,7 @@ def setup_pipeline(
     # -- Optical model -------------------------------------------------------
     log("Loading optical model...")
     model = RomanOpticalModel(config_file=str(optical_model_path))
+    elements.validate_against_model(element, model)
 
     # -- Per-SCA setup: optical payloads and sensitivity curves ---------------
     # PSFs, dispersers, and JIT compilation are deferred to process_pointing
@@ -444,6 +470,8 @@ def setup_pipeline(
     # (all PSF payloads use the same oversample)
     first_psf = psf_model.get_or_make_psf_payload(
         detector=f"WFI{sca_list[0]:02d}", order="1",
+        wavelengths=psf_cache_wavelengths(element),
+        stpsf_filter=element.stpsf_filters["1"],
         cache_dir=str(psf_cache_dir), verbose=False,
     )
     oversample = int(first_psf["oversample"])
@@ -458,12 +486,12 @@ def setup_pipeline(
         # Optical payloads (small — polynomial coefficients)
         optical_payloads = {
             order: omj.make_sca_payload(model, sca=sca_num, order=order)
-            for order in ORDERS
+            for order in element.orders
         }
 
         # Sensitivity curves (tiny — one array per order)
         sensitivities = load_sensitivities(
-            sensitivity_dir, sca_num, wavelengths_um,
+            sensitivity_dir, sca_num, wavelengths_um, element.orders,
         )
 
         sca_data[sca_num] = {
@@ -476,6 +504,7 @@ def setup_pipeline(
 
     return {
         "model": model,
+        "element": element,
         "meta": meta,
         "store": store,
         "star_seds_all": star_seds_all,
@@ -556,8 +585,15 @@ def process_pointing(
     prefix = f"grism_{output_dir.name}"
 
     meta = pipeline["meta"]
+    element = pipeline["element"]
     sca_list = pipeline["sca_list"]
     star_batch_size = pipeline["star_batch_size"]
+
+    # Element provenance goes on every product (header + meta YAML)
+    extra_headers = {
+        "OPTELEM": (element.name, "Dispersing element"),
+        **(extra_headers or {}),
+    }
     galaxy_batch_size = pipeline["galaxy_batch_size"]
     galaxy_npix_os = pipeline["galaxy_npix_os"]
     oversample = pipeline["oversample"]
@@ -668,17 +704,24 @@ def process_pointing(
         t_jit = time.time()
         detector_name = f"WFI{sca_num:02d}"
 
+        # One payload per distinct STPSF filter; orders sharing a filter
+        # (grism order "2" -> GRISM1) share the loaded payload.
+        payloads_by_filter = {}
         psf_payloads = {}
-        for psf_order in ["0", "1"]:
-            psf_payloads[psf_order] = psf_model.get_or_make_psf_payload(
-                detector=detector_name, order=psf_order,
-                cache_dir=psf_cache_dir, verbose=False,
-            )
-        psf_payloads["2"] = psf_payloads["1"]
+        for order in element.orders:
+            fname = element.stpsf_filters[order]
+            if fname not in payloads_by_filter:
+                payloads_by_filter[fname] = psf_model.get_or_make_psf_payload(
+                    detector=detector_name, order=order,
+                    wavelengths=psf_cache_wavelengths(element),
+                    stpsf_filter=fname,
+                    cache_dir=psf_cache_dir, verbose=False,
+                )
+            psf_payloads[order] = payloads_by_filter[fname]
 
         star_fori_fns = {}
         galaxy_fori_fns = {}
-        for order in ORDERS:
+        for order in element.orders:
             sd_fn = star_disperser.make_star_disperser(
                 psf_payloads[order], sd["optical_payloads"][order],
             )
@@ -712,7 +755,7 @@ def process_pointing(
             (galaxy_batch_size, galaxy_npix_os, galaxy_npix_os),
             dtype=jnp.float32,
         )
-        for order in ORDERS:
+        for order in element.orders:
             star_fori_fns[order](
                 1, warmup_spec, warmup_x, warmup_y, warmup_output,
             ).block_until_ready()
@@ -727,10 +770,11 @@ def process_pointing(
         # -- Select sources for this SCA (per order) -------------------------
         order_masks, any_mask = select_sources_per_order(
             sd["optical_payloads"], xfpa, yfpa,
+            element.orders, element.lam_min, element.lam_max,
         )
         n_any = int(any_mask.sum())
 
-        sca_counts = {order: {"stars": 0, "galaxies": 0} for order in ORDERS}
+        sca_counts = {order: {"stars": 0, "galaxies": 0} for order in element.orders}
         source_counts[sca_num] = sca_counts
 
         # Disperse sources
@@ -783,7 +827,7 @@ def process_pointing(
             star_cone_indices = np.where(is_star)[0]
 
             order_masks_sel = {
-                order: order_masks[order][any_mask_np] for order in ORDERS
+                order: order_masks[order][any_mask_np] for order in element.orders
             }
 
             # --- Load galaxy SEDs and generate images per SCA ---
@@ -825,7 +869,7 @@ def process_pointing(
                     f"in {time.time() - t0:.2f}s")
 
             # --- Disperse per order ---
-            for order in ORDERS:
+            for order in element.orders:
                 omask = order_masks_sel[order]
                 n_order = int(omask.sum())
                 if n_order == 0:
@@ -885,7 +929,7 @@ def process_pointing(
                         f"{elapsed:.2f}s ({ms_per:.1f} ms/galaxy)")
 
             # Collect manifest rows
-            for order in ORDERS:
+            for order in element.orders:
                 omask = order_masks_sel[order]
                 if not omask.any():
                     continue
@@ -915,7 +959,7 @@ def process_pointing(
         sca_outputs[sca_num] = output
 
         # Log per-order counts
-        for order in ORDERS:
+        for order in element.orders:
             c = sca_counts[order]
             log(f"    Order {order}: {c['stars']} stars, "
                 f"{c['galaxies']} galaxies")
@@ -1007,6 +1051,7 @@ def process_pointing(
             "pa": pointing_pa,
         },
         "exptime": exptime,
+        "element": element.name,
         "codever": get_code_version(),
         "git_sha": get_git_sha(),
         "seed": seed,
@@ -1054,6 +1099,7 @@ def build_grism_image(
     sensitivity_dir=None,
     optical_model_path=None,
     psf_cache_dir=None,
+    element=None,
     cone_radius=0.6,
     star_batch_size=1000,
     galaxy_batch_size=100,
@@ -1079,6 +1125,8 @@ def build_grism_image(
         Exposure time in seconds (default: 190.22).
     catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir : str, optional
         Override default data paths.
+    element : str, optional
+        Dispersing element, "grism" (default) or "prism".
     cone_radius : float
         Cone search radius in degrees (default: 0.6).
     star_batch_size : int
@@ -1109,6 +1157,7 @@ def build_grism_image(
         sensitivity_dir=sensitivity_dir,
         optical_model_path=optical_model_path,
         psf_cache_dir=psf_cache_dir,
+        element=element,
         star_batch_size=star_batch_size,
         galaxy_batch_size=galaxy_batch_size,
         galaxy_npix=galaxy_npix,
@@ -1179,6 +1228,14 @@ output_dir: output/grism-fields
 # filename and APT identifiers to derive per-pointing keys, so results are
 # deterministic and independent of pointing order or slicing.
 seed: 42
+
+# -- Dispersing element -------------------------------------------------------
+# "grism" (G150, orders 0/1/2, 0.9-2.0 um — the default) or
+# "prism" (P127, order 1, 0.75-1.85 um).  Also selects the default
+# optical-model YAML and sensitivity directory, and which BANDPASS rows of
+# the pointing ECSV are processed (GRISM / PRISM).  The optical model is
+# validated against the element at load time; a mismatch raises.
+element: grism
 
 # -- Detectors ---------------------------------------------------------------
 # Which SCAs to simulate.  Use "all" for 1-18, or list specific numbers.
@@ -1278,28 +1335,35 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
     galaxy_batch_size = cfg.get("galaxy_batch_size", 100)
     galaxy_npix = cfg.get("galaxy_npix", 30)
 
+    element = elements.get_element(cfg.get("element"))
+    log(f"Dispersing element: {element.name}")
+
     # Resolve data paths (catalog_dir needed for wavelength grid)
     catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir = \
         resolve_paths(cfg.get("catalog_dir"), cfg.get("sensitivity_dir"),
                       cfg.get("optical_model"),
-                      cfg.get("psf_cache_dir"))
+                      cfg.get("psf_cache_dir"), element=element)
 
     # Read wavelength grid from catalog (must match what setup_pipeline uses)
     store = zarr.open(str(Path(catalog_dir) / "seds.zarr"), mode="r")
     wavelengths_full = np.array(store["wavelengths"])
-    wavelengths_ang, _, dlam_angstroms = trim_wavelength_grid(wavelengths_full)
+    wavelengths_ang, _, dlam_angstroms = trim_wavelength_grid(
+        wavelengths_full, element)
     wavelengths_um = (wavelengths_ang / 1e4).astype(np.float32)
     wavelengths_jax = jnp.array(wavelengths_um)
     n_wavelength = len(wavelengths_um)
-    log(f"Wavelength grid: {LAM_MIN}-{LAM_MAX} um, "
+    log(f"Wavelength grid: {element.lam_min}-{element.lam_max} um, "
         f"{dlam_angstroms:.1f} A spacing, {n_wavelength} samples")
 
     # Load optical model
     model = RomanOpticalModel(config_file=str(optical_model_path))
+    elements.validate_against_model(element, model)
 
     # Determine oversample from first PSF payload
     first_psf = psf_model.get_or_make_psf_payload(
         detector=f"WFI{sca_list[0]:02d}", order="1",
+        wavelengths=psf_cache_wavelengths(element),
+        stpsf_filter=element.stpsf_filters["1"],
         cache_dir=str(psf_cache_dir), verbose=False,
     )
     oversample = int(first_psf["oversample"])
@@ -1311,28 +1375,34 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
         detector_name = f"WFI{sca_num:02d}"
         log(f"\n  SCA {sca_num} ({detector_name}):")
 
-        # Load PSF payloads
+        # Load PSF payloads (one per distinct STPSF filter, shared across
+        # orders that reuse a filter — grism order "2" -> GRISM1)
+        payloads_by_filter = {}
         psf_payloads = {}
-        for psf_order in ["0", "1"]:
-            psf_payloads[psf_order] = psf_model.get_or_make_psf_payload(
-                detector=detector_name, order=psf_order,
-                cache_dir=str(psf_cache_dir), verbose=False,
-            )
-        psf_payloads["2"] = psf_payloads["1"]
+        for order in element.orders:
+            fname = element.stpsf_filters[order]
+            if fname not in payloads_by_filter:
+                payloads_by_filter[fname] = psf_model.get_or_make_psf_payload(
+                    detector=detector_name, order=order,
+                    wavelengths=psf_cache_wavelengths(element),
+                    stpsf_filter=fname,
+                    cache_dir=str(psf_cache_dir), verbose=False,
+                )
+            psf_payloads[order] = payloads_by_filter[fname]
 
         # Build optical payloads and sensitivities
         optical_payloads = {
             order: omj.make_sca_payload(model, sca=sca_num, order=order)
-            for order in ORDERS
+            for order in element.orders
         }
         sensitivities = load_sensitivities(
-            sensitivity_dir, sca_num, wavelengths_um,
+            sensitivity_dir, sca_num, wavelengths_um, element.orders,
         )
 
         # Build dispersers and JIT-compile
         star_fori_fns = {}
         galaxy_fori_fns = {}
-        for order in ORDERS:
+        for order in element.orders:
             sd_fn = star_disperser.make_star_disperser(
                 psf_payloads[order], optical_payloads[order],
             )
@@ -1369,7 +1439,7 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
             (galaxy_batch_size, galaxy_npix_os, galaxy_npix_os),
             dtype=jnp.float32,
         )
-        for order in ORDERS:
+        for order in element.orders:
             star_fori_fns[order](
                 1, warmup_spec, warmup_x, warmup_y, warmup_output,
             ).block_until_ready()
@@ -1442,16 +1512,19 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
     # Load pointing table
     ptable = Table.read(pointings_path, format="ascii.ecsv")
 
-    # Filter to GRISM pointings only
+    element = elements.get_element(cfg.get("element"))
+
+    # Filter to this element's pointings only (BANDPASS: GRISM or PRISM)
     if "BANDPASS" in ptable.colnames:
-        grism_mask = ptable["BANDPASS"] == "GRISM"
-        n_filtered = len(ptable) - grism_mask.sum()
+        band_mask = ptable["BANDPASS"] == element.bandpass
+        n_filtered = len(ptable) - band_mask.sum()
         if n_filtered > 0:
-            log(f"Filtered {n_filtered} non-GRISM rows from pointing table")
-        ptable = ptable[grism_mask]
+            log(f"Filtered {n_filtered} non-{element.bandpass} rows "
+                f"from pointing table")
+        ptable = ptable[band_mask]
 
     if len(ptable) == 0:
-        log("No GRISM pointings found in pointing table.")
+        log(f"No {element.bandpass} pointings found in pointing table.")
         return
 
     # Parse SCA list
@@ -1481,6 +1554,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
 
     log(f"Config: {config_path}")
     log(f"Pointings: {pointings_path}")
+    log(f"Element: {element.name}")
     log(f"SCAs: {sca_list}")
     log(f"Seed: {seed}")
     log(f"Git SHA: {git_sha}")
@@ -1500,6 +1574,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         sensitivity_dir=cfg.get("sensitivity_dir"),
         optical_model_path=cfg.get("optical_model"),
         psf_cache_dir=cfg.get("psf_cache_dir"),
+        element=element,
         star_batch_size=cfg.get("star_batch_size", 1000),
         galaxy_batch_size=cfg.get("galaxy_batch_size", 100),
         galaxy_npix=cfg.get("galaxy_npix", 30),
@@ -1628,6 +1703,10 @@ def main():
                         help="Path to sensitivity FITS files")
     parser.add_argument("--optical-model", type=str, default=None,
                         help="Path to optical model YAML")
+    parser.add_argument("--element", type=str, default=None,
+                        choices=["grism", "prism"],
+                        help="Dispersing element (default: grism). "
+                             "Batch mode reads it from the config instead.")
     parser.add_argument("--psf-cache-dir", type=str, default=None,
                         help="Path to PSF cache directory")
     parser.add_argument("--cone-radius", type=float, default=0.6,
@@ -1740,6 +1819,7 @@ def main():
         sensitivity_dir=args.sensitivity_dir,
         optical_model_path=args.optical_model,
         psf_cache_dir=args.psf_cache_dir,
+        element=args.element,
         cone_radius=args.cone_radius,
         star_batch_size=args.star_batch_size,
         galaxy_batch_size=args.galaxy_batch_size,
