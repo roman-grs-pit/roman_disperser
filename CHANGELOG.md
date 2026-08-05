@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Prism support (`feature/prism-merge-fable`): the package now simulates
+**both** WFI dispersing elements — the G150 grism (default, unchanged
+behaviour) and the P127 prism (opt-in) — rebuilt on current `main` rather
+than merged from the frozen `prism` branch, which stays as the record of the
+original attempt.
+
+### Added
+- **`roman_disperser.elements`** — the dispersing-element registry. A
+  `DispersingElement` is a frozen bundle of the constants that differ
+  between elements (orders, band, STPSF filter map, default data-file
+  names, ECSV `BANDPASS` value); `GRISM` and `PRISM` are the two instances,
+  and grism is the default wherever an element argument is optional.
+  `validate_against_model()` **raises** on any element/optical-model
+  mismatch (wrong `optical_element`, band disagreement beyond 0.005 um,
+  undefined order) — never a warning. Host-side configuration only; nothing
+  enters jit-compiled code.
+- `build_grism_image.py`: `element:` config key and `--element` CLI flag.
+  The element drives the wavelength trim, the ECSV `BANDPASS` row filter
+  (`GRISM`/`PRISM`), per-order optical payloads, sensitivity loading, and
+  PSF-cache selection. New provenance: `OPTELEM` card in every FITS primary
+  header and `element:` in the per-pointing meta YAML.
+- Catalog band coverage is validated against the element band at setup —
+  running the prism against the grism-grid `catalog-v2` (opens at 9000 Å vs
+  the 7500 Å prism band) is now a hard error instead of silently dispersing
+  nothing below 9000 Å.
+- `generate_psf_caches.py --element`, `download_psf_caches.py --element`,
+  and an element-aware `scripts/slurm_generate_psfs.sh` (ported from the
+  prism branch).
+- `hydrate.py`: prism asset keys (`optical_model_prism`,
+  `sensitivities_prism`, `psf_prism`). **No releases are cut yet**; hydrate
+  skips them until the `roman_disperser_data` manifest carries the keys.
+- Tests: `tests/test_elements.py`; the shared conftest fixtures are
+  parametrized over both elements (disperser/galaxy machinery runs under
+  both the grism's linear and the prism's log wavelength transform); prism
+  spot-checks `TestTraceBeamPrism` and `TestSelectSourcesPrism`.
+
+### Changed
+- **Removed the module-level grism constants `pipeline.ORDERS`,
+  `pipeline.LAM_MIN`, `pipeline.LAM_MAX`** — orders and band are
+  per-element and passed explicitly. Anything still importing them fails
+  with `ImportError` (intentionally loud): `scripts/debug_dispersion_nan.py`
+  and several historical `workbench/`/`notebooks/` entries are affected and
+  deliberately not ported.
+- `pipeline.load_sensitivities` and `pipeline.select_sources_per_order`
+  take `orders` (and band) explicitly; `resolve_paths` takes `element=`.
+- `psf_model`: the three hardcoded `{'0': 'GRISM0', '1': 'GRISM1'}` maps
+  are replaced by an explicit `stpsf_filter` parameter (grism defaults via
+  `resolve_stpsf_filter`). `get_cache_filename` no longer silently maps
+  unknown orders to `ORDER<n>`; it raises. PSF payloads and cache files
+  record `stpsf_filter` (pre-existing caches load as `'unknown'`).
+- Test fixtures resolve the optical model via `roman_disperser.paths`
+  instead of hand-built `$PIXI_PROJECT_ROOT/data/...` paths (issue #24 —
+  they failed on any clean checkout).
+
+### Unchanged (deliberately)
+- The script keeps the name `build_grism_image.py` and the `grism_` output
+  filename prefix for both elements — renaming would break the
+  `roman_l2_job` drivers and archived-run comparisons for no science gain.
+- `scripts/build_star_grism_image.py` stays deleted (removed in `0881597`
+  for duplicating the sky→FPA call site); it was not resurrected from the
+  prism branch.
+- Reference data stays out of git: the prism YAML, `sensitivities_prism/`,
+  and the 18 PRISM PSF caches live in the shared vendored data directory.
+
 ## [0.13.1] - 2026-08-05
 
 The optical-model line-centering validation harness and the SSC line-grid
