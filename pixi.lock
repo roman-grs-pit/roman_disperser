@@ -5054,8 +5054,8 @@ packages:
   requires_python: '>=3.11'
 - pypi: ./
   name: roman-disperser
-  version: 0.14.0
-  sha256: acf93cbdb1d9135c6c37a61417651f0a54604487676ff4f6f7ffc8dbe2026af0
+  version: 0.14.1
+  sha256: 1706c76aeca2cef75a98908cda8f7bcbb575c216a2ddd1e64cff58b22b6ce109
   requires_dist:
   - numpy>=2.0
   - jax>=0.7

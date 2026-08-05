@@ -1,6 +1,17 @@
 # Roman Disperser
 
-JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy simulations.
+JAX-based optical model and disperser for Roman Space Telescope slitless
+spectroscopy simulations — both WFI dispersing elements: the G150 **grism**
+(default) and the P127 **prism** (opt-in via `--element prism`).
+
+## News
+
+- **2026-08-05 — v0.14.0: prism support.** The package now simulates both
+  dispersing elements; grism behaviour is unchanged. Coming from v0.10.x?
+  Two intervening releases also **changed simulated results** (GPU placement
+  and sky-projection fixes) — read
+  [Migrating to v0.14 (from v0.10)](docs/migrating-v0.10-to-v0.14.md)
+  before comparing old and new products.
 
 ## Overview
 
@@ -8,12 +19,13 @@ JAX-based optical model and disperser for Roman Space Telescope grism spectrosco
 |-----------|--------|-------------|
 | **Optical Model** (reference) | `optical_model.py` | NumPy reference implementation |
 | **Optical Model** (JAX) | `optical_model_jax.py` | JIT-compilable, vectorized implementation |
+| **Dispersing Elements** | `elements.py` | Grism/prism registry: per-element orders, band, STPSF filters, data files |
 | **PSF Model** | `psf_model.py` | STPSF grids with trilinear interpolation |
 | **Star Disperser** | `star_disperser.py` | Point sources with wavelength-dependent PSFs |
 | **Galaxy Disperser** | `galaxy_disperser.py` | Extended sources with Jacobian warping + PSF convolution |
-| **Catalog Pipeline** | `catalog.py` + `pipeline.py` + `scripts/build_grism_image.py` | Source selection, full-field grism simulation (stars + galaxies) |
+| **Catalog Pipeline** | `catalog.py` + `pipeline.py` + `scripts/build_dispersed_image.py` | Source selection, full-field dispersed-image simulation (stars + galaxies, either element) |
 | **Sérsic Profiles** | `sersic.py` | JAX/vmap Sérsic profile generator for galaxy morphologies |
-| **Reference Data** | `refdata.py` | Bundled F158 bandpass and spectral templates |
+| **Reference Data** | `refdata.py` + `paths.py` + `hydrate.py` | Vendored-data resolver and hydrator; synphot bandpasses and templates |
 
 ## Installation
 
@@ -25,7 +37,7 @@ Quick version:
 git clone git@github.com:roman-grs-pit/roman_disperser.git
 cd roman_disperser
 pixi install && pixi shell        # or: pip install -e ".[full]"
-python scripts/download_psf_caches.py
+pixi run hydrate                  # fetch vendored reference data (~6.4 GB)
 pytest -q tests -m "not slow"
 ```
 
@@ -34,13 +46,13 @@ pytest -q tests -m "not slow"
 ```python
 import jax.numpy as jnp
 from roman_disperser.optical_model import RomanOpticalModel
-from roman_disperser import optical_model_jax as omj, psf_model, star_disperser
+from roman_disperser import optical_model_jax as omj, paths, psf_model, star_disperser
 
-# Load optical model and create payloads
-model = RomanOpticalModel("data/Roman_grism_OpticalModel_v0.8.yaml")
+# Load optical model and create payloads (paths resolve the hydrated data dir)
+model = RomanOpticalModel(str(paths.optical_model_path()))
 optical_payload = omj.make_sca_payload(model, sca=5, order="1")
 psf_payload = psf_model.get_or_make_psf_payload(
-    detector="WFI05", order="1", cache_dir="data/psf_cache"
+    detector="WFI05", order="1", cache_dir=str(paths.psf_cache_dir())
 )
 
 # Create a JIT-compiled star disperser
@@ -99,8 +111,10 @@ pytest -v tests/test_psf_model.py           # PSF model tests
 ## Documentation
 
 - [Installation Guide](INSTALL.md) — Pixi/pip setup, GPU support, data files
+- [Migrating to v0.14 (from v0.10)](docs/migrating-v0.10-to-v0.14.md) — What changed across 0.11–0.14, including the results-changing fixes
 - [Optical Model API](docs/optical_model.md) — JAX optical model functions and examples
-- [Grism Pipeline](docs/grism_pipeline.md) — User guide for `build_grism_image.py` (stars + galaxies)
+- [Dispersed-Image Pipeline](docs/grism_pipeline.md) — User guide for `build_dispersed_image.py` (stars + galaxies, either element)
+- [Element Support](docs/element_support.md) — Grism/prism status per module and script
 - [Disperser Design](docs/disperser_design.md) — Legacy disperser implementation details
 - [JIT Compilation Strategy](docs/jit_compilation.md) — Closure pattern for non-traceable payloads
 - [STPSF Quick Reference](docs/stpsf.md) — Roman WFI grism PSF generation
@@ -125,6 +139,12 @@ pytest -v tests/test_psf_model.py           # PSF model tests
 - `psf_analysis.ipynb` — PSF characterization and enclosed energy
 - `psf_interpolation_validation.ipynb` — Grid optimization and interpolation accuracy
 - `psf_allsca_validation.ipynb` — All 18 SCAs × 2 orders validation
+- `sensitivities.ipynb`, `g0v-star.ipynb` — Sensitivity-curve and stellar-SED explorations
+
+The demo notebooks predate prism support and demonstrate the grism (the
+default element); see `notebooks/README.md` for status notes and
+`notebooks/archive/` for retired notebooks that no longer track the current
+API.
 
 ## Project Structure
 
@@ -134,6 +154,7 @@ roman_disperser/
 │   ├── optical_model.py           # Reference NumPy model
 │   ├── optical_model_jax.py       # JAX functional model
 │   ├── optical_model_utils.py     # Coordinate system utilities
+│   ├── elements.py                # Dispersing-element registry (grism / prism)
 │   ├── disperser.py               # Legacy 2D+1D galaxy disperser
 │   ├── star_disperser.py          # Star disperser with PSF deposition
 │   ├── galaxy_disperser.py        # Galaxy disperser (Jacobian warp + PSF convolution)
@@ -142,27 +163,30 @@ roman_disperser/
 │   ├── sersic.py                  # Sérsic profile generator (JAX/vmap)
 │   ├── catalog.py                 # Source selection for detector fields
 │   ├── pipeline.py                # Shared pipeline utilities (I/O, batching, sensitivity)
+│   ├── paths.py                   # Vendored-data directory resolver
+│   ├── hydrate.py                 # Reference-data hydrator (roman-disperser-hydrate)
 │   ├── refdata.py                 # Bundled synphot reference data
 │   └── demo_utils.py              # Synthetic galaxy/spectrum helpers
 ├── tests/
 ├── notebooks/
 │   ├── galaxy/                    # Galaxy + star demo notebooks
 │   ├── psf/                       # PSF and star notebooks
-│   ├── demos/                     # Legacy galaxy demo notebooks
-│   └── archive/                   # Legacy notebooks
+│   └── archive/                   # Retired notebooks (no longer track the current API)
 ├── scripts/
-│   ├── build_grism_image.py       # Unified grism pipeline (stars + galaxies)
-│   ├── download_psf_caches.py     # Download pre-generated PSF caches
-│   ├── download_source_catalog.py # Download unified source catalog
-│   ├── generate_psf_caches.py     # Regenerate PSF caches from STPSF
+│   ├── build_dispersed_image.py   # Unified pipeline, either element (stars + galaxies)
+│   ├── build_grism_image.py       # Deprecated forwarding alias for the above
+│   ├── generate_psf_caches.py     # Regenerate PSF caches from STPSF (--element)
+│   ├── wrap_with_romanisim.py     # Wrap products through romanisim to L2 ASDF
 │   ├── example_grism_config.yaml  # Documented batch pipeline config
-├── data/
+├── data/                          # Hydrated reference data (gitignored except stars/)
 │   ├── Roman_grism_OpticalModel_v0.8.yaml
+│   ├── Roman_prism_OpticalModel_v0.8.yaml
 │   ├── catalogs/                  # Unified source catalog (Parquet + Zarr)
-│   ├── sensitivities/             # Per-SCA sensitivity curves
-│   ├── stars/                     # Legacy star catalog and SED templates
-│   ├── synphot/                   # Bundled F158/F184 bandpass and templates
-│   └── psf_cache/                 # Pre-generated PSF grids (36 files, ~4.3 GB)
+│   ├── sensitivities/             # Per-SCA grism sensitivity curves
+│   ├── sensitivities_prism/       # Per-SCA prism sensitivity curves
+│   ├── stars/                     # Star catalog and SED templates (in-repo)
+│   ├── synphot/                   # F158/F184 bandpass and templates
+│   └── psf_cache/                 # PSF grids, both elements (54 files, ~6.0 GB)
 ├── docs/
 ├── pixi.toml
 └── pyproject.toml

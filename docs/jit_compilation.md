@@ -38,7 +38,9 @@ output = disperse_jit(image, x0, y0, dx, dy, spec, lam0, dlam, output)
 
 ## Single Galaxy Example
 
-From the `single_galaxy_demo.ipynb` notebook:
+From the `single_galaxy_demo.ipynb` notebook (now in `notebooks/archive/` —
+it demos the legacy `disperser.py` module, but the closure pattern shown here
+is unchanged and used throughout the package):
 
 ```python
 # Create payload for this SCA and order

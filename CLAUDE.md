@@ -13,7 +13,7 @@ JAX-based optical model and disperser for Roman Space Telescope slitless spectro
 - **Galaxy disperser** (`galaxy_disperser.py`): Extended source dispersion with Jacobian-based shape warping + PSF convolution
 - **PSF model** (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation
 - **Sérsic profiles** (`sersic.py`): JAX/vmap Sérsic profile generator for galaxy morphologies
-- **Pipeline** (`pipeline.py`): Shared utilities for grism simulation (I/O, batching, sensitivity loading)
+- **Pipeline** (`pipeline.py`): Shared utilities for dispersed-image simulation (I/O, batching, sensitivity loading)
 - **Unified pipeline script** (`scripts/build_dispersed_image.py`): Full-field dispersed-image simulation (either element) from a unified star+galaxy catalog. `scripts/build_grism_image.py` is a deprecated forwarding alias.
 
 ## Design Documents
@@ -27,6 +27,7 @@ JAX-based optical model and disperser for Roman Space Telescope slitless spectro
  - @docs/galaxy_dispersion_plan.md : Design for the new galaxy disperser using Jacobian-based shape warping + PSF convolution.
  - @docs/grism_pipeline.md : User guide for `scripts/build_dispersed_image.py` (unified stars+galaxies pipeline, output format, config, catalog).
  - @docs/element_support.md : Status table of grism/prism support per module and script, including the deliberate non-ports and the reference-data publication state.
+ - @docs/migrating-v0.10-to-v0.14.md : User-facing migration guide across 0.11-0.14, including the results-changing placement/RNG fixes.
 
 ## Commands
 
@@ -189,7 +190,7 @@ The unified source catalog format is documented in `data/catalogs/README.md`.
 
 ### JIT Disk Cache
 
-The unified pipeline (`build_grism_image.py`) sets `JAX_COMPILATION_CACHE_DIR=/tmp/jax-cache-grism` to persist compiled functions across runs. This avoids recompilation (~10s/fn) on subsequent runs (~2.5s/fn from cache). JIT functions are built per-SCA and released after processing to keep memory bounded.
+The unified pipeline (`build_dispersed_image.py`) sets `JAX_COMPILATION_CACHE_DIR=/tmp/jax-cache-grism` to persist compiled functions across runs. This avoids recompilation (~10s/fn) on subsequent runs (~2.5s/fn from cache). JIT functions are built per-SCA and released after processing to keep memory bounded.
 
 ## Coding Guidelines
 
