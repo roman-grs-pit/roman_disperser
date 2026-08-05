@@ -27,19 +27,27 @@ from roman_disperser import (
 )
 from roman_disperser.optical_model import RomanOpticalModel
 from roman_disperser.pipeline import (
-    DETECTOR_SIZE, ORDERS, LAM_MIN, LAM_MAX,
+    DETECTOR_SIZE,
     resolve_paths, cone_search, select_sources_per_order,
     load_sensitivities,
     make_batched_galaxy_fori, disperse_batched_galaxies,
 )
+from roman_disperser.elements import GRISM
 import roman_disperser.optical_model_jax as omj
 
-# -- Add parent so we can import build_grism_image helpers --
+# -- Add parent so we can import build_dispersed_image helpers --
 import sys
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2] / "scripts"))
-from build_grism_image import (
+from build_dispersed_image import (
     load_catalog, validate_catalog, trim_wavelength_grid, load_galaxy_seds,
 )
+
+# Grism-only benchmark (as originally run, 2026-03-23). These lived on
+# pipeline as module constants until the prism merge moved them to the
+# element records.
+ORDERS = GRISM.orders
+LAM_MIN = GRISM.lam_min
+LAM_MAX = GRISM.lam_max
 
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -73,9 +81,10 @@ def main():
     print(f"  {len(meta)} sources ({n_stars} stars, {n_galaxies} galaxies) "
           f"in {time.time() - t0:.2f}s")
 
-    validate_catalog(meta, store, wavelengths_full)
+    validate_catalog(meta, store, wavelengths_full, GRISM)
 
-    wavelengths_ang, wl_mask, dlam_angstroms = trim_wavelength_grid(wavelengths_full)
+    wavelengths_ang, wl_mask, dlam_angstroms = trim_wavelength_grid(
+        wavelengths_full, GRISM)
     wavelengths_um = (wavelengths_ang / 1e4).astype(np.float32)
     wavelengths_jax = jnp.array(wavelengths_um)
     n_wavelength = len(wavelengths_um)
@@ -100,7 +109,8 @@ def main():
     galaxy_npix_os = GALAXY_NPIX * oversample
 
     # Sensitivity
-    sensitivities = load_sensitivities(sensitivity_dir, SCA, wavelengths_um)
+    sensitivities = load_sensitivities(sensitivity_dir, SCA, wavelengths_um,
+                                       ORDERS)
     sens = sensitivities[ORDER]
 
     print(f"  PSF oversample: {oversample}x, "
@@ -135,7 +145,9 @@ def main():
         order: omj.make_sca_payload(model, sca=SCA, order=order)
         for order in ORDERS
     }
-    order_masks, any_mask = select_sources_per_order(optical_payloads, xfpa, yfpa)
+    order_masks, any_mask = select_sources_per_order(optical_payloads, xfpa,
+                                                     yfpa, ORDERS,
+                                                     LAM_MIN, LAM_MAX)
     omask = order_masks[ORDER]
 
     # Galaxy subset for this order
