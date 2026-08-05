@@ -43,14 +43,37 @@ original attempt.
   parametrized over both elements (disperser/galaxy machinery runs under
   both the grism's linear and the prism's log wavelength transform); prism
   spot-checks `TestTraceBeamPrism` and `TestSelectSourcesPrism`.
+- `build_source_catalog.py`: default SED grid widened to **7500–21000 Å**, a
+  superset of both element bands (grafted from the parallel
+  `feature/prism-merge-opus` attempt). The Galacticus slice is *derived* from
+  the requested range and asserted against the grid rather than hardcoded;
+  `--wl-min`/`--wl-max` are exposed (`--wl-min 9000` reproduces the grism-era
+  `catalog-v2` grid exactly). Same derivation in `verify_source_catalog.py`;
+  `tests/test_build_source_catalog.py` pins it.
+- `wrap_with_romanisim.py`: the romanisim bandpass is now resolved **per
+  file** from the `OPTELEM` header card (explicit `--bandpass` overrides;
+  `--element` covers pre-v0.13 products without the card; `GRISM` remains the
+  last-resort default), and the input glob accepts both `grism_*` and
+  `prism_*` product prefixes (`--element` narrows, `--prefix` overrides for
+  custom `output_prefix` runs).
+- `magnitude_cutoff.py --element prism` **raises** `NotImplementedError`
+  naming the physics blocker (its SNR is per resolution element and
+  `R_GRISM = 461` is the grism's resolving power), instead of silently
+  returning a grism answer; its sensitivity dir now resolves through
+  `paths.sensitivity_dir()` (honors `$ROMAN_DISPERSER_DATA`).
+- **`docs/element_support.md`** — status table of grism/prism support per
+  module and script, including the deliberate non-ports and the
+  reference-data publication state.
 
 ### Changed
 - **Removed the module-level grism constants `pipeline.ORDERS`,
   `pipeline.LAM_MIN`, `pipeline.LAM_MAX`** — orders and band are
   per-element and passed explicitly. Anything still importing them fails
-  with `ImportError` (intentionally loud): `scripts/debug_dispersion_nan.py`
-  and several historical `workbench/`/`notebooks/` entries are affected and
-  deliberately not ported.
+  with `ImportError` (intentionally loud). `scripts/debug_dispersion_nan.py`
+  and `workbench/20260323-batch-tuning/bench_galaxy_batch.py` were repaired
+  against the new API (both stay grism-only by declaration, taking their
+  constants from `elements.GRISM`); remaining historical `notebooks/`
+  entries are deliberately not ported.
 - `pipeline.load_sensitivities` and `pipeline.select_sources_per_order`
   take `orders` (and band) explicitly; `resolve_paths` takes `element=`.
 - `psf_model`: the three hardcoded `{'0': 'GRISM0', '1': 'GRISM1'}` maps
