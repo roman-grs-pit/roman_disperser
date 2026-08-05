@@ -51,14 +51,14 @@ lives inside your environment, so invoke it through that environment:
 - **Pixi** — run through `pixi run` (data lands in `<repo>/data` automatically,
   no configuration needed):
   ```bash
-  pixi run hydrate          # all reference data (~4.5 GB)
+  pixi run hydrate          # all reference data, both elements (~6.4 GB)
   ```
   (Equivalently, call `roman-disperser-hydrate` directly from inside `pixi shell`.)
 - **pip** — with your venv/conda env activated, set a stable data dir *first* so
   the hydrator and the runtime agree regardless of your working directory:
   ```bash
   export ROMAN_DISPERSER_DATA=~/roman_disperser_data   # any path; add to ~/.bashrc
-  roman-disperser-hydrate                              # all reference data (~4.5 GB)
+  roman-disperser-hydrate                              # all reference data (~6.4 GB)
   ```
 
 Fetch only part of it (e.g. on a laptop) by adding flags — under pixi prefix with
@@ -147,12 +147,19 @@ wheel, and the same data backs pixi and pip installs.
 
 | Data | Path under data dir | Size | Release tag |
 |------|---------------------|------|-------------|
-| Optical model | `Roman_grism_OpticalModel_v0.8.yaml` | 28 KB | `optical-model-*` |
-| Sensitivity curves | `sensitivities/` | 1.9 MB | `sensitivities-*` |
+| Optical model (grism) | `Roman_grism_OpticalModel_v0.8.yaml` | 28 KB | `optical-model-*` |
+| Optical model (prism) | `Roman_prism_OpticalModel_v0.8.yaml` | 11 KB | `optical-model-prism-*` |
+| Sensitivity curves (grism) | `sensitivities/` | 1.9 MB | `sensitivities-*` |
+| Sensitivity curves (prism) | `sensitivities_prism/` | 0.7 MB | `sensitivities-prism-*` |
 | Synphot reference (F158/F184 + templates) | `synphot/` | 88 KB | `synphot-*` |
 | Source catalog | `catalogs/` | 155 MB | `catalog-*` |
-| PSF caches | `psf_cache/` | 4.3 GB | `psf-*` |
+| PSF caches (both elements) | `psf_cache/` | 6.0 GB | `psf-*`, `psf-prism-*` |
 | STPSF reference data | `~/data/stpsf-data` | 1-2 GB | (only for PSF regeneration) |
+
+Grism-only work can skip the prism assets:
+`--only optical_model,sensitivities,synphot,psf,catalog` (~4.5 GB). Note the
+vendored catalog is currently grism-only (`catalog-v2`, 9000 Å floor) — prism
+runs need a 7500 Å-floor catalog; see `docs/element_support.md`.
 
 `data/stars/` (star catalog, ~12 MB) is a catalog-build input and stays in the
 repo. STPSF reference data is **not** fetched by `roman-disperser-hydrate` — it
@@ -177,7 +184,7 @@ resolve from the same place, so once set, hydrated data is found automatically.
 ### Hydrating
 
 ```bash
-roman-disperser-hydrate                                              # everything (~4.5 GB)
+roman-disperser-hydrate                                              # everything (~6.4 GB)
 roman-disperser-hydrate --only optical_model,sensitivities,synphot   # essentials (~2 MB)
 roman-disperser-hydrate --only psf --sca 1 2                         # a couple of PSF SCAs
 roman-disperser-hydrate --dry-run                                    # show what would be fetched
@@ -228,11 +235,14 @@ Once installed and reference data hydrated:
 - **Batch pipeline** — provide a config YAML (simulation parameters) and an
   ECSV pointing table (APT format):
   ```bash
-  python scripts/build_grism_image.py --generate-config my_config.yaml
+  python scripts/build_dispersed_image.py --generate-config my_config.yaml
   # Edit my_config.yaml (SCAs, output directory, batch sizes, etc.)
-  python scripts/build_grism_image.py --config my_config.yaml --pointings pointings.ecsv
+  python scripts/build_dispersed_image.py --config my_config.yaml --pointings pointings.ecsv
   ```
-  See `scripts/example_grism_config.yaml` and `scripts/example_pointings.ecsv`
-  for examples, and `docs/grism_pipeline.md` for details. The batch pipeline
-  processes all 18 SCAs per pointing and is substantially faster on a GPU.
+  The grism is the default; add `element: prism` to the config (or
+  `--element prism`) for the prism. See `scripts/example_grism_config.yaml`
+  and `scripts/example_pointings.ecsv` for examples, and
+  `docs/grism_pipeline.md` for details. The batch pipeline processes all 18
+  SCAs per pointing and is substantially faster on a GPU.
+  (`build_grism_image.py` is the deprecated pre-v0.14 name and still works.)
 

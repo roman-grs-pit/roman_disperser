@@ -5,7 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] - 2026-08-05
+
+Documentation release; no code or behaviour change.
+
+### Added
+- **`docs/migrating-v0.10-to-v0.14.md`** — user-facing migration guide across
+  0.11–0.14: the results-changing fixes (GPU TF32 placement, gnomonic
+  projection, per-SCA RNG keys), the loud API breaks
+  (`pipeline.ORDERS`/`LAM_MIN`/`LAM_MAX`, float64-only `get_fpa_pos`), the
+  renames and new element knobs, and a migration checklist. Linked from a new
+  **News** section at the top of the README.
+
+### Changed
+- README, INSTALL.md, and CLAUDE.md refreshed for v0.14 reality: both
+  dispersing elements in the overview, `build_dispersed_image.py` naming,
+  hydrate-based install (the prism assets are published, full hydrate is now
+  ~6.4 GB), prism rows in the reference-data table, and corrected project
+  structure (elements/paths/hydrate modules, both optical-model YAMLs).
+- `notebooks/README.md` rewritten as an accurate index with status notes
+  (all current notebooks demonstrate the grism, the default element; prism
+  runs go through the batch pipeline).
+
+### Removed
+- `notebooks/demos/` — its four notebooks (`single_galaxy_demo`,
+  `multi_galaxy_demo`, `multi_galaxy_demo_gpu`, `gpu_scaling_analysis`)
+  moved to `notebooks/archive/`: they demo the legacy `disperser.py` module,
+  replaced in production by `galaxy_disperser.py`.
+
 ## [0.14.0] - 2026-08-05
+
+> Upgrading from v0.10.x? See **`docs/migrating-v0.10-to-v0.14.md`** — two of
+> the intervening releases (0.11.0, 0.12.0) changed simulated source
+> placement, and 0.13.0 changed ISIM noise realisations.
 
 Prism support (`feature/prism-merge-fable`): the package now simulates
 **both** WFI dispersing elements — the G150 grism (default, unchanged
