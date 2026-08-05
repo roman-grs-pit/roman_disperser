@@ -14,7 +14,7 @@ JAX-based optical model and disperser for Roman Space Telescope slitless spectro
 - **PSF model** (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation
 - **Sérsic profiles** (`sersic.py`): JAX/vmap Sérsic profile generator for galaxy morphologies
 - **Pipeline** (`pipeline.py`): Shared utilities for grism simulation (I/O, batching, sensitivity loading)
-- **Unified pipeline script** (`scripts/build_dispersed_image.py`): Full-field dispersed-image simulation (either element) from a unified star+galaxy catalog. `scripts/build_dispersed_image.py` is a deprecated forwarding alias.
+- **Unified pipeline script** (`scripts/build_dispersed_image.py`): Full-field dispersed-image simulation (either element) from a unified star+galaxy catalog. `scripts/build_grism_image.py` is a deprecated forwarding alias.
 
 ## Design Documents
 
@@ -26,6 +26,7 @@ JAX-based optical model and disperser for Roman Space Telescope slitless spectro
  - @docs/psf_phase1_plan.md : PSF data model implementation plan with validation results.
  - @docs/galaxy_dispersion_plan.md : Design for the new galaxy disperser using Jacobian-based shape warping + PSF convolution.
  - @docs/grism_pipeline.md : User guide for `scripts/build_dispersed_image.py` (unified stars+galaxies pipeline, output format, config, catalog).
+ - @docs/element_support.md : Status table of grism/prism support per module and script, including the deliberate non-ports and the reference-data publication state.
 
 ## Commands
 

@@ -216,7 +216,7 @@ Simulation parameters and data paths (see `scripts/example_grism_config.yaml`):
 | `seed` | int | *(required)* | RNG seed for reproducibility |
 | `element` | str | `grism` | Dispersing element: `grism` or `prism`. Sets the orders, band, default data paths, STPSF filters, and which `BANDPASS` rows of the pointing table are processed. The optical model is validated against it at load time (band/orders/`optical_element` mismatch raises). |
 | `scas` | `"all"` or list[int] | `"all"` | SCAs to simulate (1-18) |
-| `output_prefix` | str | element name | Leading tag on product filenames (`<prefix>_<dirname>_detSCA05.fits`). Historical runs and `roman_l2_job` globs use `grism` |
+| `output_prefix` | str | element name | Leading tag on product filenames (`<prefix>_<dirname>_detSCA05.fits`). Historical runs use `grism` for both elements; `wrap_with_romanisim.py` — the consumer that globs these products — handles either prefix and reads `OPTELEM` per file |
 | `star_batch_size` | int | 1000 | Stars per JIT batch |
 | `galaxy_batch_size` | int | 100 | Galaxies per JIT batch |
 | `galaxy_npix` | int | 30 | Sersic image size in native pixels |
@@ -392,4 +392,8 @@ Still hardcoded:
 - **Normalization band:** F158 (`roman, wfi, f158`)
 - **Detector size:** 4088 x 4088 pixels
 - **Galaxy morphology:** Sersic profiles generated at `oversample` x resolution
-- **Output naming:** the `grism_` filename prefix is kept for both elements (downstream `roman_l2_job` drivers and archived-run comparisons depend on it); products are distinguished by the `OPTELEM` header and `element:` meta field
+
+(Output naming is *not* hardcoded: the filename prefix defaults to the element
+name and is overridable with `output_prefix` — see the config table. Products
+are authoritatively distinguished by the `OPTELEM` header and `element:` meta
+field, which is what `wrap_with_romanisim.py` reads.)

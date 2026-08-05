@@ -1244,7 +1244,8 @@ element: grism
 # Leading tag on every product filename: <prefix>_<dirname>_detSCA05.fits.
 # Default: the element name ("grism" / "prism"). Set explicitly to pin a
 # different tag (e.g. output_prefix: grism to mimic historical prism-branch
-# naming). Downstream consumers that glob grism_* (roman_l2_job) care.
+# naming). wrap_with_romanisim.py globs both element prefixes by default;
+# pass it --prefix when overriding this.
 # output_prefix: grism
 
 # -- Detectors ---------------------------------------------------------------
