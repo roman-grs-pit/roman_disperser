@@ -17,6 +17,34 @@ Quick orientation:
 | v0.13.1 | Line-centering validation harness | No |
 | v0.14.0 | Prism support (both WFI dispersing elements) | No (grism unchanged) |
 
+## What to do (the short version)
+
+Five steps migrate a working v0.10 setup. Everything after this section is
+the detail behind them — read it when a step bites, not before.
+
+1. **Re-hydrate reference data**: `pixi run hydrate` (or
+   `roman-disperser-hydrate`). Not optional: since v0.14.2 the optical model
+   is resolved from the data dir's `data-versions.lock`, and a data dir
+   hydrated before the lock existed fails loudly until re-hydrated. (Safe on
+   an up-to-date dir — a plain re-run never changes installed data; see
+   INSTALL.md "Staying current".)
+2. **Fix the loud breaks**, if your code hits them: replace
+   `pipeline.ORDERS`/`LAM_MIN`/`LAM_MAX` imports with `elements.GRISM`
+   fields, and don't wrap RA/Dec in `jnp.array()` before `get_fpa_pos`
+   (float64 host arrays only). Both fail with clear exceptions, so a test
+   run finds every site.
+3. **Rename** `build_grism_image.py` invocations to
+   `build_dispersed_image.py`. The old name still works with a
+   `FutureWarning`, so this can wait — but not forever.
+4. **Re-baseline**: do not compare v0.14 products against v0.10-era ones.
+   Source positions moved (GPU TF32 and projection fixes) and every ISIM
+   noise realisation changed. Re-run your own regression baselines on v0.14.
+5. If you consume products from **mixed code versions**, key comparisons on
+   the `CODEVER`/`GITSHA` header cards (present since v0.13.0).
+
+Prism users have one extra step: point `catalog_dir` at a 7500 Å-floor
+catalog (the vendored `catalog-v2` is grism-only; see "Reference data").
+
 ## Science changes: results differ from v0.10
 
 These are corrections, not regressions — v0.14 places sources more accurately
@@ -149,21 +177,7 @@ code. Two consequences for old setups:
   records the version), or declare one explicitly via the
   `optical_model_version:` config key / `--optical-model-version` flag.
 - The lock **pins** your data: upstream publishing a new delivery changes
-  nothing until you re-run hydrate. Re-running is cheap — up-to-date assets
-  are skipped, and lock and contents are updated together.
-
-## Checklist
-
-For a v0.10-era driver or analysis moving to v0.14:
-
-1. Replace `pipeline.ORDERS`/`LAM_MIN`/`LAM_MAX` imports with
-   `elements.GRISM` fields (loud `ImportError` if you miss one).
-2. Make sure nothing wraps RA/Dec in `jnp.array()` before `get_fpa_pos`
-   (loud `TypeError` if it does).
-3. Rename `build_grism_image.py` invocations to `build_dispersed_image.py`
-   (or accept the `FutureWarning` for now).
-4. Re-hydrate reference data; re-run your own regression baselines rather
-   than comparing against pre-v0.13 products (positions and ISIM noise both
-   moved, for the reasons above).
-5. If you consume products from mixed code versions, key your comparisons on
-   the `CODEVER`/`GITSHA` cards (present since v0.13.0).
+  nothing on your machine, and a plain re-hydrate stays at the pinned
+  versions (it only repairs or completes the installation). Upgrading is
+  explicit — `roman-disperser-hydrate --update` moves the pin to the current
+  manifest and re-installs what changed. See INSTALL.md "Staying current".

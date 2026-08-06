@@ -188,6 +188,7 @@ roman-disperser-hydrate                                              # everythin
 roman-disperser-hydrate --only optical_model,sensitivities,synphot   # essentials (~2 MB)
 roman-disperser-hydrate --only psf --sca 1 2                         # a couple of PSF SCAs
 roman-disperser-hydrate --dry-run                                    # show what would be fetched
+roman-disperser-hydrate --update                                     # upgrade pinned versions (see below)
 ```
 
 Under pixi, invoke these as `pixi run hydrate …` (or run
@@ -209,16 +210,24 @@ roman-disperser-hydrate --manifest <git-ref>               # use a pinned manife
 
 ### Staying current
 
-The data directory is **pinned by its lock**: the versions in
-`<data>/data-versions.lock` are what the code uses — in particular, the
-optical-model delivery loaded at run time is resolved from the lock (see
-`docs/element_support.md`) — and they do not float when upstream publishes a
-new release. To pick up new deliveries, re-run `roman-disperser-hydrate`:
-assets whose installed version already matches the current manifest are
-skipped, anything the manifest moved is re-installed, and the lock always
-records exactly what is on disk. Every pipeline product also records the
-delivery it used (`OPTMODEL` FITS card, `optical_model` in the meta YAML), so
-a run stays auditable even after the data dir moves on.
+**Re-running `roman-disperser-hydrate` on an existing data dir never changes
+your data.** The versions are pinned by `<data>/data-versions.lock`, and a
+plain re-run reuses them: it fills in anything missing (a deleted file, a
+PSF SCA you skipped, a newly published asset) but never upgrades an
+installed asset, so a mistaken re-hydrate is harmless.
+
+Upgrading to newer deliveries is an explicit choice:
+
+```bash
+roman-disperser-hydrate --update      # move the pin to the current manifest
+```
+
+`--update` re-installs only the assets whose version actually moved and
+rewrites the lock to match, so the lock always describes what is on disk.
+The code reads the lock at run time (the optical-model delivery is resolved
+from it — see `docs/element_support.md`), and every pipeline product records
+the delivery it used (`OPTMODEL` FITS card, `optical_model` in the meta
+YAML), so an upgrade is always visible in your provenance.
 
 ### Regenerating from scratch
 

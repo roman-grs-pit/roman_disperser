@@ -12,9 +12,16 @@ Version selection follows the manifest/lock model (see
 * ``--lock FILE``     install exactly the versions pinned in ``FILE``.
 * ``--manifest REF``  use the manifest at that git ref of the data repo
   (tag/sha/branch) for reproducible pins; default is the current manifest.
-* neither             use the current remote manifest, falling back to the
-  versions baked in here if the remote is unavailable (e.g. before it is
-  published).
+* ``--update``        resolve from the current remote manifest even when the
+  destination's own lock pins older versions — the one way a plain re-run
+  can move already-installed data.
+* neither             an already-hydrated dir reuses its own
+  ``data-versions.lock``: the run repairs or completes the installation at
+  the pinned versions (assets the lock does not know yet — e.g. newly
+  published ones — come from the manifest) but never upgrades, so a casual
+  re-hydrate cannot silently change science data. A fresh dir uses the
+  current remote manifest, falling back to the versions baked in here if
+  the remote is unavailable.
 
 Every run writes the resolved versions to ``<dest>/data-versions.lock`` (merged
 with any existing lock), so producing a reproducible pin is automatic.
@@ -151,9 +158,10 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
     which are read by name).
     """
     out = base / asset.subdir
-    files = list_release_files(tag)
 
     if asset.extract:
+        # Up-to-date check BEFORE any network call, so a pinned re-hydrate of
+        # an installed asset touches nothing remote.
         present = asset.done_marker and (out / asset.done_marker).exists()
         if present and locked_tag == tag and not force:
             print(f"    up to date ({tag} per lock; {asset.done_marker} exists)")
@@ -161,6 +169,7 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
         if present and locked_tag != tag:
             have = locked_tag or "an unrecorded version"
             print(f"    installed contents are {have}, not {tag}; reinstalling")
+        files = list_release_files(tag)
         if dry_run:
             print(f"    would download + extract {len(files)} archive(s) -> {out}")
             return
@@ -177,6 +186,7 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
                 tmp.unlink(missing_ok=True)
         return
 
+    files = list_release_files(tag)
     if asset.sca_filter:
         files = _filter_sca(files, sca)
     if dry_run:
@@ -232,6 +242,11 @@ def main(argv=None):
                         help="manifest git ref of the data repo for pinned, "
                         "reproducible versions (default: current)")
     parser.add_argument("--lock", help="install exact versions from this lock file")
+    parser.add_argument("--update", action="store_true",
+                        help="resolve versions from the current manifest even if "
+                        "the data dir's own lock pins older ones; without this, "
+                        "a re-hydrate reuses the pinned versions and never "
+                        "upgrades installed assets")
     parser.add_argument("--force", action="store_true",
                         help="re-download files that already exist")
     parser.add_argument("--dry-run", action="store_true",
@@ -248,10 +263,24 @@ def main(argv=None):
     else:
         which = list(ASSETS)
 
-    versions, source = resolve_manifest(args.lock, args.manifest)
+    locked = read_lock(base)
+    if args.lock or args.manifest or args.update or not locked:
+        versions, source = resolve_manifest(args.lock, args.manifest)
+    else:
+        # Already-hydrated dir, no explicit version request: stay pinned to
+        # its own lock. Repair or complete the installation at those
+        # versions; consult the manifest only for assets the lock does not
+        # know yet (e.g. newly published ones). Upgrades are opt-in
+        # (--update), so a casual re-hydrate can never move science data.
+        versions = dict(locked)
+        source = f"{LOCK_NAME} (pinned; --update to move to current versions)"
+        if any(k not in versions for k in which):
+            manifest_versions, _ = resolve_manifest(None, None)
+            for k in which:
+                if k not in versions and k in manifest_versions:
+                    versions[k] = manifest_versions[k]
     print(f"Hydrating {which} into {base}  (versions from {source})")
 
-    locked = read_lock(base)
     installed = {}
     for key in which:
         tag = versions.get(key)

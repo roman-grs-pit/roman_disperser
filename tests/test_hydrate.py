@@ -130,12 +130,16 @@ def test_hydrate_asset_downloads_to_destination(tmp_path, monkeypatch):
     assert (base / "Roman_grism_OpticalModel_v0.8.yaml").read_bytes() == b"payload"
 
 
+def _raiser(msg):
+    def fail(*a, **k):
+        raise AssertionError(msg)
+    return fail
+
+
 def test_extract_asset_up_to_date_skips(tmp_path, monkeypatch):
-    # Marker present AND lock agrees with the resolved tag -> nothing fetched.
-    monkeypatch.setattr(
-        hydrate, "list_release_files",
-        lambda tag: [("sensitivities.tar.gz", "file:///nonexistent")],
-    )
+    # Marker present AND lock agrees with the resolved tag -> nothing fetched,
+    # not even the release listing (the check precedes any network call).
+    monkeypatch.setattr(hydrate, "list_release_files", _raiser("network hit"))
     base = tmp_path / "data"
     asset = hydrate.ASSETS["sensitivities"]
     (base / asset.subdir).mkdir(parents=True)
@@ -205,6 +209,83 @@ def test_main_lock_matches_contents_after_manifest_bump(tmp_path, monkeypatch):
     assert (base / asset.subdir / asset.done_marker).read_text() == "v2 contents"
     lock = json.loads((base / hydrate.LOCK_NAME).read_text())
     assert lock["sensitivities"] == "sensitivities-v2"
+
+
+def test_main_plain_rehydrate_is_pinned_and_offline(tmp_path, monkeypatch):
+    # A hydrated dir re-run with no version flags stays at its locked
+    # versions: the manifest is never consulted, nothing is fetched, and the
+    # lock is unchanged — even if the remote manifest has moved on. This is
+    # the "a mistaken re-hydrate must not move science data" guarantee.
+    monkeypatch.setattr(hydrate, "resolve_manifest", _raiser("manifest consulted"))
+    monkeypatch.setattr(hydrate, "list_release_files", _raiser("network hit"))
+    base = tmp_path / "data"
+    asset = hydrate.ASSETS["sensitivities"]
+    (base / asset.subdir).mkdir(parents=True)
+    (base / asset.subdir / asset.done_marker).write_text("v1 contents")
+    write_lock(base, {"sensitivities": "sensitivities-v1"})
+
+    rc = main(["--dest", str(base), "--only", "sensitivities"])
+
+    assert rc == 0
+    assert (base / asset.subdir / asset.done_marker).read_text() == "v1 contents"
+    lock = json.loads((base / hydrate.LOCK_NAME).read_text())
+    assert lock == {"sensitivities": "sensitivities-v1"}
+
+
+def test_main_update_flag_moves_to_manifest(tmp_path, monkeypatch):
+    # --update is the explicit opt-in: versions come from the manifest, the
+    # changed asset is re-installed, and the lock is re-pinned.
+    url = _make_tarball(tmp_path, "sens.tar.gz",
+                        {"sensitivity_map.yaml": "v2 contents"})
+    monkeypatch.setattr(
+        hydrate, "resolve_manifest",
+        lambda *a, **k: ({"sensitivities": "sensitivities-v2"}, "manifest:current"),
+    )
+    monkeypatch.setattr(hydrate, "list_release_files",
+                        lambda tag: [("sens.tar.gz", url)])
+    base = tmp_path / "data"
+    asset = hydrate.ASSETS["sensitivities"]
+    (base / asset.subdir).mkdir(parents=True)
+    (base / asset.subdir / asset.done_marker).write_text("v1 contents")
+    write_lock(base, {"sensitivities": "sensitivities-v1"})
+
+    rc = main(["--dest", str(base), "--only", "sensitivities", "--update"])
+
+    assert rc == 0
+    assert (base / asset.subdir / asset.done_marker).read_text() == "v2 contents"
+    lock = json.loads((base / hydrate.LOCK_NAME).read_text())
+    assert lock["sensitivities"] == "sensitivities-v2"
+
+
+def test_main_pinned_completes_missing_assets(tmp_path, monkeypatch):
+    # Pinned mode still installs assets the lock does not know yet (a newly
+    # published asset, or a widened --only) at manifest versions, while
+    # leaving pinned assets untouched at their locked versions.
+    src = tmp_path / "om.yaml"
+    src.write_text("model")
+    monkeypatch.setattr(
+        hydrate, "resolve_manifest",
+        lambda *a, **k: ({"optical_model": "optical-model-v0.9",
+                          "sensitivities": "sensitivities-v9"}, "manifest:current"),
+    )
+    monkeypatch.setattr(
+        hydrate, "list_release_files",
+        lambda tag: [("Roman_grism_OpticalModel_v0.9.yaml", src.as_uri())],
+    )
+    base = tmp_path / "data"
+    asset = hydrate.ASSETS["sensitivities"]
+    (base / asset.subdir).mkdir(parents=True)
+    (base / asset.subdir / asset.done_marker).write_text("v1 contents")
+    write_lock(base, {"sensitivities": "sensitivities-v1"})
+
+    rc = main(["--dest", str(base), "--only", "optical_model,sensitivities"])
+
+    assert rc == 0
+    assert (base / "Roman_grism_OpticalModel_v0.9.yaml").read_text() == "model"
+    assert (base / asset.subdir / asset.done_marker).read_text() == "v1 contents"
+    lock = json.loads((base / hydrate.LOCK_NAME).read_text())
+    assert lock == {"optical_model": "optical-model-v0.9",
+                    "sensitivities": "sensitivities-v1"}
 
 
 def test_main_rejects_unknown_asset(tmp_path):

@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than a version pin — a new delivery of the same hardware needs no
   code change. Products record the resolved delivery (`OPTMODEL` FITS
   card, `optical_model` in the meta YAML).
+- **Hydrate is pinned by default on an existing data dir.** A plain
+  `roman-disperser-hydrate` re-run reuses the versions in
+  `data-versions.lock`: it repairs or completes the installation (missing
+  files, newly published assets) but never upgrades an installed asset, so
+  a mistaken re-hydrate cannot silently move science data. Upgrading is
+  explicit: the new `--update` flag re-pins to the current manifest and
+  re-installs what changed (`--manifest`/`--lock` behave as before). A
+  pinned re-run of an up-to-date asset makes no network calls. Guidance in
+  INSTALL.md ("Staying current").
 - `psf_model.get_or_make_psf_payload` **raises** when given a non-grism
   `stpsf_filter` with default wavelengths: the default grid is the grism
   band and the band is baked into the cache filename, so the old behaviour
@@ -37,16 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dispersing the same field through both elements.
 
 ### Fixed
-- Re-hydrating after the manifest moved now re-extracts tarball assets
-  (sensitivities, synphot, catalog) whose installed version differs from the
-  one being resolved. Previously the done-marker check skipped the install
-  **but the new version was still recorded in `data-versions.lock`**, leaving
-  the lock claiming contents that were never installed — untenable now that
-  the lock is the provenance record and drives optical-model resolution. The
-  lock now always matches what is on disk; a marker with no lock entry
-  (pre-lock data dir) counts as unknown and is reinstalled. Guidance on
-  keeping a data dir current is in INSTALL.md ("Staying current") and the
-  migration guide.
+- Hydrating a version that differs from the installed one now re-extracts
+  tarball assets (sensitivities, synphot, catalog) instead of skipping on
+  the done-marker — which only proves *some* version was extracted once —
+  **while still recording the new version in `data-versions.lock`**. The
+  lock could previously claim contents that were never installed, untenable
+  now that it is the provenance record and drives optical-model resolution.
+  The lock now always matches what is on disk; a marker with no lock entry
+  (pre-lock data dir) counts as unknown and is reinstalled.
 - README Quick Start snippets carried pre-rename disperser kwargs
   (`star_flux=`/`xsca_star=`) and raised `TypeError` if copy-pasted; both
   snippets are now executed as part of doc maintenance.
