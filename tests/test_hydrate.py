@@ -6,6 +6,7 @@ and fast.
 """
 
 import json
+import tarfile
 
 from roman_disperser import hydrate
 from roman_disperser.hydrate import (
@@ -15,6 +16,19 @@ from roman_disperser.hydrate import (
     resolve_manifest,
     write_lock,
 )
+
+
+def _make_tarball(tmp_path, name, files):
+    """Build a small .tar.gz of {filename: content} and return its file:// URL."""
+    stage = tmp_path / f"stage-{name}"
+    tar_path = tmp_path / name
+    with tarfile.open(tar_path, "w:gz") as tar:
+        for fname, content in files.items():
+            p = stage / fname
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+            tar.add(p, arcname=fname)
+    return tar_path.as_uri()
 
 
 def _psf_files():
@@ -114,6 +128,83 @@ def test_hydrate_asset_downloads_to_destination(tmp_path, monkeypatch):
     base = tmp_path / "data"
     hydrate.hydrate_asset(hydrate.ASSETS["optical_model"], "optical-model-v0.8", base)
     assert (base / "Roman_grism_OpticalModel_v0.8.yaml").read_bytes() == b"payload"
+
+
+def test_extract_asset_up_to_date_skips(tmp_path, monkeypatch):
+    # Marker present AND lock agrees with the resolved tag -> nothing fetched.
+    monkeypatch.setattr(
+        hydrate, "list_release_files",
+        lambda tag: [("sensitivities.tar.gz", "file:///nonexistent")],
+    )
+    base = tmp_path / "data"
+    asset = hydrate.ASSETS["sensitivities"]
+    (base / asset.subdir).mkdir(parents=True)
+    (base / asset.subdir / asset.done_marker).write_text("v1 contents")
+
+    hydrate.hydrate_asset(asset, "sensitivities-v1", base,
+                          locked_tag="sensitivities-v1")
+    assert (base / asset.subdir / asset.done_marker).read_text() == "v1 contents"
+
+
+def test_extract_asset_reinstalls_on_version_change(tmp_path, monkeypatch):
+    # Marker present but the lock records a DIFFERENT version: the done-marker
+    # alone must not veto the install (it only proves *some* version was
+    # extracted once), so the new tarball is fetched and extracted.
+    url = _make_tarball(tmp_path, "sens.tar.gz",
+                        {"sensitivity_map.yaml": "v2 contents"})
+    monkeypatch.setattr(hydrate, "list_release_files",
+                        lambda tag: [("sens.tar.gz", url)])
+    base = tmp_path / "data"
+    asset = hydrate.ASSETS["sensitivities"]
+    (base / asset.subdir).mkdir(parents=True)
+    (base / asset.subdir / asset.done_marker).write_text("v1 contents")
+
+    hydrate.hydrate_asset(asset, "sensitivities-v2", base,
+                          locked_tag="sensitivities-v1")
+    assert (base / asset.subdir / asset.done_marker).read_text() == "v2 contents"
+
+
+def test_extract_asset_reinstalls_when_lock_silent(tmp_path, monkeypatch):
+    # Marker present but no lock entry (pre-lock or hand-assembled data dir):
+    # the installed version is unknown, so reinstall rather than let the lock
+    # written afterwards claim a version that was never verified on disk.
+    url = _make_tarball(tmp_path, "sens.tar.gz",
+                        {"sensitivity_map.yaml": "v1 contents"})
+    monkeypatch.setattr(hydrate, "list_release_files",
+                        lambda tag: [("sens.tar.gz", url)])
+    base = tmp_path / "data"
+    asset = hydrate.ASSETS["sensitivities"]
+    (base / asset.subdir).mkdir(parents=True)
+    (base / asset.subdir / asset.done_marker).write_text("unknown contents")
+
+    hydrate.hydrate_asset(asset, "sensitivities-v1", base, locked_tag=None)
+    assert (base / asset.subdir / asset.done_marker).read_text() == "v1 contents"
+
+
+def test_main_lock_matches_contents_after_manifest_bump(tmp_path, monkeypatch):
+    # End-to-end regression for the lock/contents divergence: a data dir at
+    # v1 re-hydrated against a manifest that moved to v2 must end with BOTH
+    # the v2 contents and a lock saying v2 (previously it skipped the install
+    # on the done-marker yet still rewrote the lock to v2).
+    url = _make_tarball(tmp_path, "sens.tar.gz",
+                        {"sensitivity_map.yaml": "v2 contents"})
+    monkeypatch.setattr(hydrate, "list_release_files",
+                        lambda tag: [("sens.tar.gz", url)])
+    base = tmp_path / "data"
+    asset = hydrate.ASSETS["sensitivities"]
+    (base / asset.subdir).mkdir(parents=True)
+    (base / asset.subdir / asset.done_marker).write_text("v1 contents")
+    write_lock(base, {"sensitivities": "sensitivities-v1"})
+    manifest = tmp_path / "in.lock"
+    manifest.write_text(json.dumps({"sensitivities": "sensitivities-v2"}))
+
+    rc = main(["--lock", str(manifest), "--dest", str(base),
+               "--only", "sensitivities"])
+
+    assert rc == 0
+    assert (base / asset.subdir / asset.done_marker).read_text() == "v2 contents"
+    lock = json.loads((base / hydrate.LOCK_NAME).read_text())
+    assert lock["sensitivities"] == "sensitivities-v2"
 
 
 def test_main_rejects_unknown_asset(tmp_path):

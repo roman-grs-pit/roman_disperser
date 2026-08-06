@@ -37,6 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dispersing the same field through both elements.
 
 ### Fixed
+- Re-hydrating after the manifest moved now re-extracts tarball assets
+  (sensitivities, synphot, catalog) whose installed version differs from the
+  one being resolved. Previously the done-marker check skipped the install
+  **but the new version was still recorded in `data-versions.lock`**, leaving
+  the lock claiming contents that were never installed — untenable now that
+  the lock is the provenance record and drives optical-model resolution. The
+  lock now always matches what is on disk; a marker with no lock entry
+  (pre-lock data dir) counts as unknown and is reinstalled. Guidance on
+  keeping a data dir current is in INSTALL.md ("Staying current") and the
+  migration guide.
 - README Quick Start snippets carried pre-rename disperser kwargs
   (`star_flux=`/`xsca_star=`) and raised `TypeError` if copy-pasted; both
   snippets are now executed as part of doc maintenance.

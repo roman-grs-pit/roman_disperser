@@ -137,6 +137,21 @@ One caveat: the vendored `catalog-v2` is still on the grism 9000 Å grid, so
 spectrum with no blue-end SED support. Until a `catalog-v3` release exists,
 prism runs must point `catalog_dir` at a 7500 Å-floor catalog.
 
+Since v0.14.2 the data directory's *role* also changes: the optical-model
+delivery loaded at run time is resolved from the data dir's
+`data-versions.lock` (written by hydrate), not from a filename baked into the
+code. Two consequences for old setups:
+
+- A data dir with **no lock entry** for the optical model — hydrated before
+  the lock existed, or assembled by hand — now fails loudly
+  (`FileNotFoundError` listing the candidate files) even though the YAML is
+  sitting right there: undeclared files are never adopted. Re-hydrate (which
+  records the version), or declare one explicitly via the
+  `optical_model_version:` config key / `--optical-model-version` flag.
+- The lock **pins** your data: upstream publishing a new delivery changes
+  nothing until you re-run hydrate. Re-running is cheap — up-to-date assets
+  are skipped, and lock and contents are updated together.
+
 ## Checklist
 
 For a v0.10-era driver or analysis moving to v0.14:

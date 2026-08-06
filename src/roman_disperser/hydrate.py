@@ -137,16 +137,30 @@ def _download(url, dest, force=False):
     return True
 
 
-def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False):
-    """Install one asset at ``tag`` into ``base/asset.subdir``."""
+def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
+                  locked_tag=None):
+    """Install one asset at ``tag`` into ``base/asset.subdir``.
+
+    For extract assets the files inside the tarball carry no version, so
+    "already installed" is judged by the done-marker *plus* ``locked_tag`` —
+    the version the data dir's lock says is installed. A marker with a
+    different (or missing) lock entry means the contents are some other
+    version and the asset is re-extracted, so the lock written afterwards
+    always describes the actual contents. Re-extraction overwrites in place;
+    files dropped between releases may linger (harmless for these assets,
+    which are read by name).
+    """
     out = base / asset.subdir
     files = list_release_files(tag)
 
     if asset.extract:
         present = asset.done_marker and (out / asset.done_marker).exists()
-        if present and not force:
-            print(f"    present, skipping ({asset.done_marker} exists)")
+        if present and locked_tag == tag and not force:
+            print(f"    up to date ({tag} per lock; {asset.done_marker} exists)")
             return
+        if present and locked_tag != tag:
+            have = locked_tag or "an unrecorded version"
+            print(f"    installed contents are {have}, not {tag}; reinstalling")
         if dry_run:
             print(f"    would download + extract {len(files)} archive(s) -> {out}")
             return
@@ -181,15 +195,18 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False):
 # Lock file
 # ---------------------------------------------------------------------------
 
+def read_lock(base):
+    """Versions recorded in ``<base>/data-versions.lock`` ({} if absent/bad)."""
+    try:
+        return json.loads((Path(base) / LOCK_NAME).read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def write_lock(base, installed):
     """Merge ``installed`` into ``<base>/data-versions.lock`` and write it."""
     lock_path = base / LOCK_NAME
-    current = {}
-    if lock_path.exists():
-        try:
-            current = json.loads(lock_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            current = {}
+    current = read_lock(base)
     current.update(installed)
     base.mkdir(parents=True, exist_ok=True)
     lock_path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
@@ -234,6 +251,7 @@ def main(argv=None):
     versions, source = resolve_manifest(args.lock, args.manifest)
     print(f"Hydrating {which} into {base}  (versions from {source})")
 
+    locked = read_lock(base)
     installed = {}
     for key in which:
         tag = versions.get(key)
@@ -242,7 +260,8 @@ def main(argv=None):
             continue
         print(f"  {key} @ {tag}")
         hydrate_asset(ASSETS[key], tag, base, sca=args.sca,
-                      force=args.force, dry_run=args.dry_run)
+                      force=args.force, dry_run=args.dry_run,
+                      locked_tag=locked.get(key))
         installed[key] = tag
 
     if args.dry_run:

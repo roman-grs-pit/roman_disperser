@@ -207,6 +207,19 @@ roman-disperser-hydrate --lock <data>/data-versions.lock   # exact versions from
 roman-disperser-hydrate --manifest <git-ref>               # use a pinned manifest revision
 ```
 
+### Staying current
+
+The data directory is **pinned by its lock**: the versions in
+`<data>/data-versions.lock` are what the code uses — in particular, the
+optical-model delivery loaded at run time is resolved from the lock (see
+`docs/element_support.md`) — and they do not float when upstream publishes a
+new release. To pick up new deliveries, re-run `roman-disperser-hydrate`:
+assets whose installed version already matches the current manifest are
+skipped, anything the manifest moved is re-installed, and the lock always
+records exactly what is on disk. Every pipeline product also records the
+delivery it used (`OPTMODEL` FITS card, `optical_model` in the meta YAML), so
+a run stays auditable even after the data dir moves on.
+
 ### Regenerating from scratch
 
 Most users hydrate. To rebuild instead:
