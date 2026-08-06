@@ -16,15 +16,18 @@ The data directory is resolved in this order:
 See ``docs/data_vendoring_plan.md`` for the full design.
 """
 
+import json
 import os
 from pathlib import Path
 
 # Layout within the data directory.
-OPTICAL_MODEL_FILE = "Roman_grism_OpticalModel_v0.8.yaml"
 CATALOGS_SUBDIR = "catalogs"
 SENSITIVITIES_SUBDIR = "sensitivities"
 PSF_CACHE_SUBDIR = "psf_cache"
 SYNPHOT_SUBDIR = "synphot"
+
+# Written by roman-disperser-hydrate (see hydrate.LOCK_NAME — keep in sync).
+LOCK_NAME = "data-versions.lock"
 
 
 def data_dir(explicit=None):
@@ -60,6 +63,101 @@ def synphot_dir(explicit=None):
     return Path(explicit) if explicit is not None else data_dir() / SYNPHOT_SUBDIR
 
 
-def optical_model_path(explicit=None):
-    """Optical-model YAML path."""
-    return Path(explicit) if explicit is not None else data_dir() / OPTICAL_MODEL_FILE
+def optical_model_filename(element, version):
+    """Delivery filename for an element's optical model at ``version``.
+
+    The upstream (IPAC/SSC) deliveries have so far followed
+    ``Roman_<element>_OpticalModel_v<X>.yaml``; this template is the one
+    naming assumption the resolver makes. ``version`` may be given with or
+    without the leading ``v`` (``"v0.8"`` or ``"0.8"``).
+    """
+    v = str(version)
+    if not v.startswith("v"):
+        v = f"v{v}"
+    return f"Roman_{element.name}_OpticalModel_{v}.yaml"
+
+
+def _optical_model_asset_key(element):
+    """Manifest/lock key for an element's optical model (see hydrate.ASSETS)."""
+    return ("optical_model" if element.name == "grism"
+            else f"optical_model_{element.name}")
+
+
+def _version_from_lock(base, key):
+    """Delivery version recorded in the data dir's lock, or None.
+
+    Lock values are our own release tags (``optical-model-v0.8``,
+    ``optical-model-prism-v0.8``); the version is everything after the last
+    ``-v``. Unreadable lock or unparseable tag both resolve to None — the
+    caller fails loudly rather than guessing.
+    """
+    try:
+        lock = json.loads((Path(base) / LOCK_NAME).read_text())
+        tag = lock[key]
+        return "v" + tag.rsplit("-v", 1)[1] if "-v" in tag else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def optical_model_path(explicit=None, element=None, version=None):
+    """Resolve the optical-model YAML path for a dispersing element.
+
+    Resolution is *declared, never inferred*: the file used is always the
+    consequence of an explicit path, an explicit version, or what hydrate
+    recorded in the data dir's ``data-versions.lock``. Directory contents
+    are never scanned to pick a model (a stray file must not silently
+    become the calibration), only listed as a hint on failure.
+
+    1. ``explicit`` — a full path; returned as-is (config ``optical_model:``).
+    2. ``version`` — delivery version string, e.g. ``"v0.8"`` (config
+       ``optical_model_version:``); filename built by
+       :func:`optical_model_filename`.
+    3. The ``data-versions.lock`` written by ``roman-disperser-hydrate`` —
+       the default: you get exactly the delivery you hydrated.
+    4. Otherwise ``FileNotFoundError``, listing any model files present in
+       the data dir (not used) and the three ways to declare one.
+
+    ``element`` defaults to the grism, as everywhere.
+    """
+    if explicit is not None:
+        return Path(explicit)
+
+    from roman_disperser.elements import get_element
+    element = get_element(element)
+    base = data_dir()
+
+    if version is not None:
+        path = base / optical_model_filename(element, version)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Optical model {path.name!r} (element {element.name!r}, "
+                f"version {version!r}) not found in {base}. Hydrate that "
+                f"delivery (`roman-disperser-hydrate --only "
+                f"{_optical_model_asset_key(element)} --manifest <ref>`) or "
+                f"check the version string."
+            )
+        return path
+
+    lock_version = _version_from_lock(base, _optical_model_asset_key(element))
+    if lock_version is not None:
+        path = base / optical_model_filename(element, lock_version)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{base / LOCK_NAME} records {lock_version!r} for element "
+                f"{element.name!r} but {path.name!r} is missing from {base}. "
+                f"Re-run `pixi run hydrate`."
+            )
+        return path
+
+    candidates = sorted(
+        p.name for p in base.glob(f"Roman_{element.name}_OpticalModel_*.yaml"))
+    found = ("Found in the data dir (not used): " + ", ".join(candidates)
+             if candidates else "No model files found in the data dir either.")
+    raise FileNotFoundError(
+        f"Cannot resolve the optical model for element {element.name!r}: no "
+        f"usable {_optical_model_asset_key(element)!r} entry in "
+        f"{base / LOCK_NAME}. {found} Either run `pixi run hydrate` (records "
+        f"the delivery in the lock), pass version=... (config "
+        f"`optical_model_version:`), or pass an explicit path (config "
+        f"`optical_model:`)."
+    )

@@ -175,7 +175,7 @@ class TestSelectSourcesPrism:
         from roman_disperser import elements, paths
         element = elements.get_element("prism")
         model = RomanOpticalModel(
-            str(paths.data_dir() / element.optical_model_file)
+            str(paths.optical_model_path(element=element))
         )
         payload = omj.make_sca_payload(model, sca=sca, order="1")
 

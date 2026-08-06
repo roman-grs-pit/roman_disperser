@@ -364,6 +364,7 @@ def setup_pipeline(
     optical_model_path=None,
     psf_cache_dir=None,
     element=None,
+    optical_model_version=None,
     star_batch_size=1000,
     galaxy_batch_size=100,
     galaxy_npix=30,
@@ -416,7 +417,8 @@ def setup_pipeline(
 
     catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir = \
         resolve_paths(catalog_dir, sensitivity_dir,
-                      optical_model_path, psf_cache_dir, element=element)
+                      optical_model_path, psf_cache_dir, element=element,
+                      optical_model_version=optical_model_version)
 
     # -- Load & validate catalog ---------------------------------------------
     log("Loading catalog...")
@@ -511,6 +513,8 @@ def setup_pipeline(
         "sca_list": sca_list,
         "sca_data": sca_data,
         "psf_cache_dir": str(psf_cache_dir),
+        # Which delivery actually loaded -- provenance for header + meta
+        "optical_model_file": Path(optical_model_path).name,
         "star_batch_size": star_batch_size,
         "galaxy_batch_size": galaxy_batch_size,
         "galaxy_npix": galaxy_npix,
@@ -591,9 +595,11 @@ def process_pointing(
     sca_list = pipeline["sca_list"]
     star_batch_size = pipeline["star_batch_size"]
 
-    # Element provenance goes on every product (header + meta YAML)
+    # Element + delivery provenance goes on every product (header + meta YAML)
     extra_headers = {
         "OPTELEM": (element.name, "Dispersing element"),
+        "OPTMODEL": (pipeline["optical_model_file"],
+                     "Optical-model delivery file"),
         **(extra_headers or {}),
     }
     galaxy_batch_size = pipeline["galaxy_batch_size"]
@@ -1054,6 +1060,7 @@ def process_pointing(
         },
         "exptime": exptime,
         "element": element.name,
+        "optical_model": pipeline["optical_model_file"],
         "codever": get_code_version(),
         "git_sha": get_git_sha(),
         "seed": seed,
@@ -1102,6 +1109,7 @@ def build_dispersed_image(
     optical_model_path=None,
     psf_cache_dir=None,
     element=None,
+    optical_model_version=None,
     cone_radius=0.6,
     star_batch_size=1000,
     galaxy_batch_size=100,
@@ -1158,6 +1166,7 @@ def build_dispersed_image(
         catalog_dir=catalog_dir,
         sensitivity_dir=sensitivity_dir,
         optical_model_path=optical_model_path,
+        optical_model_version=optical_model_version,
         psf_cache_dir=psf_cache_dir,
         element=element,
         star_batch_size=star_batch_size,
@@ -1274,6 +1283,13 @@ galaxy_npix: 30
 # keep compiled functions across reboots.  CLI --cache-dir overrides this.
 # cache_dir: /tmp/jax-cache-grism
 
+# -- Optical-model delivery (optional) ----------------------------------------
+# Which upstream delivery to load. Default: the delivery recorded in the data
+# directory's data-versions.lock (written by `pixi run hydrate`) -- you get
+# exactly what you hydrated. Set this to select among several hydrated
+# deliveries (e.g. a delivery comparison); `optical_model:` below wins over it.
+# optical_model_version: v0.8
+
 # -- Data paths (optional, defaults shown) -----------------------------------
 # Uncomment to override:
 # catalog_dir: data/catalogs
@@ -1353,7 +1369,8 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
     catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir = \
         resolve_paths(cfg.get("catalog_dir"), cfg.get("sensitivity_dir"),
                       cfg.get("optical_model"),
-                      cfg.get("psf_cache_dir"), element=element)
+                      cfg.get("psf_cache_dir"), element=element,
+                      optical_model_version=cfg.get("optical_model_version"))
 
     # Read wavelength grid from catalog (must match what setup_pipeline uses)
     store = zarr.open(str(Path(catalog_dir) / "seds.zarr"), mode="r")
@@ -1584,6 +1601,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         catalog_dir=cfg.get("catalog_dir"),
         sensitivity_dir=cfg.get("sensitivity_dir"),
         optical_model_path=cfg.get("optical_model"),
+        optical_model_version=cfg.get("optical_model_version"),
         psf_cache_dir=cfg.get("psf_cache_dir"),
         element=element,
         star_batch_size=cfg.get("star_batch_size", 1000),
@@ -1714,7 +1732,12 @@ def main():
     parser.add_argument("--sensitivity-dir", type=str, default=None,
                         help="Path to sensitivity FITS files")
     parser.add_argument("--optical-model", type=str, default=None,
-                        help="Path to optical model YAML")
+                        help="Path to optical model YAML (wins over "
+                             "--optical-model-version)")
+    parser.add_argument("--optical-model-version", type=str, default=None,
+                        help="Optical-model delivery version, e.g. v0.8 "
+                             "(default: the delivery recorded in the data "
+                             "dir's data-versions.lock)")
     parser.add_argument("--element", type=str, default=None,
                         choices=["grism", "prism"],
                         help="Dispersing element (default: grism). "
@@ -1830,6 +1853,7 @@ def main():
         catalog_dir=args.catalog_dir,
         sensitivity_dir=args.sensitivity_dir,
         optical_model_path=args.optical_model,
+        optical_model_version=args.optical_model_version,
         psf_cache_dir=args.psf_cache_dir,
         element=args.element,
         cone_radius=args.cone_radius,

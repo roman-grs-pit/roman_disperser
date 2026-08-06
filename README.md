@@ -53,8 +53,9 @@ from roman_disperser import optical_model_jax as omj, paths, psf_model, star_dis
 # band, STPSF filters, and data-file names. GRISM is the default everywhere.
 element = GRISM
 
-# Load optical model and create payloads (paths resolve the hydrated data dir)
-model = RomanOpticalModel(str(paths.data_dir() / element.optical_model_file))
+# Load optical model and create payloads. The delivery file is resolved from
+# the hydrated data dir (data-versions.lock) — you get what you hydrated.
+model = RomanOpticalModel(str(paths.optical_model_path(element=element)))
 optical_payload = omj.make_sca_payload(model, sca=5, order="1")
 psf_payload = psf_model.get_or_make_psf_payload(
     detector="WFI05", order="1", stpsf_filter=element.stpsf_filters["1"],

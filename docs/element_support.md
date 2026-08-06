@@ -23,7 +23,7 @@ answer. This table is the record of which is which.
 | Module | Status |
 |---|---|
 | `elements.py` | The element records themselves, plus `get_element()` and `validate_against_model()` |
-| `paths.py` | element-independent resolver for the data dir; its named helpers (`sensitivity_dir()`, `optical_model_path()`) return the grism defaults. Per-element paths come from `pipeline.resolve_paths(..., element=)`, which reads the element's `optical_model_file` / `sensitivities_subdir` fields |
+| `paths.py` | element-independent resolver for the data dir. `optical_model_path(element=, version=)` resolves the delivery file per element (explicit path > explicit version > `data-versions.lock` > loud failure); `sensitivity_dir()` returns the grism default, per-element sensitivity paths come from `pipeline.resolve_paths(..., element=)` via `element.sensitivities_subdir` |
 | `pipeline.py` | ✅ `resolve_paths(..., element=)` picks the per-element optical model and sensitivity paths; everything downstream (`select_sources_per_order`, `load_sensitivities`, the batched dispersers) consumes plain per-element values (`orders`, band) that the caller takes from the element — the element itself never enters jitted code |
 | `psf_model.py` | ✅ takes `stpsf_filter=` explicitly; the per-element order→filter mapping lives on `element.stpsf_filters` |
 | `catalog.py` | ✅ `select_sources` takes explicit `wl_min`/`wl_max` (grism defaults); callers pass the element's band |
@@ -90,18 +90,30 @@ raises on:
 without needing a run, so a future reference-data delivery that moves a band
 edge trips a test rather than a production job.
 
-## Optical-model versioning (design note)
+## Optical-model delivery resolution
 
-Each element record carries `optical_model_file`, a filename that includes
-the upstream delivery version (`..._v0.8.yaml`). This is a **default**, not
-a binding: the pipeline config `optical_model:` key,
-`pipeline.resolve_paths(optical_model_path=...)`, and
-`RomanOpticalModel(path)` all accept explicit paths, and
-`validate_against_model` guards element identity and band (not version)
-whichever file is loaded. So running against a different or newer model is
-an explicit-path change, not a code change — but the *default* moves only by
-editing `elements.py` in lockstep with the data release that ships the new
-YAML. If workflows emerge that hold several model versions side by side
-(e.g. delivery comparisons), the filename should probably move out of the
-element record into the data manifest; that is an open design question, not
-an accident.
+No reference-data filenames or delivery versions live in code. The element
+record carries only *hardware identity* (nominal band, orders, STPSF
+filters); which delivery YAML to load is resolved by
+`paths.optical_model_path(element=, version=)`:
+
+1. an explicit path (config `optical_model:`) — always wins;
+2. an explicit delivery version (config `optical_model_version:`, e.g.
+   `v0.8`) — the side-by-side knob when several deliveries are hydrated;
+3. the delivery recorded in the data dir's `data-versions.lock` by
+   `roman-disperser-hydrate` — the default: **you get exactly what you
+   hydrated**;
+4. otherwise a loud `FileNotFoundError` listing any model files present
+   (as a hint, never used) and the three ways to declare one.
+
+Resolution is *declared, never inferred*: directory contents are never
+scanned to pick a model, so a stray file cannot silently become the
+calibration — the same principle as the no-env-var element selection.
+`validate_against_model` remains the correctness gate whichever file loads:
+a delivery must describe the same nominal hardware band as the element
+record (new deliveries of the same hardware are code-free; a re-declared
+band forces a human look). The one naming assumption is the upstream
+filename template `Roman_<element>_OpticalModel_v<X>.yaml`
+(`paths.optical_model_filename`); if upstream ever changes scheme, that is
+a one-line ingest-day fix. The resolved filename is written to every
+product (`OPTMODEL` FITS card, `optical_model` in the meta YAML).

@@ -226,7 +226,8 @@ and `scripts/example_prism_config.yaml`; regenerate the template with
 | `cache_dir` | str | `/tmp/jax-cache-grism` | JAX compilation cache directory |
 | `catalog_dir` | str | `data/catalogs` | Path to unified catalog directory |
 | `sensitivity_dir` | str | per-element | Path to sensitivity FITS files (`data/sensitivities` grism, `data/sensitivities_prism` prism) |
-| `optical_model` | str | per-element | Optical model YAML (`Roman_grism_OpticalModel_v0.8.yaml` / `Roman_prism_OpticalModel_v0.8.yaml`) |
+| `optical_model` | str | resolved | Explicit optical-model YAML path; wins over `optical_model_version` |
+| `optical_model_version` | str | from lock | Delivery version (e.g. `v0.8`). Default: the delivery recorded in the data dir's `data-versions.lock` by hydrate — you get what you hydrated. See `docs/element_support.md` §Optical-model delivery resolution |
 | `psf_cache_dir` | str | `data/psf_cache` | Path to PSF cache directory |
 
 **Deprecated:** `batch_size` is accepted as an alias for `star_batch_size` with a warning.

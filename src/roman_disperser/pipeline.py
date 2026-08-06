@@ -152,7 +152,7 @@ def make_sca_keys(pointing_key, sca_list):
 
 def resolve_paths(catalog_dir=None, sensitivity_dir=None,
                   optical_model_path=None, psf_cache_dir=None,
-                  element=None):
+                  element=None, optical_model_version=None):
     """Resolve default reference-data paths for a dispersing element.
 
     Each ``None`` argument falls back to its default location under the
@@ -170,18 +170,24 @@ def resolve_paths(catalog_dir=None, sensitivity_dir=None,
     sensitivity_dir : str or Path, optional
         Default: ``<data>/<element.sensitivities_subdir>``.
     optical_model_path : str or Path, optional
-        Default: ``<data>/<element.optical_model_file>``.
+        Explicit YAML path; wins over everything. Default: resolved by
+        :func:`roman_disperser.paths.optical_model_path` (explicit version,
+        else the delivery recorded in the data dir's ``data-versions.lock``,
+        else a loud failure — never inferred from directory contents).
     psf_cache_dir : str or Path, optional
         Default: ``<data>/psf_cache``.
     element : str or DispersingElement, optional
         Default: grism.
+    optical_model_version : str, optional
+        Delivery version (e.g. ``"v0.8"``) to select when several deliveries
+        are hydrated side by side. Ignored if ``optical_model_path`` is given.
     """
     element = elements.get_element(element)
     data = paths.data_dir()
     if sensitivity_dir is None:
         sensitivity_dir = data / element.sensitivities_subdir
-    if optical_model_path is None:
-        optical_model_path = data / element.optical_model_file
+    optical_model_path = paths.optical_model_path(
+        optical_model_path, element=element, version=optical_model_version)
     return (paths.catalog_dir(catalog_dir),
             Path(sensitivity_dir),
             Path(optical_model_path),

@@ -62,9 +62,16 @@ galaxy_npix: 30
 # keep compiled functions across reboots.  CLI --cache-dir overrides this.
 # cache_dir: /tmp/jax-cache-grism
 
+# -- Optical-model delivery (optional) ----------------------------------------
+# Which upstream delivery to load. Default: the delivery recorded in the data
+# directory's data-versions.lock (written by `pixi run hydrate`) -- you get
+# exactly what you hydrated. Set this to select among several hydrated
+# deliveries (e.g. a delivery comparison); `optical_model:` below wins over it.
+# optical_model_version: v0.8
+
 # -- Data paths -----------------------------------------------------------
 # With element: prism the per-element defaults are the prism ones
-# (Roman_prism_OpticalModel_v0.8.yaml, data/sensitivities_prism).
+# (the prism optical-model delivery, data/sensitivities_prism).
 #
 # catalog_dir is the exception and usually MUST be set for prism runs: the
 # vendored catalog-v2 is on the grism 9000-21000 A grid, and the prism band

@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Optical-model delivery resolution is now data-driven** (issue #26). No
+  reference-data filenames or delivery versions live in code any more:
+  `DispersingElement.optical_model_file` and `paths.OPTICAL_MODEL_FILE` are
+  **removed** (breaking for anyone reading that field), and
+  `paths.optical_model_path(element=, version=)` resolves the delivery YAML
+  as: explicit path (config `optical_model:`) > explicit version (new config
+  key `optical_model_version:` / CLI `--optical-model-version`) > the
+  delivery recorded in the data dir's `data-versions.lock` by hydrate >
+  loud `FileNotFoundError` with hints. Resolution is declared, never
+  inferred — directory contents are listed on failure but never adopted.
+  The element records now carry hardware identity only; their band edges
+  are documented as *nominal* (the exact edges come from the sensitivity
+  curves), making `validate_against_model` a hardware-consistency gate
+  rather than a version pin — a new delivery of the same hardware needs no
+  code change. Products record the resolved delivery (`OPTMODEL` FITS
+  card, `optical_model` in the meta YAML).
+- `psf_model.get_or_make_psf_payload` **raises** when given a non-grism
+  `stpsf_filter` with default wavelengths: the default grid is the grism
+  band and the band is baked into the cache filename, so the old behaviour
+  silently looked up (and regenerated) a wrong-band PSF cache — which bit
+  the demo notebook on 2026-08-05, shifting its prism flux by 2e-4
+  relative. Pass `wavelengths=elements.psf_cache_wavelengths(element)`.
+
+### Added
+- `scripts/example_prism_config.yaml`; prism section in
+  `stars_and_galaxies_demo.ipynb` (and its GPU twin, executed on an a10g)
+  dispersing the same field through both elements.
+
+### Fixed
+- README Quick Start snippets carried pre-rename disperser kwargs
+  (`star_flux=`/`xsca_star=`) and raised `TypeError` if copy-pasted; both
+  snippets are now executed as part of doc maintenance.
+- Demo notebooks load per-SCA sensitivity curves via
+  `pipeline.load_sensitivities` (they previously loaded SCA1 curves while
+  dispersing SCA5) and resolve all vendored data via
+  `roman_disperser.paths`.
+
 ## [0.14.1] - 2026-08-05
 
 Documentation release; no code or behaviour change.
