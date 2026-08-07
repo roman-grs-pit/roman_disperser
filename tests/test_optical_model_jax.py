@@ -1268,7 +1268,7 @@ class TestTraceBeamPrism:
         from roman_disperser import elements, paths
         element = elements.get_element("prism")
         return RomanOpticalModel(
-            str(paths.data_dir() / element.optical_model_file)
+            str(paths.optical_model_path(element=element))
         )
 
     @pytest.mark.parametrize("sca", [1, 5, 18])

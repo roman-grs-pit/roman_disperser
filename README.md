@@ -6,6 +6,16 @@ spectroscopy simulations — both WFI dispersing elements: the G150 **grism**
 
 ## News
 
+- **2026-08-07 — v0.14.2: reference data is pinned and lock-resolved.** The
+  optical-model delivery loaded at run time is now resolved from the data
+  dir's `data-versions.lock` (written by hydrate) — never inferred from
+  directory contents — and a plain re-hydrate stays pinned;
+  `roman-disperser-hydrate --update` is the explicit upgrade path.
+  **Already on v0.14.0/v0.14.1?** A data dir hydrated before the lock
+  existed now fails loudly until you re-run `pixi run hydrate` — see the
+  ["Already on v0.14?"](docs/migrating-v0.10-to-v0.14.md#already-on-v014)
+  note in the migration guide. (v0.14.1 was a documentation release that
+  added that guide.)
 - **2026-08-05 — v0.14.0: prism support.** The package now simulates both
   dispersing elements; grism behaviour is unchanged. Coming from v0.10.x?
   Two intervening releases also **changed simulated results** (GPU placement
@@ -37,7 +47,7 @@ Quick version:
 git clone git@github.com:roman-grs-pit/roman_disperser.git
 cd roman_disperser
 pixi install && pixi shell        # or: pip install -e ".[full]"
-pixi run hydrate                  # fetch vendored reference data (~6.4 GB)
+pixi run hydrate                  # fetch vendored reference data (~6.5 GB)
 pytest -q tests -m "not slow"
 ```
 
@@ -46,24 +56,31 @@ pytest -q tests -m "not slow"
 ```python
 import jax.numpy as jnp
 from roman_disperser.optical_model import RomanOpticalModel
+from roman_disperser.elements import GRISM  # or PRISM — see elements.py
 from roman_disperser import optical_model_jax as omj, paths, psf_model, star_disperser
 
-# Load optical model and create payloads (paths resolve the hydrated data dir)
-model = RomanOpticalModel(str(paths.optical_model_path()))
+# The dispersing element bundles the per-element constants: spectral orders,
+# band, STPSF filters, and data-file names. GRISM is the default everywhere.
+element = GRISM
+
+# Load optical model and create payloads. The delivery file is resolved from
+# the hydrated data dir (data-versions.lock) — you get what you hydrated.
+model = RomanOpticalModel(str(paths.optical_model_path(element=element)))
 optical_payload = omj.make_sca_payload(model, sca=5, order="1")
 psf_payload = psf_model.get_or_make_psf_payload(
-    detector="WFI05", order="1", cache_dir=str(paths.psf_cache_dir())
+    detector="WFI05", order="1", element=element,
+    cache_dir=str(paths.psf_cache_dir()),
 )
 
 # Create a JIT-compiled star disperser
 disperse = star_disperser.make_star_disperser(psf_payload, optical_payload)
 
-# Disperse a star (wavelengths in microns)
-wavelengths = jnp.linspace(0.9, 2.0, 5500)
+# Disperse a star (wavelengths in microns, spanning the element's band)
+wavelengths = jnp.linspace(element.lam_min, element.lam_max, 5500)
 flux = jnp.ones_like(wavelengths)
 output = jnp.zeros((4088, 4088), dtype=jnp.float32)
-output = disperse(xsca_star=2000.0, ysca_star=2000.0,
-                  wavelengths=wavelengths, star_flux=flux, output=output)
+output = disperse(xsca=2000.0, ysca=2000.0,
+                  wavelengths=wavelengths, flux=flux, output=output)
 ```
 
 ### Galaxy Dispersion
@@ -100,28 +117,41 @@ pytest -v tests/test_psf_model.py           # PSF model tests
 ### Test Coverage
 
 - **Optical model** (`test_optical_model_jax.py`): SCA/FPA/MPA coordinate transformations, sky-to-FPA transforms, polynomial mappings, trace coefficients, spectral traces
+- **Dispersing elements** (`test_elements.py`): element registry, element/optical-model pairing for every declared element
 - **Disperser** (`test_disperser.py`): Bilinear interpolation, flux conservation, boundary handling, multi-galaxy batching
-- **PSF model** (`test_psf_model.py`): PSF interpolation, caching, trilinear accuracy
+- **PSF model** (`test_psf_model.py`): PSF interpolation, caching, trilinear accuracy, element-derived cache selection
 - **Star disperser** (`test_star_disperser.py`): PSF deposition, chunk invariance, flux conservation
 - **Galaxy disperser** (`test_galaxy_disperser.py`): Jacobian warping, PSF convolution, delta-vs-star comparison
 - **Sérsic profiles** (`test_sersic.py`): b_n accuracy, astropy comparison, normalization, PA transformation
+- **Pipeline utilities** (`test_pipeline.py`): per-SCA RNG key derivation, provenance (`CODEVER`/`GITSHA`/`__version__`), FITS output
+- **Reference-data paths** (`test_paths.py`): the optical-model resolution ladder (declared, never inferred), per-element sensitivity dirs
+- **Hydrator** (`test_hydrate.py`): manifest/lock resolution, pinned offline re-runs, lock-vs-contents consistency (network-free)
+- **Catalogs** (`test_catalog.py`, `test_build_source_catalog.py`): trace-overlap source selection; catalog-builder grid and format
+- **Precision convention** (`test_precision_convention.py`): AST scan enforcing `precision='highest'` on matmul-class ops
 - **GPU consistency** (`test_disperser_gpu.py`): CPU vs GPU verification (skipped if no GPU)
-- **Demo utils** (`test_demo_utils.py`): Synthetic data generation helpers
+- **Demo utils / refdata** (`test_demo_utils.py`, `test_refdata.py`): synthetic-data helpers; bundled synphot data
 
 ## Documentation
+
+**Guides** (current; kept in step with the code):
 
 - [Installation Guide](INSTALL.md) — Pixi/pip setup, GPU support, data files
 - [Migrating to v0.14 (from v0.10)](docs/migrating-v0.10-to-v0.14.md) — What changed across 0.11–0.14, including the results-changing fixes
 - [Optical Model API](docs/optical_model.md) — JAX optical model functions and examples
 - [Dispersed-Image Pipeline](docs/grism_pipeline.md) — User guide for `build_dispersed_image.py` (stars + galaxies, either element)
 - [Element Support](docs/element_support.md) — Grism/prism status per module and script
-- [Disperser Design](docs/disperser_design.md) — Legacy disperser implementation details
 - [JIT Compilation Strategy](docs/jit_compilation.md) — Closure pattern for non-traceable payloads
-- [STPSF Quick Reference](docs/stpsf.md) — Roman WFI grism PSF generation
+- [STPSF Quick Reference](docs/stpsf.md) — Roman WFI PSF generation
+- [Catalog Format](data/catalogs/README.md) — Unified source catalog format specification
+
+**Design notes** (historical implementation plans, kept as the record of how
+the modules were built — phase markers and open questions reflect the state
+*when written*, not today's):
+
+- [Disperser Design](docs/disperser_design.md) — Legacy disperser implementation plan
 - [Star Dispersion](docs/star_dispersion.md) — Star dispersion design phases and PSF interpolation
 - [PSF Phase 1 Plan](docs/psf_phase1_plan.md) — PSF data model implementation and validation results
 - [Galaxy Dispersion Plan](docs/galaxy_dispersion_plan.md) — Galaxy disperser design (Jacobian-based)
-- [Catalog Format](data/catalogs/README.md) — Unified source catalog format specification
 
 ## Notebooks
 
@@ -141,8 +171,9 @@ pytest -v tests/test_psf_model.py           # PSF model tests
 - `psf_allsca_validation.ipynb` — All 18 SCAs × 2 orders validation
 - `sensitivities.ipynb`, `g0v-star.ipynb` — Sensitivity-curve and stellar-SED explorations
 
-The demo notebooks predate prism support and demonstrate the grism (the
-default element); see `notebooks/README.md` for status notes and
+The demo notebooks demonstrate the grism (the default element); both the
+CPU and GPU demo notebooks end with a section dispersing the same field
+through the prism. See `notebooks/README.md` for status notes and
 `notebooks/archive/` for retired notebooks that no longer track the current
 API.
 
@@ -175,10 +206,14 @@ roman_disperser/
 ├── scripts/
 │   ├── build_dispersed_image.py   # Unified pipeline, either element (stars + galaxies)
 │   ├── build_grism_image.py       # Deprecated forwarding alias for the above
+│   ├── build_source_catalog.py    # Build the unified source catalog (both-element grid)
 │   ├── generate_psf_caches.py     # Regenerate PSF caches from STPSF (--element)
 │   ├── wrap_with_romanisim.py     # Wrap products through romanisim to L2 ASDF
-│   ├── example_grism_config.yaml  # Documented batch pipeline config
+│   ├── example_grism_config.yaml  # Documented batch pipeline config (grism)
+│   ├── example_prism_config.yaml  # Documented batch pipeline config (prism)
+│   └── example_pointings.ecsv     # Example APT-format pointing table
 ├── data/                          # Hydrated reference data (gitignored except stars/)
+│   ├── data-versions.lock         # Delivery versions recorded by hydrate — what run time resolves against
 │   ├── Roman_grism_OpticalModel_v0.8.yaml
 │   ├── Roman_prism_OpticalModel_v0.8.yaml
 │   ├── catalogs/                  # Unified source catalog (Parquet + Zarr)
@@ -186,8 +221,10 @@ roman_disperser/
 │   ├── sensitivities_prism/       # Per-SCA prism sensitivity curves
 │   ├── stars/                     # Star catalog and SED templates (in-repo)
 │   ├── synphot/                   # F158/F184 bandpass and templates
-│   └── psf_cache/                 # PSF grids, both elements (54 files, ~6.0 GB)
+│   └── psf_cache/                 # PSF grids, both elements (54 files, ~6.4 GB)
 ├── docs/
+├── workbench/                     # Dated one-off campaigns and validation records
+├── figures/                       # Published showcase figures (see scripts/make_*_figure.py)
 ├── pixi.toml
 └── pyproject.toml
 ```

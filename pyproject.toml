@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "roman_disperser"
-version = "0.14.1"
+version = "0.14.2"
 requires-python = ">=3.12"
 authors = [
     { name = "Nikhil Padmanabhan", email = "nikhil.padmanabhan@gmail.com" },
 ]
-description = "JAX-based optical model and disperser for Roman Space Telescope grism spectroscopy"
+description = "JAX-based optical model and disperser for Roman Space Telescope slitless spectroscopy (G150 grism and P127 prism)"
 dependencies = [
     "numpy>=2.0",
     "jax>=0.7",

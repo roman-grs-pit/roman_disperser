@@ -11,6 +11,8 @@ Tests cover:
 Note: All wavelength parameters are in **microns** (not meters).
 """
 
+from pathlib import Path
+
 import pytest
 import numpy as np
 import jax
@@ -958,6 +960,91 @@ class TestPSFCaching:
 
         assert call_count[0] == 1
         assert result is simple_payload
+
+    def test_get_or_make_non_grism_filter_requires_wavelengths(self):
+        """A non-grism stpsf_filter with default wavelengths must raise.
+
+        The default wavelength grid is the grism band, and the band is baked
+        into the cache filename — a PRISM call without wavelengths would look
+        up (and silently regenerate) a 0.90-2.00um cache instead of finding
+        the vendored 0.75-1.85um one. This bit the demo notebook on
+        2026-08-05: it generated a wrong-band prism cache into the shared
+        reference-data directory.
+        """
+        with pytest.raises(ValueError, match="wrong-band"):
+            psf_model.get_or_make_psf_payload(
+                detector='WFI05', order='1', stpsf_filter='PRISM',
+                verbose=False,
+            )
+
+        # Passing the element band explicitly is the fix — this must NOT
+        # raise at the wavelength-default stage (no cache_dir would proceed
+        # to slow generation, so only check the guard via a fake cache dir
+        # miss being the *next* failure mode is out of scope here).
+        from roman_disperser import elements
+        wl = elements.psf_cache_wavelengths(elements.PRISM)
+        assert wl[0] == pytest.approx(0.75)
+        assert wl[-1] == pytest.approx(1.85)
+
+    def test_get_or_make_element_derives_filter_and_band(
+            self, simple_payload, monkeypatch):
+        """element= derives stpsf_filter and wavelengths together."""
+        from roman_disperser import elements
+        captured = {}
+
+        def mock_make_psf_payload(**kwargs):
+            captured.update(kwargs)
+            return simple_payload
+
+        monkeypatch.setattr(psf_model, 'make_psf_payload',
+                            mock_make_psf_payload)
+        psf_model.get_or_make_psf_payload(
+            detector='WFI05', order='1', element='prism',
+            cache_dir=None, verbose=False,
+        )
+        assert captured['stpsf_filter'] == 'PRISM'
+        np.testing.assert_allclose(
+            captured['wavelengths'],
+            elements.psf_cache_wavelengths(elements.PRISM))
+
+    def test_get_or_make_element_selects_vendored_cache_name(
+            self, tmp_path, monkeypatch):
+        """element=PRISM must resolve to the vendored prism cache filename.
+
+        This is the end-to-end property the element= parameter exists for:
+        the derived (filter, wavelengths) pair lands on the published cache
+        file, not on a fresh wrong-band generation.
+        """
+        monkeypatch.setattr(
+            psf_model, 'load_psf_payload',
+            lambda path, verbose=True: ('loaded', Path(path).name))
+        expected = "psf_WFI05_PRISM_4x4x56_0.75-1.85um_fov5.0_os4.npz"
+        (tmp_path / expected).write_bytes(b"placeholder")
+        result = psf_model.get_or_make_psf_payload(
+            detector='WFI05', order='1', element='prism',
+            cache_dir=tmp_path, verbose=False,
+        )
+        assert result == ('loaded', expected)
+
+    def test_get_or_make_element_excludes_explicit_args(self):
+        """element= with stpsf_filter= or wavelengths= must raise."""
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            psf_model.get_or_make_psf_payload(
+                detector='WFI05', order='1', element='prism',
+                stpsf_filter='PRISM', verbose=False,
+            )
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            psf_model.get_or_make_psf_payload(
+                detector='WFI05', order='1', element='grism',
+                wavelengths=np.arange(0.9, 2.01, 0.02), verbose=False,
+            )
+
+    def test_get_or_make_element_undefined_order_raises(self):
+        """An order the element does not define fails loudly."""
+        with pytest.raises(ValueError, match="not defined for element"):
+            psf_model.get_or_make_psf_payload(
+                detector='WFI05', order='2', element='prism', verbose=False,
+            )
 
     def test_get_or_make_uses_cache(self, simple_payload, tmp_path, monkeypatch):
         """Test that get_or_make_psf_payload uses cache on second call."""

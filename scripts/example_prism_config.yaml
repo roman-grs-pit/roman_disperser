@@ -1,4 +1,4 @@
-# Unified grism image builder configuration
+# Unified prism image builder configuration
 #
 # Disperses both stars and galaxies from the unified Parquet+Zarr catalog.
 #
@@ -12,7 +12,7 @@
 # -- Output -----------------------------------------------------------------
 # Top-level output directory.  Each pointing creates a subdirectory named
 # {ecsv_basename}_{plan}.{pass}.{segment}.{observation}.{visit}.{exposure}/
-output_dir: output/grism-fields
+output_dir: output/prism-fields
 
 # -- RNG seed (required) ----------------------------------------------------
 # Integer seed for reproducible Poisson noise.  Combined with the pointing
@@ -26,7 +26,7 @@ seed: 42
 # optical-model YAML and sensitivity directory, and which BANDPASS rows of
 # the pointing ECSV are processed (GRISM / PRISM).  The optical model is
 # validated against the element at load time; a mismatch raises.
-element: grism
+element: prism
 
 # -- Output filename prefix (optional) ---------------------------------------
 # Leading tag on every product filename: <prefix>_<dirname>_detSCA05.fits.
@@ -69,9 +69,19 @@ galaxy_npix: 30
 # deliveries (e.g. a delivery comparison); `optical_model:` below wins over it.
 # optical_model_version: v0.8
 
-# -- Data paths (optional, defaults shown) -----------------------------------
-# Uncomment to override:
-# catalog_dir: data/catalogs
-# sensitivity_dir: data/sensitivities
-# optical_model: data/Roman_grism_OpticalModel_v0.8.yaml
+# -- Data paths -----------------------------------------------------------
+# With element: prism the per-element defaults are the prism ones
+# (the prism optical-model delivery, data/sensitivities_prism).
+#
+# catalog_dir is the exception and usually MUST be set for prism runs: the
+# vendored catalog-v2 is on the grism 9000-21000 A grid, and the prism band
+# opens at 7500 A — the pipeline raises rather than dispersing a spectrum
+# with no blue-end SED support.  Point at a 7500 A-floor catalog (build one
+# with scripts/build_source_catalog.py, whose default grid now covers both
+# elements) until a catalog-v3 release exists.  See docs/element_support.md.
+catalog_dir: /path/to/7500A-floor/catalogs
+
+# Uncomment to override the per-element defaults:
+# sensitivity_dir: data/sensitivities_prism
+# optical_model: data/Roman_prism_OpticalModel_v0.8.yaml
 # psf_cache_dir: data/psf_cache

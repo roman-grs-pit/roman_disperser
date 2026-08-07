@@ -23,10 +23,13 @@ Conventions
   order ``"2"`` has no dedicated STPSF filter, so it reuses the order-1 PSF
   (``GRISM1``) — encoded in ``stpsf_filters``, which is why that mapping is
   per-element rather than a psf_model constant.
-- Band edges (``lam_min``/``lam_max``, microns) must agree with the
-  optical-model YAML; :func:`validate_against_model` enforces this at load
-  time so a mismatched element/model pairing fails immediately rather than
-  silently simulating the wrong band.
+- Band edges (``lam_min``/``lam_max``, microns) are the element's *nominal
+  hardware* band — the exact usable edges come from the sensitivity curves.
+  A delivery's declared band must agree with the nominal one;
+  :func:`validate_against_model` enforces this at load time so a mismatched
+  element/model pairing fails immediately rather than silently simulating
+  the wrong band. Which delivery *file* to load is not the element's
+  business — see :func:`roman_disperser.paths.optical_model_path`.
 """
 
 from dataclasses import dataclass
@@ -51,12 +54,20 @@ class DispersingElement:
 
     name: str                # matches YAML meta.optical_element
     orders: tuple            # spectral orders the pipeline simulates (strings)
-    lam_min: float           # simulated band, microns (== YAML wl_min)
-    lam_max: float           # simulated band, microns (== YAML wl_max)
+    # Nominal band edges, microns — properties of the HARDWARE, not of any
+    # particular optical-model delivery. The exact usable edges are set by
+    # the sensitivity curves (data); these nominal values define the
+    # simulated wavelength range and are what validate_against_model checks
+    # a delivery's declared band against — a hardware-consistency gate, not
+    # a version pin. Deliberately NO reference-data filenames or versions
+    # live on this record: which delivery to load is resolved from the
+    # hydrated data directory (paths.optical_model_path — explicit path >
+    # explicit version > data-versions.lock > loud failure).
+    lam_min: float
+    lam_max: float
     # order -> STPSF filter name. A dict field means elements are not
     # hashable (hash() raises); key registries on element.name instead.
     stpsf_filters: dict
-    optical_model_file: str    # YAML filename in the data dir
     sensitivities_subdir: str  # sensitivity FITS subdir in the data dir
     bandpass: str              # BANDPASS value in APT ECSV pointing tables
 
@@ -67,7 +78,6 @@ GRISM = DispersingElement(
     lam_min=0.9,
     lam_max=2.0,
     stpsf_filters={"0": "GRISM0", "1": "GRISM1", "2": "GRISM1"},
-    optical_model_file="Roman_grism_OpticalModel_v0.8.yaml",
     sensitivities_subdir="sensitivities",
     bandpass="GRISM",
 )
@@ -78,7 +88,6 @@ PRISM = DispersingElement(
     lam_min=0.75,
     lam_max=1.85,
     stpsf_filters={"1": "PRISM"},
-    optical_model_file="Roman_prism_OpticalModel_v0.8.yaml",
     sensitivities_subdir="sensitivities_prism",
     bandpass="PRISM",
 )
@@ -114,8 +123,10 @@ def validate_against_model(element, model):
 
     1. ``meta.optical_element`` equals ``element.name`` — catches pointing a
        grism run at the prism YAML (or vice versa) outright;
-    2. band edges agree within :data:`BAND_TOL_UM` — catches an element whose
-       simulated band disagrees with the model's calibrated band (the
+    2. band edges agree within :data:`BAND_TOL_UM` — a *hardware-consistency*
+       gate: the delivery must describe the same nominal band as the element
+       record. A new delivery of the same hardware passes without any code
+       change; a delivery that re-declares the band forces a human look (the
        silent-band-mismatch failure this module exists to prevent);
     3. every simulated order is defined in the YAML.
 

@@ -5,19 +5,21 @@ Run them under the pixi environment (`pixi run jupyter lab`, or the `cuda`
 env for the GPU variants) after hydrating reference data
 (`pixi run hydrate` — see `../INSTALL.md`).
 
-Status note: all current notebooks predate prism support (v0.14.0) and
-demonstrate the **grism**, which is the package default — they remain
-correct as-is. Prism simulations currently go through the batch pipeline
-(`scripts/build_dispersed_image.py --element prism`); there is no prism
-notebook yet.
+Status note: the notebooks demonstrate the **grism**, the package default;
+both `stars_and_galaxies_demo.ipynb` and its GPU variant end with a prism
+section that pushes the same field through the P127 prism. Production prism
+simulations go through the batch pipeline (`scripts/build_dispersed_image.py
+--element prism`, see `scripts/example_prism_config.yaml`).
 
 ## Galaxy + star demos (`galaxy/`)
 
 The recommended starting point.
 
 - **`stars_and_galaxies_demo.ipynb`** — full field on one detector: 100
-  stars + 100 galaxies × 3 spectral orders (CPU).
-- **`stars_and_galaxies_gpu_demo.ipynb`** — the same demo, GPU-optimized.
+  stars + 100 galaxies × 3 spectral orders (CPU, ~30 min), closing with the
+  same field through the **prism** (the element switch in ~2 cells).
+- **`stars_and_galaxies_gpu_demo.ipynb`** — the same demo, GPU-optimized
+  (JIT-wrapped `fori_loop` pattern), including the closing prism section.
 - **`profile_dispersers.ipynb`** — performance profiling: per-operation
   timing breakdown.
 - **`jacobian_exploration.ipynb`** — Jacobian characterization behind the

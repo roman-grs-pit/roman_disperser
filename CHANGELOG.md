@@ -5,6 +5,131 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.2] - 2026-08-07
+
+### Changed
+- **Optical-model delivery resolution is now data-driven** (issue #26).
+  `DispersingElement.optical_model_file` and `paths.OPTICAL_MODEL_FILE` are
+  **removed** (breaking for anyone reading that field), and
+  `paths.optical_model_path(element=, version=)` resolves the delivery YAML
+  as: explicit path (config `optical_model:`) > explicit version (new config
+  key `optical_model_version:` / CLI `--optical-model-version`, also a new
+  keyword on `pipeline.resolve_paths`, `setup_pipeline` and
+  `build_dispersed_image`) > the delivery recorded in the data dir's
+  `data-versions.lock` by hydrate > loud `FileNotFoundError` with hints.
+  Resolution is declared, never inferred — directory contents are listed on
+  failure but never adopted. No delivery *versions* live in code any more
+  (the one naming assumption left is the upstream filename template in
+  `paths.optical_model_filename` and the fixed subdir names). The element
+  records now carry hardware identity only; their band edges are documented
+  as *nominal* (the exact edges come from the sensitivity curves), making
+  `validate_against_model` a hardware-consistency gate rather than a
+  version pin — a new delivery of the same hardware needs no code change.
+  Products record the resolved delivery (`OPTMODEL` FITS card,
+  `optical_model` in the meta YAML).
+- **Hydrate is pinned by default on an existing data dir.** A plain
+  `roman-disperser-hydrate` re-run reuses the versions in
+  `data-versions.lock`: it repairs or completes the installation (missing
+  files, newly published assets) but never upgrades an installed asset, so
+  a mistaken re-hydrate cannot silently move science data. Upgrading is
+  explicit: the new `--update` flag re-pins to the current manifest and
+  re-installs what changed. `--manifest`/`--lock` still select versions
+  explicitly, and the version-change reinstall fix below applies to them
+  too. On network use: a pinned re-run of an up-to-date *tarball* asset
+  makes no network calls; non-extract assets (optical models, PSF caches)
+  still make one release-listing API call per asset to enumerate files.
+  Guidance in INSTALL.md ("Staying current").
+- **`--mosaic` now resolves the optical model through the lock** (it loads
+  the model for focal-plane geometry). A `--mosaic` run against a data dir
+  with no lock entry — which worked at v0.14.1 via the filename then baked
+  into code — now raises `FileNotFoundError`; the escape hatches are
+  `--optical-model` on the command line or a re-hydrate.
+- `psf_model.get_or_make_psf_payload` **raises** when given a non-grism
+  `stpsf_filter` with default wavelengths: the default grid is the grism
+  band and the band is baked into the cache filename, so the old behaviour
+  silently looked up (and regenerated) a wrong-band PSF cache — which bit
+  the demo notebook on 2026-08-05, shifting its prism flux by 2e-4
+  relative. Prefer the new `element=` parameter (below), which makes the
+  inconsistency inexpressible.
+
+### Added
+- **`element=` on `psf_model.get_or_make_psf_payload`** — the dispersing
+  element derives the STPSF filter and the wavelength grid together
+  (mutually exclusive with passing either explicitly), so the wrong-band
+  combination guarded against above cannot be written at the element level.
+  The README Quick Start and both demo notebooks now use it.
+- **`paths.sensitivity_dir(element=)`** resolves the per-element
+  sensitivity subdir (grism default unchanged); `pipeline.resolve_paths`
+  delegates to it instead of duplicating the choice.
+- **`roman_disperser.__version__`** — the installed-package version at the
+  interpreter, same source as `pipeline.get_code_version()` and the
+  `CODEVER` FITS card so the three cannot disagree. The `pipeline` module
+  is also exported in `__all__` (docs and notebooks tell users to reach
+  for it; previously `hasattr(rd, "pipeline")` was `False`).
+- New public names supporting lock-based resolution:
+  `paths.optical_model_filename`, `paths.LOCK_NAME`, `hydrate.read_lock`.
+- `hydrate.DEFAULT_MANIFEST` gains the three prism keys
+  (`optical-model-prism-v0.8`, `sensitivities-prism-v1`, `psf-prism-v1`),
+  so the offline fallback covers every registered asset; a test now pins
+  that invariant.
+- `scripts/example_prism_config.yaml`; prism section in
+  `stars_and_galaxies_demo.ipynb` (and its GPU twin, executed on an a10g)
+  dispersing the same field through both elements.
+- Tests: hydrate lock-vs-contents for non-extract assets,
+  `DEFAULT_MANIFEST` completeness, `sensitivity_dir(element=)`,
+  `element=` derivation/exclusivity/vendored-cache selection on
+  `get_or_make_psf_payload`, `__version__`/`pipeline` export
+  (targeted suite 106 passed).
+
+### Fixed
+- Hydrating a version that differs from the installed one now re-extracts
+  tarball assets (sensitivities, synphot, catalog) instead of skipping on
+  the done-marker — which only proves *some* version was extracted once —
+  **while still recording the new version in `data-versions.lock`**. The
+  lock could previously claim contents that were never installed, untenable
+  now that it is the provenance record and drives optical-model resolution.
+  The lock now always matches what is on disk; a marker with no lock entry
+  (pre-lock data dir) counts as unknown and is reinstalled.
+- **The same lock/contents guarantee now covers non-extract assets** (PSF
+  caches, optical models): their filenames need not carry the release
+  version, so present files whose lock entry disagrees with the resolved
+  tag are re-downloaded rather than skipped — previously `--update` to a
+  same-filename release would have rewritten the lock while downloading
+  nothing. An `--sca`-filtered install at a tag the lock disagrees with is
+  **refused** when files outside the filter are present (it would leave
+  them at the old delivery while the lock recorded the new tag for all).
+  The one remaining `--sca` caveat is completeness: a filtered hydrate
+  records the full release tag while only the requested SCAs are on disk.
+- README Quick Start snippets carried pre-rename disperser kwargs
+  (`star_flux=`/`xsca_star=`) and raised `TypeError` if copy-pasted; both
+  snippets are now executed as part of doc maintenance.
+- Demo notebooks load per-SCA sensitivity curves via
+  `pipeline.load_sensitivities` (they previously loaded SCA1 curves while
+  dispersing SCA5) and resolve all vendored data via
+  `roman_disperser.paths`.
+- `scripts/example_grism_config.yaml` regenerated from `--generate-config`:
+  the shipped usage line invoked the deprecated `build_grism_image.py` and
+  the file predated the `element:` key.
+- Documentation corrected against the code for release (pre-tag review):
+  `docs/element_support.md` no longer claims the prism reference data is
+  unpublished/hand-staged (it has been published since v0.14.0); the
+  documented prism PSF call in README and the migration guide no longer
+  raises (now element-parametric); INSTALL.md leads a fresh user to the
+  demos directly after the install steps, spells out the pixi and pip
+  hydrate variants separately, and documents `--force` and the data-dir
+  layout; download-size figures re-measured and unified to decimal units
+  (~6.5 GB total); a laptop-local path removed from
+  `docs/disperser_design.md`; both notebooks state prerequisites (install
+  + hydrate), runtime and hardware up front and fail fast in an early
+  cell if reference data is missing; the GPU notebook's introduction now announces
+  its prism section and its prism cells use the same JIT-wrapped
+  `fori_loop` pattern the notebook teaches (both notebooks re-executed);
+  `docs/grism_pipeline.md` documents `OPTMODEL`, the element/optical_model
+  meta fields, the general CLI flags, and de-grisms two prism-blind
+  passages; README's test-coverage and project-structure listings brought
+  back in step with the tree, and the documentation list split into
+  current guides vs historical design notes.
+
 ## [0.14.1] - 2026-08-05
 
 Documentation release; no code or behaviour change.

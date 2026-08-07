@@ -90,6 +90,7 @@ Quick mode writes a single FITS, PNG, source manifest, and metadata YAML at the 
 | EXPTIME    | Exposure time [s] |
 | SEED       | Top-level RNG seed |
 | OPTELEM    | Dispersing element (`grism` / `prism`) |
+| OPTMODEL   | Optical-model delivery filename resolved for this run |
 | RNDSEED0   | JAX RNG key word 0 (per-SCA) |
 | RNDSEED1   | JAX RNG key word 1 (per-SCA) |
 | CODEVER    | roman_disperser package version |
@@ -129,12 +130,15 @@ Generated when more than one SCA is processed. Shows all SCAs arranged in the WF
 
 ### Per-Pointing Metadata YAML
 
-Written to `grism_<name>_meta.yaml`. Fields:
+Written to `<prefix>_<name>_meta.yaml` (the prefix defaults to the element
+name — `grism_` / `prism_`). Fields:
 
 | Field | Description |
 |-------|-------------|
 | `pointing` | `{ra, dec, pa}` in degrees |
 | `exptime` | Exposure time in seconds |
+| `element` | Dispersing element (`grism` / `prism`) |
+| `optical_model` | Optical-model delivery filename resolved for this run |
 | `seed` | Top-level seed |
 | `pointing_key` | JAX RNG key data for this pointing (list of 2 ints) |
 | `sca_keys` | Mapping of SCA number -> JAX RNG key data |
@@ -208,7 +212,9 @@ Batch mode takes two input files: a YAML config (`--config`) and an ECSV pointin
 
 ### YAML Config
 
-Simulation parameters and data paths (see `scripts/example_grism_config.yaml`):
+Simulation parameters and data paths (see `scripts/example_grism_config.yaml`
+and `scripts/example_prism_config.yaml`; regenerate the template with
+`--generate-config`):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -224,10 +230,37 @@ Simulation parameters and data paths (see `scripts/example_grism_config.yaml`):
 | `cache_dir` | str | `/tmp/jax-cache-grism` | JAX compilation cache directory |
 | `catalog_dir` | str | `data/catalogs` | Path to unified catalog directory |
 | `sensitivity_dir` | str | per-element | Path to sensitivity FITS files (`data/sensitivities` grism, `data/sensitivities_prism` prism) |
-| `optical_model` | str | per-element | Optical model YAML (`Roman_grism_OpticalModel_v0.8.yaml` / `Roman_prism_OpticalModel_v0.8.yaml`) |
+| `optical_model` | str | resolved | Explicit optical-model YAML path; wins over `optical_model_version` |
+| `optical_model_version` | str | from lock | Delivery version (e.g. `v0.8`). Default: the delivery recorded in the data dir's `data-versions.lock` by hydrate — you get what you hydrated. See `docs/element_support.md` §Optical-model delivery resolution |
 | `psf_cache_dir` | str | `data/psf_cache` | Path to PSF cache directory |
 
 **Deprecated:** `batch_size` is accepted as an alias for `star_batch_size` with a warning.
+
+### General CLI flags
+
+Beyond the mode selectors (`--config`, `--pointing-ra`, `--generate-config`,
+`--mosaic`) and the multi-GPU flags below, the CLI accepts the flags in this
+table. The path and simulation-parameter flags apply to **quick mode** —
+batch mode reads those values from the config YAML instead (only
+`--quiet`/`--force` and the multi-GPU flags act in batch mode, and
+`--mosaic` accepts `--optical-model`):
+
+| Flag | Description |
+|------|-------------|
+| `--element {grism,prism}` | Dispersing element (default: grism). Batch mode reads it from the config instead |
+| `--catalog-dir DIR` | Override the catalog directory |
+| `--sensitivity-dir DIR` | Override the sensitivity-FITS directory |
+| `--optical-model PATH` | Explicit optical-model YAML; wins over `--optical-model-version` |
+| `--optical-model-version V` | Delivery version, e.g. `v0.8` (default: the delivery recorded in `data-versions.lock`) |
+| `--psf-cache-dir DIR` | Override the PSF cache directory |
+| `--cone-radius DEG` | Cone search radius (default: 0.6) |
+| `--star-batch-size N` | Stars per JIT batch (default: 1000) |
+| `--galaxy-batch-size N` | Galaxies per JIT batch (default: 100) |
+| `--galaxy-npix N` | Sersic image size in native pixels (default: 30) |
+| `--seed N` | RNG seed (required for quick mode) |
+| `--exptime S` | Exposure time in seconds (quick mode; default 190.22) |
+| `--quiet` | Suppress progress output (quick and batch mode) |
+| `--force` | Overwrite existing output directories/files (quick and batch mode) |
 
 ### ECSV Pointing Table
 
@@ -269,7 +302,8 @@ The on-disk JAX compilation cache (default `/tmp/jax-cache-grism`, configurable 
 
 One-time initialization shared across all pointings:
 
-1. Build wavelength grid from `dlam_angstroms` over 0.9-2.0 um.
+1. Build wavelength grid from `dlam_angstroms` over the element's band
+   (`element.lam_min`–`lam_max`: 0.9–2.0 um grism, 0.75–1.85 um prism).
 2. Load unified source catalog (Parquet metadata + Zarr SEDs).
 3. Load optical model.
 4. Pre-load star SEDs (all templates, small memory footprint).

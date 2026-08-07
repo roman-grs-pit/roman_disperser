@@ -724,6 +724,7 @@ def get_or_make_psf_payload(
     force_regenerate=False,
     stpsf_filter=None,
     verbose=True,
+    element=None,
 ):
     """
     Get a PSF payload, loading from cache if available or generating if not.
@@ -731,14 +732,28 @@ def get_or_make_psf_payload(
     This is the recommended function for typical usage. It automatically
     handles caching to avoid regenerating PSF grids on every run.
 
+    The PSF cache is selected by ``(detector, stpsf_filter, wavelengths,
+    grid config)``, and ``stpsf_filter`` + ``wavelengths`` must describe the
+    same band — a mismatch selects (or silently generates) a wrong-band
+    cache, which is the bug the guard below refuses. Rather than keeping
+    them consistent by hand, pass ``element=``: the dispersing element
+    derives both, so the wrong combination cannot be expressed.
+
     Parameters
     ----------
     detector : str, optional
         WFI detector name (default: 'WFI05')
     order : str, optional
         Spectral order (default: '1')
+    element : str or DispersingElement, optional
+        Dispersing element; derives ``stpsf_filter`` (from
+        ``element.stpsf_filters[order]``) and ``wavelengths`` (the
+        element's band via ``elements.psf_cache_wavelengths``). Mutually
+        exclusive with passing either of those explicitly. Default None
+        keeps the historical grism behavior below.
     wavelengths : array_like, optional
-        Wavelengths in **microns** (default: 0.9-2.0 μm at 0.02 μm spacing)
+        Wavelengths in **microns** (default: 0.9-2.0 μm at 0.02 μm spacing,
+        the grism band). Low-level knob — prefer ``element=``.
     spatial_grid : dict, optional
         {'x': x_array, 'y': y_array} in SCA coordinates (default: 4×4 grid)
     fov_arcsec : float, optional
@@ -750,6 +765,9 @@ def get_or_make_psf_payload(
         grid is always generated fresh.
     force_regenerate : bool, optional
         If True, regenerate even if cache exists (default: False)
+    stpsf_filter : str, optional
+        STPSF filter name (default: the grism mapping for ``order``).
+        Low-level knob — prefer ``element=``.
     verbose : bool, optional
         Print progress information (default: True)
 
@@ -760,11 +778,13 @@ def get_or_make_psf_payload(
 
     Examples
     --------
-    >>> # First call generates and caches (~5-6 min)
+    >>> # Element-parametric (works for GRISM and PRISM alike)
+    >>> from roman_disperser.elements import PRISM
     >>> payload = get_or_make_psf_payload(
-    ...     detector='WFI05', order='1', cache_dir='data/psf_cache'
+    ...     detector='WFI05', order='1', element=PRISM,
+    ...     cache_dir='data/psf_cache'
     ... )
-    >>> # Second call loads from cache (~1 sec)
+    >>> # First call generates and caches (~5-6 min); second loads (~1 sec)
     >>> payload = get_or_make_psf_payload(
     ...     detector='WFI05', order='1', cache_dir='data/psf_cache'
     ... )
@@ -775,8 +795,42 @@ def get_or_make_psf_payload(
     load_psf_payload : Load from specific file
     save_psf_payload : Save to specific file
     """
-    # Setup defaults (same as make_psf_payload) - wavelengths in microns
+    if element is not None:
+        # The element derives the filter AND the band; allowing an explicit
+        # override alongside it would reintroduce exactly the
+        # keep-four-arguments-consistent problem element= exists to remove.
+        if stpsf_filter is not None or wavelengths is not None:
+            raise ValueError(
+                "element= is mutually exclusive with stpsf_filter=/"
+                "wavelengths=: the element derives both. Pass element= "
+                "alone, or the explicit low-level arguments without it."
+            )
+        from roman_disperser.elements import get_element, psf_cache_wavelengths
+        element = get_element(element)
+        if order not in element.stpsf_filters:
+            raise ValueError(
+                f"Order {order!r} is not defined for element "
+                f"{element.name!r} (orders: {sorted(element.stpsf_filters)})."
+            )
+        stpsf_filter = element.stpsf_filters[order]
+        wavelengths = psf_cache_wavelengths(element)
+
+    # Setup defaults (same as make_psf_payload) - wavelengths in microns.
+    # The default grid is the GRISM band. For any other filter that default
+    # is a trap, not a convenience: the band is baked into the cache filename,
+    # so a PRISM call without wavelengths would look up (and silently
+    # regenerate!) a 0.90-2.00um cache instead of finding the vendored
+    # 0.75-1.85um one -- wrong band, wasted STPSF time, and a polluted cache
+    # directory. Refuse instead.
     if wavelengths is None:
+        if stpsf_filter is not None and not str(stpsf_filter).startswith("GRISM"):
+            raise ValueError(
+                f"stpsf_filter={stpsf_filter!r} with no wavelengths: the default "
+                f"wavelength grid is the grism band (0.90-2.00 um), which would "
+                f"select or generate a wrong-band PSF cache for this filter. "
+                f"Pass the element's band explicitly, e.g. "
+                f"wavelengths=elements.psf_cache_wavelengths(element)."
+            )
         wavelengths = np.arange(0.9, 2.01, 0.02)
     wavelengths = np.asarray(wavelengths)
 

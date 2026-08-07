@@ -16,18 +16,28 @@ JAX-based optical model and disperser for Roman Space Telescope slitless spectro
 - **Pipeline** (`pipeline.py`): Shared utilities for dispersed-image simulation (I/O, batching, sensitivity loading)
 - **Unified pipeline script** (`scripts/build_dispersed_image.py`): Full-field dispersed-image simulation (either element) from a unified star+galaxy catalog. `scripts/build_grism_image.py` is a deprecated forwarding alias.
 
-## Design Documents
+## Documentation map
 
- - @docs/optical_model.md : JAX optical model API reference and usage examples.
- - @docs/disperser_design.md : Design document for the disperser module, including bilinear scatter-add and 2D→1D dispersion.
- - @docs/jit_compilation.md : JIT compilation strategy for the disperser (closure pattern for non-traceable payload).
- - @docs/stpsf.md : STPSF quick reference for Roman WFI grism mode.
- - @docs/star_dispersion.md : Star dispersion design phases and PSF interpolation approach.
- - @docs/psf_phase1_plan.md : PSF data model implementation plan with validation results.
- - @docs/galaxy_dispersion_plan.md : Design for the new galaxy disperser using Jacobian-based shape warping + PSF convolution.
- - @docs/grism_pipeline.md : User guide for `scripts/build_dispersed_image.py` (unified stars+galaxies pipeline, output format, config, catalog).
- - @docs/element_support.md : Status table of grism/prism support per module and script, including the deliberate non-ports and the reference-data publication state.
- - @docs/migrating-v0.10-to-v0.14.md : User-facing migration guide across 0.11-0.14, including the results-changing placement/RNG fixes.
+Read these on demand (deliberately not `@`-imported — they total thousands of
+lines and rarely all matter to one session).
+
+**Guides** (current; kept in step with the code):
+
+ - `docs/optical_model.md` : JAX optical model API reference and usage examples.
+ - `docs/jit_compilation.md` : JIT compilation strategy for the disperser (closure pattern for non-traceable payload).
+ - `docs/stpsf.md` : STPSF quick reference for Roman WFI.
+ - `docs/grism_pipeline.md` : User guide for `scripts/build_dispersed_image.py` (unified stars+galaxies pipeline, output format, config, catalog).
+ - `docs/element_support.md` : Status table of grism/prism support per module and script, including the deliberate non-ports.
+ - `docs/migrating-v0.10-to-v0.14.md` : User-facing migration guide across 0.11-0.14, including the results-changing placement/RNG fixes.
+
+**Design notes** (historical implementation plans — the record of how modules
+were built; phase markers and open questions reflect the state when written,
+not today's):
+
+ - `docs/disperser_design.md` : Legacy disperser module plan (bilinear scatter-add, 2D→1D dispersion).
+ - `docs/star_dispersion.md` : Star dispersion design phases and PSF interpolation approach.
+ - `docs/psf_phase1_plan.md` : PSF data model implementation plan with validation results.
+ - `docs/galaxy_dispersion_plan.md` : Galaxy disperser design (Jacobian-based shape warping + PSF convolution).
 
 ## Commands
 
@@ -114,7 +124,8 @@ The PSF model uses STPSF to generate wavelength- and position-dependent PSF grid
 ```python
 from roman_disperser import psf_model
 
-# Load or generate PSF payload (cached to data/psf_cache/)
+# Load or generate PSF payload (cached to data/psf_cache/). Grism is the
+# default; element='prism' derives the PRISM filter and band together.
 psf_payload = psf_model.get_or_make_psf_payload(
     detector='WFI05', order='1', cache_dir='data/psf_cache'
 )
@@ -198,8 +209,9 @@ The unified pipeline (`build_dispersed_image.py`) sets `JAX_COMPILATION_CACHE_DI
 - When merging a branch back in to `main`, finish by tagging the release with a version number. Use semantic versioning and ask if you have a question. The release process is:
     1. Bump the version in `pyproject.toml`
     2. Run `pixi install` and commit `pixi.lock` if it changed (version bumps can update the lockfile)
-    3. Update `CHANGELOG.md` with a summary of the changes
-    4. Tag the release
+    3. **Verify the installed version**: `pixi run python -c "import roman_disperser; print(roman_disperser.__version__)"` must print the new number. An editable install only picks the bump up at `pixi install`; a stale value silently poisons the `CODEVER` provenance card in every FITS product, so do not tag until this prints right.
+    4. Update `CHANGELOG.md` with a summary of the changes
+    5. Tag the release
 - This is a research code, so value simplicity and clarity over deep class hierarchies and generality. Prefer functional routines over complex object-oriented designs.
 
 ## Notes

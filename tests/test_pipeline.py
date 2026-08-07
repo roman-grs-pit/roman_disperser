@@ -63,6 +63,21 @@ class TestProvenance:
             "roman_disperser"
         )
 
+    def test_dunder_version_matches_code_version(self):
+        # __version__, get_code_version() and the CODEVER FITS card must be
+        # one number; all three read the installed metadata.
+        import roman_disperser
+
+        assert roman_disperser.__version__ == get_code_version()
+
+    def test_pipeline_module_is_exported(self):
+        # The docs and notebooks tell users to reach for rd.pipeline; it
+        # must be importable off the package like every other module.
+        import roman_disperser
+
+        assert hasattr(roman_disperser, "pipeline")
+        assert "pipeline" in roman_disperser.__all__
+
     def test_git_sha_format(self):
         """40-hex SHA, optionally -dirty; or 'unknown' outside a checkout."""
         sha = get_git_sha()

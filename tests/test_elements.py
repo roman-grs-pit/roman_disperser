@@ -13,7 +13,7 @@ def element_and_model(request):
     """Each element paired with its own optical model."""
     element = elements.get_element(request.param)
     model = RomanOpticalModel(
-        str(paths.data_dir() / element.optical_model_file)
+        str(paths.optical_model_path(element=element))
     )
     return element, model
 

@@ -20,7 +20,7 @@ def optical_model(request):
     own single-element fixture instead.
     """
     element = elements.get_element(request.param)
-    return RomanOpticalModel(str(paths.data_dir() / element.optical_model_file))
+    return RomanOpticalModel(str(paths.optical_model_path(element=element)))
 
 
 @pytest.fixture(scope="module")

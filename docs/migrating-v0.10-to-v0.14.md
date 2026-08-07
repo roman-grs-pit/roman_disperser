@@ -16,6 +16,52 @@ Quick orientation:
 | v0.13.0 | Per-SCA RNG keys; provenance header cards | ISIM noise only |
 | v0.13.1 | Line-centering validation harness | No |
 | v0.14.0 | Prism support (both WFI dispersing elements) | No (grism unchanged) |
+| v0.14.1 | Documentation (this guide) | No |
+| v0.14.2 | Reference data pinned + lock-resolved; element-first API cleanups | No |
+
+## Already on v0.14?
+
+If you are upgrading from v0.14.0 or v0.14.1 rather than v0.10, one change
+can bite: **since v0.14.2 the optical-model delivery is resolved from the
+data dir's `data-versions.lock`**, written by hydrate — never from a
+filename baked into the code, and never inferred from what happens to sit
+in the directory. A data dir assembled before the lock existed (or by
+hand) now fails loudly with a `FileNotFoundError` even though the YAML is
+sitting in it. The fix is one command — `pixi run hydrate` (or
+`roman-disperser-hydrate`), which records the delivery in the lock — or an
+explicit declaration (`optical_model_version:` / `optical_model:` in the
+config). This also applies to `--mosaic`, which loads the optical model
+for focal-plane geometry; its escape hatch is `--optical-model`. Details
+in "Reference data" below; everything else in this guide concerns the
+v0.10 → v0.14 jump.
+
+## What to do (the short version)
+
+Five steps migrate a working v0.10 setup. Everything after this section is
+the detail behind them — read it when a step bites, not before.
+
+1. **Re-hydrate reference data**: `pixi run hydrate` (or
+   `roman-disperser-hydrate`). Not optional: since v0.14.2 the optical model
+   is resolved from the data dir's `data-versions.lock`, and a data dir
+   hydrated before the lock existed fails loudly until re-hydrated. (Safe on
+   an up-to-date dir — a plain re-run never changes installed data; see
+   INSTALL.md "Staying current".)
+2. **Fix the loud breaks**, if your code hits them: replace
+   `pipeline.ORDERS`/`LAM_MIN`/`LAM_MAX` imports with `elements.GRISM`
+   fields, and don't wrap RA/Dec in `jnp.array()` before `get_fpa_pos`
+   (float64 host arrays only). Both fail with clear exceptions, so a test
+   run finds every site.
+3. **Rename** `build_grism_image.py` invocations to
+   `build_dispersed_image.py`. The old name still works with a
+   `FutureWarning`, so this can wait — but not forever.
+4. **Re-baseline**: do not compare v0.14 products against v0.10-era ones.
+   Source positions moved (GPU TF32 and projection fixes) and every ISIM
+   noise realisation changed. Re-run your own regression baselines on v0.14.
+5. If you consume products from **mixed code versions**, key comparisons on
+   the `CODEVER`/`GITSHA` header cards (present since v0.13.0).
+
+Prism users have one extra step: point `catalog_dir` at a 7500 Å-floor
+catalog (the vendored `catalog-v2` is grism-only; see "Reference data").
 
 ## Science changes: results differ from v0.10
 
@@ -59,15 +105,21 @@ must identify which era a FITS product is from, v0.13+ products carry
 ## API changes: what breaks loudly
 
 1. **`pipeline.ORDERS`, `pipeline.LAM_MIN`, `pipeline.LAM_MAX` are gone**
-   (v0.14.0). Orders and band are per-element now:
+   (v0.14.0). Orders and band are per-element now.
+
+   Before:
 
    ```python
-   # before                          # after
-   from roman_disperser.pipeline \
-       import ORDERS, LAM_MIN, LAM_MAX
-                                     from roman_disperser.elements import GRISM
-                                     ORDERS = GRISM.orders          # ("0", "1", "2")
-                                     LAM_MIN, LAM_MAX = GRISM.lam_min, GRISM.lam_max
+   from roman_disperser.pipeline import ORDERS, LAM_MIN, LAM_MAX
+   ```
+
+   After:
+
+   ```python
+   from roman_disperser.elements import GRISM
+
+   ORDERS = GRISM.orders                        # ("0", "1", "2")
+   LAM_MIN, LAM_MAX = GRISM.lam_min, GRISM.lam_max   # 0.9, 2.0 um
    ```
 
    `pipeline.load_sensitivities(...)` and `select_sources_per_order(...)`
@@ -84,10 +136,16 @@ must identify which era a FITS product is from, v0.13+ products carry
    `sky_to_tangent_offsets` (the float64 host half) outside.
 
 3. **`psf_model` selects PSFs by STPSF filter, not by hardcoded order maps**
-   (v0.14.0). `order=` still works for the grism (the default mapping is
-   applied); code that relied on unknown orders silently mapping to
-   `ORDER<n>` cache filenames now gets an exception. For the prism, pass
-   `stpsf_filter=element.stpsf_filters[order]`.
+   (v0.14.0). This only affects you if you *generate* PSF caches yourself or
+   load them with non-grism orders — ordinary use (loading the vendored grism
+   caches with `order="0"`/`"1"`/`"2"`) is unchanged, because the grism
+   default mapping is applied automatically. What changed: code that relied
+   on unknown orders silently mapping to `ORDER<n>` cache filenames now gets
+   an exception, and prism caches are selected by passing the element —
+   `get_or_make_psf_payload(..., element=PRISM)` derives the STPSF filter
+   *and* the wavelength grid together (since v0.14.2; passing a non-grism
+   `stpsf_filter=` alone raises unless the matching `wavelengths=` is also
+   given, because the default grid is the grism band).
 
 4. **Meridian/float32 guards.** Code paths that used to produce silently
    wrong answers now raise: float32 RA into `sky_to_tangent_offsets`
@@ -119,7 +177,7 @@ must identify which era a FITS product is from, v0.13+ products carry
 
 Hydration (`pixi run hydrate` / `roman-disperser-hydrate`) works as in v0.10;
 the manifest gained three prism assets (`optical_model_prism`,
-`sensitivities_prism`, `psf_prism`), so a full hydrate is now ~6.4 GB (was
+`sensitivities_prism`, `psf_prism`), so a full hydrate is now ~6.5 GB (was
 ~4.5 GB). Grism-only work can skip them:
 `--only optical_model,sensitivities,synphot,psf,catalog`.
 
@@ -128,18 +186,19 @@ One caveat: the vendored `catalog-v2` is still on the grism 9000 Å grid, so
 spectrum with no blue-end SED support. Until a `catalog-v3` release exists,
 prism runs must point `catalog_dir` at a 7500 Å-floor catalog.
 
-## Checklist
+Since v0.14.2 the data directory's *role* also changes: the optical-model
+delivery loaded at run time is resolved from the data dir's
+`data-versions.lock` (written by hydrate), not from a filename baked into the
+code. Two consequences for old setups:
 
-For a v0.10-era driver or analysis moving to v0.14:
-
-1. Replace `pipeline.ORDERS`/`LAM_MIN`/`LAM_MAX` imports with
-   `elements.GRISM` fields (loud `ImportError` if you miss one).
-2. Make sure nothing wraps RA/Dec in `jnp.array()` before `get_fpa_pos`
-   (loud `TypeError` if it does).
-3. Rename `build_grism_image.py` invocations to `build_dispersed_image.py`
-   (or accept the `FutureWarning` for now).
-4. Re-hydrate reference data; re-run your own regression baselines rather
-   than comparing against pre-v0.13 products (positions and ISIM noise both
-   moved, for the reasons above).
-5. If you consume products from mixed code versions, key your comparisons on
-   the `CODEVER`/`GITSHA` cards (present since v0.13.0).
+- A data dir with **no lock entry** for the optical model — hydrated before
+  the lock existed, or assembled by hand — now fails loudly
+  (`FileNotFoundError` listing the candidate files) even though the YAML is
+  sitting right there: undeclared files are never adopted. Re-hydrate (which
+  records the version), or declare one explicitly via the
+  `optical_model_version:` config key / `--optical-model-version` flag.
+- The lock **pins** your data: upstream publishing a new delivery changes
+  nothing on your machine, and a plain re-hydrate stays at the pinned
+  versions (it only repairs or completes the installation). Upgrading is
+  explicit — `roman-disperser-hydrate --update` moves the pin to the current
+  manifest and re-installs what changed. See INSTALL.md "Staying current".
