@@ -130,6 +130,49 @@ def test_hydrate_asset_downloads_to_destination(tmp_path, monkeypatch):
     assert (base / "Roman_grism_OpticalModel_v0.8.yaml").read_bytes() == b"payload"
 
 
+def test_nonextract_asset_refetches_on_lock_mismatch(tmp_path, monkeypatch):
+    # Non-extract filenames need not carry the release version (PSF caches
+    # don't), so a present file may be another delivery's under the same
+    # name. A lock entry disagreeing with the resolved tag must force a
+    # re-download — otherwise --update writes the new tag into the lock
+    # while the old bytes stay on disk.
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"new delivery")
+    monkeypatch.setattr(
+        hydrate, "list_release_files",
+        lambda tag: [("psf_WFI01_GRISM0_4x4x56.npz", src.as_uri())],
+    )
+    base = tmp_path / "data"
+    dest = base / "psf_cache" / "psf_WFI01_GRISM0_4x4x56.npz"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"old delivery")
+    hydrate.hydrate_asset(hydrate.ASSETS["psf"], "psf-v2", base,
+                          locked_tag="psf-v1")
+    assert dest.read_bytes() == b"new delivery"
+
+
+def test_nonextract_asset_pinned_present_not_refetched(tmp_path, monkeypatch):
+    # Lock agrees with the resolved tag -> present files are left alone
+    # (the URL below would fail if a fetch were attempted).
+    monkeypatch.setattr(
+        hydrate, "list_release_files",
+        lambda tag: [("psf_WFI01_GRISM0_4x4x56.npz", "file:///nonexistent")],
+    )
+    base = tmp_path / "data"
+    dest = base / "psf_cache" / "psf_WFI01_GRISM0_4x4x56.npz"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"installed")
+    hydrate.hydrate_asset(hydrate.ASSETS["psf"], "psf-v1", base,
+                          locked_tag="psf-v1")
+    assert dest.read_bytes() == b"installed"
+
+
+def test_default_manifest_covers_all_assets():
+    # The offline fallback must know every registered asset, or a fresh
+    # hydrate on a box that cannot reach GitHub silently installs a subset.
+    assert set(hydrate.DEFAULT_MANIFEST) == set(hydrate.ASSETS)
+
+
 def _raiser(msg):
     def fail(*a, **k):
         raise AssertionError(msg)

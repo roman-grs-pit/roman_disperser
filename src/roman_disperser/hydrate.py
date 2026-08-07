@@ -66,12 +66,10 @@ ASSETS = {
                      done_marker="roman_wfi_f158.fits"),
     "psf": Asset("psf", "psf_cache", sca_filter=True),
     "catalog": Asset("catalog", "catalogs", extract=True, done_marker="metadata.parquet"),
-    # Prism assets. No releases exist yet (deliberately unpublished until the
-    # prism-merge attempts are compared), so the remote manifest carries no
-    # version for these keys and hydrate skips them with a message; once the
-    # releases are cut and the manifest gains the keys, they hydrate like any
-    # other asset. Prism PSF caches share psf_cache/ with the grism ones —
-    # filenames carry the STPSF filter (PRISM vs GRISM0/1), so no collision.
+    # Prism assets (published since v0.14.0: optical-model-prism-v0.8,
+    # sensitivities-prism-v1, psf-prism-v1). Prism PSF caches share
+    # psf_cache/ with the grism ones — filenames carry the STPSF filter
+    # (PRISM vs GRISM0/1), so no collision.
     "optical_model_prism": Asset("optical_model_prism", ""),
     "sensitivities_prism": Asset("sensitivities_prism", "sensitivities_prism",
                                  extract=True,
@@ -87,6 +85,9 @@ DEFAULT_MANIFEST = {
     "synphot": "synphot-v1",
     "psf": "psf-v1",
     "catalog": "catalog-v2",
+    "optical_model_prism": "optical-model-prism-v0.8",
+    "sensitivities_prism": "sensitivities-prism-v1",
+    "psf_prism": "psf-prism-v1",
 }
 
 
@@ -156,6 +157,15 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
     always describes the actual contents. Re-extraction overwrites in place;
     files dropped between releases may linger (harmless for these assets,
     which are read by name).
+
+    Non-extract assets get the same treatment: their filenames need not
+    carry the release version either (the PSF caches don't), so a file that
+    is "already present" may be from another delivery. Present files whose
+    lock entry disagrees with ``tag`` are re-downloaded, keeping the
+    written lock truthful about what is on disk. One documented exception:
+    an ``--sca``-filtered PSF hydrate records the full release tag while
+    only the requested SCAs are installed — the lock is right about the
+    *version* but not about completeness.
     """
     out = base / asset.subdir
 
@@ -189,6 +199,16 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
     files = list_release_files(tag)
     if asset.sca_filter:
         files = _filter_sca(files, sca)
+    if locked_tag != tag and not force:
+        # Present files may be another delivery's under the same name
+        # (version is not in the filename) — re-fetch them so the lock
+        # written afterwards describes the actual contents.
+        present = [n for n, _ in files if (out / n).exists()]
+        if present:
+            have = locked_tag or "an unrecorded version"
+            print(f"    {len(present)} present file(s) are {have}, "
+                  f"not {tag}; re-downloading")
+            force = True
     if dry_run:
         print(f"    would download {len(files)} file(s) -> {out}")
         return

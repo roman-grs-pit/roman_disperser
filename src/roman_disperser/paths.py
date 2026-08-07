@@ -20,7 +20,8 @@ import json
 import os
 from pathlib import Path
 
-# Layout within the data directory.
+# Layout within the data directory. (Sensitivities are per-element —
+# SENSITIVITIES_SUBDIR is the grism one; see elements.sensitivities_subdir.)
 CATALOGS_SUBDIR = "catalogs"
 SENSITIVITIES_SUBDIR = "sensitivities"
 PSF_CACHE_SUBDIR = "psf_cache"
@@ -44,22 +45,44 @@ def data_dir(explicit=None):
 
 
 def catalog_dir(explicit=None):
-    """Source-catalog directory (``metadata.parquet`` + ``seds.zarr/``)."""
+    """Source-catalog directory (``metadata.parquet`` + ``seds.zarr/``).
+
+    ``explicit`` is a *directory* path, returned as-is.
+    """
     return Path(explicit) if explicit is not None else data_dir() / CATALOGS_SUBDIR
 
 
-def sensitivity_dir(explicit=None):
-    """Sensitivity-curve directory (FITS files + ``sensitivity_map.yaml``)."""
-    return Path(explicit) if explicit is not None else data_dir() / SENSITIVITIES_SUBDIR
+def sensitivity_dir(explicit=None, element=None):
+    """Sensitivity-curve directory (FITS files + ``sensitivity_map.yaml``).
+
+    ``explicit`` is a *directory* path, returned as-is. Otherwise the
+    element's subdir under the data dir — ``sensitivities/`` for the grism
+    (the default, as everywhere), ``sensitivities_prism/`` for the prism.
+    The two deliveries cannot share one directory: each ships its own
+    ``sensitivity_map.yaml`` index, and the grism filenames carry no
+    element marker.
+    """
+    if explicit is not None:
+        return Path(explicit)
+    from roman_disperser.elements import get_element
+    return data_dir() / get_element(element).sensitivities_subdir
 
 
 def psf_cache_dir(explicit=None):
-    """PSF cache directory (``psf_WFI*.npz``)."""
+    """PSF cache directory (``psf_WFI*.npz``).
+
+    ``explicit`` is a *directory* path, returned as-is. Both elements share
+    this one directory by design — the cache filenames carry the STPSF
+    filter (``GRISM0``/``GRISM1``/``PRISM``), so they cannot collide.
+    """
     return Path(explicit) if explicit is not None else data_dir() / PSF_CACHE_SUBDIR
 
 
 def synphot_dir(explicit=None):
-    """Synphot reference directory (bandpasses + spectral templates)."""
+    """Synphot reference directory (bandpasses + spectral templates).
+
+    ``explicit`` is a *directory* path, returned as-is.
+    """
     return Path(explicit) if explicit is not None else data_dir() / SYNPHOT_SUBDIR
 
 
@@ -108,7 +131,10 @@ def optical_model_path(explicit=None, element=None, version=None):
     are never scanned to pick a model (a stray file must not silently
     become the calibration), only listed as a hint on failure.
 
-    1. ``explicit`` — a full path; returned as-is (config ``optical_model:``).
+    1. ``explicit`` — a full *file* path to the YAML itself, returned as-is
+       (config ``optical_model:``). Unlike the sibling resolvers, whose
+       ``explicit`` names a directory, this one resolves a single file —
+       so its ``explicit`` is that file.
     2. ``version`` — delivery version string, e.g. ``"v0.8"`` (config
        ``optical_model_version:``); filename built by
        :func:`optical_model_filename`.

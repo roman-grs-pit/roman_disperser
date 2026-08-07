@@ -183,13 +183,10 @@ def resolve_paths(catalog_dir=None, sensitivity_dir=None,
         are hydrated side by side. Ignored if ``optical_model_path`` is given.
     """
     element = elements.get_element(element)
-    data = paths.data_dir()
-    if sensitivity_dir is None:
-        sensitivity_dir = data / element.sensitivities_subdir
     optical_model_path = paths.optical_model_path(
         optical_model_path, element=element, version=optical_model_version)
     return (paths.catalog_dir(catalog_dir),
-            Path(sensitivity_dir),
+            paths.sensitivity_dir(sensitivity_dir, element=element),
             Path(optical_model_path),
             paths.psf_cache_dir(psf_cache_dir))
 

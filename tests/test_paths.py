@@ -111,3 +111,23 @@ class TestOpticalModelPath:
         for element in (GRISM, PRISM):
             p = paths.optical_model_path(element=element)
             assert p.exists(), p
+
+
+class TestSensitivityDir:
+    def test_default_is_grism(self, tmp_path, monkeypatch):
+        d = _make_data_dir(tmp_path, monkeypatch)
+        assert paths.sensitivity_dir() == d / "sensitivities"
+
+    def test_per_element(self, tmp_path, monkeypatch):
+        d = _make_data_dir(tmp_path, monkeypatch)
+        assert paths.sensitivity_dir(element=GRISM) == d / "sensitivities"
+        assert (paths.sensitivity_dir(element=PRISM)
+                == d / "sensitivities_prism")
+        assert (paths.sensitivity_dir(element="prism")
+                == d / "sensitivities_prism")
+
+    def test_explicit_directory_wins(self, tmp_path, monkeypatch):
+        _make_data_dir(tmp_path, monkeypatch)
+        explicit = tmp_path / "elsewhere"
+        assert (paths.sensitivity_dir(explicit, element=PRISM)
+                == explicit)
