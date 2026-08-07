@@ -143,7 +143,7 @@ must identify which era a FITS product is from, v0.13+ products carry
    on unknown orders silently mapping to `ORDER<n>` cache filenames now gets
    an exception, and prism caches are selected by passing the element —
    `get_or_make_psf_payload(..., element=PRISM)` derives the STPSF filter
-   *and* the wavelength grid together (since v0.14.2; passing
+   *and* the wavelength grid together (since v0.14.2; passing a non-grism
    `stpsf_filter=` alone raises unless the matching `wavelengths=` is also
    given, because the default grid is the grism band).
 

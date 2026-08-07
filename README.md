@@ -221,7 +221,7 @@ roman_disperser/
 │   ├── sensitivities_prism/       # Per-SCA prism sensitivity curves
 │   ├── stars/                     # Star catalog and SED templates (in-repo)
 │   ├── synphot/                   # F158/F184 bandpass and templates
-│   └── psf_cache/                 # PSF grids, both elements (54 files, ~5.9 GiB)
+│   └── psf_cache/                 # PSF grids, both elements (54 files, ~6.4 GB)
 ├── docs/
 ├── workbench/                     # Dated one-off campaigns and validation records
 ├── figures/                       # Published showcase figures (see scripts/make_*_figure.py)

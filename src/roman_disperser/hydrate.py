@@ -162,10 +162,13 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
     carry the release version either (the PSF caches don't), so a file that
     is "already present" may be from another delivery. Present files whose
     lock entry disagrees with ``tag`` are re-downloaded, keeping the
-    written lock truthful about what is on disk. One documented exception:
-    an ``--sca``-filtered PSF hydrate records the full release tag while
-    only the requested SCAs are installed — the lock is right about the
-    *version* but not about completeness.
+    written lock truthful about what is on disk. Because that check runs on
+    the ``--sca``-filtered list, an ``--sca``-filtered install at a tag the
+    lock disagrees with is *refused* when files outside the filter are
+    present — otherwise the lock would record ``tag`` for files still at
+    the old delivery. The one remaining ``--sca`` caveat is completeness:
+    a filtered hydrate records the full release tag while only the
+    requested SCAs are on disk.
     """
     out = base / asset.subdir
 
@@ -197,21 +200,41 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
         return
 
     files = list_release_files(tag)
+    if asset.sca_filter and sca and locked_tag != tag:
+        # A filtered install at a different tag would leave files outside
+        # the filter at the old delivery while the lock records the new
+        # one for all of them. Refuse rather than write a lying lock.
+        wanted = tuple(f"WFI{n:02d}" for n in sca)
+        outside = [n for n, _ in files
+                   if (out / n).exists()
+                   and not any(w in n for w in wanted)]
+        if outside:
+            raise ValueError(
+                f"Refusing an --sca-filtered install of {tag}: "
+                f"{len(outside)} present file(s) outside the requested SCAs "
+                f"are {locked_tag or 'an unrecorded version'}, and the lock "
+                f"would record {tag} for all of them. Re-run without --sca "
+                f"to move the whole asset."
+            )
     if asset.sca_filter:
         files = _filter_sca(files, sca)
+    refetch = []
     if locked_tag != tag and not force:
         # Present files may be another delivery's under the same name
         # (version is not in the filename) — re-fetch them so the lock
         # written afterwards describes the actual contents.
-        present = [n for n, _ in files if (out / n).exists()]
-        if present:
-            have = locked_tag or "an unrecorded version"
-            print(f"    {len(present)} present file(s) are {have}, "
-                  f"not {tag}; re-downloading")
-            force = True
+        refetch = [n for n, _ in files if (out / n).exists()]
     if dry_run:
-        print(f"    would download {len(files)} file(s) -> {out}")
+        extra = (f" ({len(refetch)} present but "
+                 f"{locked_tag or 'unrecorded'}; would re-download)"
+                 if refetch else "")
+        print(f"    would download {len(files)} file(s) -> {out}{extra}")
         return
+    if refetch:
+        have = locked_tag or "an unrecorded version"
+        print(f"    {len(refetch)} present file(s) are {have}, not {tag}; "
+              f"re-downloading")
+        force = True
     out.mkdir(parents=True, exist_ok=True)
     got = 0
     for i, (name, url) in enumerate(files, 1):

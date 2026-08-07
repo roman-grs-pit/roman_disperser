@@ -8,6 +8,8 @@ and fast.
 import json
 import tarfile
 
+import pytest
+
 from roman_disperser import hydrate
 from roman_disperser.hydrate import (
     _download,
@@ -165,6 +167,38 @@ def test_nonextract_asset_pinned_present_not_refetched(tmp_path, monkeypatch):
     hydrate.hydrate_asset(hydrate.ASSETS["psf"], "psf-v1", base,
                           locked_tag="psf-v1")
     assert dest.read_bytes() == b"installed"
+
+
+def test_nonextract_sca_filtered_upgrade_refused(tmp_path, monkeypatch):
+    # An --sca-filtered install at a tag the lock disagrees with must be
+    # refused when files outside the filter are present: only the filtered
+    # files would be re-fetched, but the lock would record the new tag for
+    # all of them — a lying lock about 35 of 36 files.
+    monkeypatch.setattr(
+        hydrate, "list_release_files",
+        lambda tag: [("psf_WFI01_GRISM0_x.npz", "file:///unused"),
+                     ("psf_WFI02_GRISM0_x.npz", "file:///unused")],
+    )
+    base = tmp_path / "data"
+    (base / "psf_cache").mkdir(parents=True)
+    (base / "psf_cache" / "psf_WFI02_GRISM0_x.npz").write_bytes(b"v1 bytes")
+    with pytest.raises(ValueError, match="Refusing an --sca-filtered"):
+        hydrate.hydrate_asset(hydrate.ASSETS["psf"], "psf-v2", base,
+                              sca=[1], locked_tag="psf-v1")
+
+    # Fresh dir (nothing outside the filter): the same call is fine.
+    base2 = tmp_path / "data2"
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"payload")
+    monkeypatch.setattr(
+        hydrate, "list_release_files",
+        lambda tag: [("psf_WFI01_GRISM0_x.npz", src.as_uri()),
+                     ("psf_WFI02_GRISM0_x.npz", src.as_uri())],
+    )
+    hydrate.hydrate_asset(hydrate.ASSETS["psf"], "psf-v2", base2,
+                          sca=[1], locked_tag=None)
+    assert (base2 / "psf_cache" / "psf_WFI01_GRISM0_x.npz").exists()
+    assert not (base2 / "psf_cache" / "psf_WFI02_GRISM0_x.npz").exists()
 
 
 def test_default_manifest_covers_all_assets():

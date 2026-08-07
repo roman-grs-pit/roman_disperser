@@ -79,7 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DEFAULT_MANIFEST` completeness, `sensitivity_dir(element=)`,
   `element=` derivation/exclusivity/vendored-cache selection on
   `get_or_make_psf_payload`, `__version__`/`pipeline` export
-  (targeted suite 93 passed).
+  (targeted suite 106 passed).
 
 ### Fixed
 - Hydrating a version that differs from the installed one now re-extracts
@@ -95,7 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version, so present files whose lock entry disagrees with the resolved
   tag are re-downloaded rather than skipped — previously `--update` to a
   same-filename release would have rewritten the lock while downloading
-  nothing. One documented exception: an `--sca`-filtered PSF hydrate
+  nothing. An `--sca`-filtered install at a tag the lock disagrees with is
+  **refused** when files outside the filter are present (it would leave
+  them at the old delivery while the lock recorded the new tag for all).
+  The one remaining `--sca` caveat is completeness: a filtered hydrate
   records the full release tag while only the requested SCAs are on disk.
 - README Quick Start snippets carried pre-rename disperser kwargs
   (`star_flux=`/`xsca_star=`) and raised `TypeError` if copy-pasted; both
@@ -117,8 +120,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout; download-size figures re-measured and unified to decimal units
   (~6.5 GB total); a laptop-local path removed from
   `docs/disperser_design.md`; both notebooks state prerequisites (install
-  + hydrate), runtime and hardware up front and fail fast in cell 1 if
-  reference data is missing; the GPU notebook's introduction now announces
+  + hydrate), runtime and hardware up front and fail fast in an early
+  cell if reference data is missing; the GPU notebook's introduction now announces
   its prism section and its prism cells use the same JIT-wrapped
   `fori_loop` pattern the notebook teaches (both notebooks re-executed);
   `docs/grism_pipeline.md` documents `OPTMODEL`, the element/optical_model

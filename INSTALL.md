@@ -275,9 +275,10 @@ roman-disperser-hydrate --update      # move the pin to the current manifest
 
 `--update` re-installs only the assets whose version actually moved and
 rewrites the lock to match, so the lock always describes what is on disk.
-(One documented exception: an `--sca`-filtered PSF hydrate records the full
+(One documented `--sca` caveat: a filtered PSF hydrate records the full
 release tag while only the requested SCAs are installed — right version,
-partial contents.) The code reads the lock at run time (the optical-model
+partial contents. Using `--sca` to *upgrade* an installed set is refused,
+since files outside the filter would silently stay at the old delivery.) The code reads the lock at run time (the optical-model
 delivery is resolved from it — see `docs/element_support.md`), and every
 pipeline product records the delivery it used (`OPTMODEL` FITS card,
 `optical_model` in the meta YAML), so an upgrade is always visible in your
