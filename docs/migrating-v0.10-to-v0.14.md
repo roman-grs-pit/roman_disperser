@@ -16,6 +16,24 @@ Quick orientation:
 | v0.13.0 | Per-SCA RNG keys; provenance header cards | ISIM noise only |
 | v0.13.1 | Line-centering validation harness | No |
 | v0.14.0 | Prism support (both WFI dispersing elements) | No (grism unchanged) |
+| v0.14.1 | Documentation (this guide) | No |
+| v0.14.2 | Reference data pinned + lock-resolved; element-first API cleanups | No |
+
+## Already on v0.14?
+
+If you are upgrading from v0.14.0 or v0.14.1 rather than v0.10, one change
+can bite: **since v0.14.2 the optical-model delivery is resolved from the
+data dir's `data-versions.lock`**, written by hydrate — never from a
+filename baked into the code, and never inferred from what happens to sit
+in the directory. A data dir assembled before the lock existed (or by
+hand) now fails loudly with a `FileNotFoundError` even though the YAML is
+sitting in it. The fix is one command — `pixi run hydrate` (or
+`roman-disperser-hydrate`), which records the delivery in the lock — or an
+explicit declaration (`optical_model_version:` / `optical_model:` in the
+config). This also applies to `--mosaic`, which loads the optical model
+for focal-plane geometry; its escape hatch is `--optical-model`. Details
+in "Reference data" below; everything else in this guide concerns the
+v0.10 → v0.14 jump.
 
 ## What to do (the short version)
 
@@ -123,8 +141,11 @@ must identify which era a FITS product is from, v0.13+ products carry
    caches with `order="0"`/`"1"`/`"2"`) is unchanged, because the grism
    default mapping is applied automatically. What changed: code that relied
    on unknown orders silently mapping to `ORDER<n>` cache filenames now gets
-   an exception, and prism caches are selected by passing
-   `stpsf_filter=element.stpsf_filters[order]`.
+   an exception, and prism caches are selected by passing the element —
+   `get_or_make_psf_payload(..., element=PRISM)` derives the STPSF filter
+   *and* the wavelength grid together (since v0.14.2; passing
+   `stpsf_filter=` alone raises unless the matching `wavelengths=` is also
+   given, because the default grid is the grism band).
 
 4. **Meridian/float32 guards.** Code paths that used to produce silently
    wrong answers now raise: float32 RA into `sky_to_tangent_offsets`
@@ -156,7 +177,7 @@ must identify which era a FITS product is from, v0.13+ products carry
 
 Hydration (`pixi run hydrate` / `roman-disperser-hydrate`) works as in v0.10;
 the manifest gained three prism assets (`optical_model_prism`,
-`sensitivities_prism`, `psf_prism`), so a full hydrate is now ~6.4 GB (was
+`sensitivities_prism`, `psf_prism`), so a full hydrate is now ~6.5 GB (was
 ~4.5 GB). Grism-only work can skip them:
 `--only optical_model,sensitivities,synphot,psf,catalog`.
 

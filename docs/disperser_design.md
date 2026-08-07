@@ -1,9 +1,5 @@
 # Disperser Module Implementation Plan
 
-> **To resume this plan:** This document is saved at
-> `/Users/npadmana/.claude/plans/serene-squishing-stardust.md`
-> and can be referenced to continue implementation.
-
 ## Overview
 
 Create a new `disperser.py` module that disperses a 2D spatial image × 1D spectrum onto a detector using the Roman optical model's `trace_beam` function.

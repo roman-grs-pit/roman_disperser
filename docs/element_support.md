@@ -23,11 +23,11 @@ answer. This table is the record of which is which.
 | Module | Status |
 |---|---|
 | `elements.py` | The element records themselves, plus `get_element()` and `validate_against_model()` |
-| `paths.py` | element-independent resolver for the data dir. `optical_model_path(element=, version=)` resolves the delivery file per element (explicit path > explicit version > `data-versions.lock` > loud failure); `sensitivity_dir()` returns the grism default, per-element sensitivity paths come from `pipeline.resolve_paths(..., element=)` via `element.sensitivities_subdir` |
+| `paths.py` | element-independent resolver for the data dir. `optical_model_path(element=, version=)` resolves the delivery file per element (explicit path > explicit version > `data-versions.lock` > loud failure); `sensitivity_dir(element=)` resolves the per-element sensitivity subdir (grism default, as everywhere) |
 | `pipeline.py` | ✅ `resolve_paths(..., element=)` picks the per-element optical model and sensitivity paths; everything downstream (`select_sources_per_order`, `load_sensitivities`, the batched dispersers) consumes plain per-element values (`orders`, band) that the caller takes from the element — the element itself never enters jitted code |
-| `psf_model.py` | ✅ takes `stpsf_filter=` explicitly; the per-element order→filter mapping lives on `element.stpsf_filters` |
+| `psf_model.py` | ✅ `get_or_make_psf_payload(element=)` derives the STPSF filter and wavelength grid from the element (the recommended path); the low-level `stpsf_filter=`/`wavelengths=` knobs remain for cache generation |
 | `catalog.py` | ✅ `select_sources` takes explicit `wl_min`/`wl_max` (grism defaults); callers pass the element's band |
-| `hydrate.py` | ⏳ prism asset keys (`optical_model_prism`, `sensitivities_prism`, `psf_prism`) are wired, but no `roman_disperser_data` release carries them yet — see below |
+| `hydrate.py` | ✅ prism assets (`optical_model_prism`, `sensitivities_prism`, `psf_prism`) hydrate like any other asset — published as `optical-model-prism-v0.8`, `sensitivities-prism-v1`, `psf-prism-v1` |
 | `optical_model.py`, `optical_model_jax.py` | ✅ element-independent by construction; `wl_transform: log` (prism) was already handled generically |
 | `disperser.py`, `star_disperser.py`, `galaxy_disperser.py`, `sersic.py`, `psf_utils.py` | ✅ element-independent — they take payloads, not elements |
 | `refdata.py`, `demo_utils.py` | ✅ element-independent (synphot bandpasses, synthetic demos) |
@@ -40,7 +40,7 @@ answer. This table is the record of which is which.
 | `build_source_catalog.py` | ✅ | ✅ | Default grid is **7500–21000 Å**, a superset for both elements. `--wl-min 9000` reproduces the grism-era `catalog-v2` grid. The Galacticus slice is *derived* from the requested range, not hardcoded |
 | `verify_source_catalog.py` | ✅ | ✅ | Its Galacticus slice is likewise derived from the catalog's own grid |
 | `generate_psf_caches.py` | ✅ | ✅ | `--element`; orders default to the element's orders with a distinct STPSF filter (0,1 grism; 1 prism) |
-| `download_psf_caches.py` | ✅ | ⏳ | `--element prism` maps to the `psf_prism` asset, which fails until a release publishes it |
+| `download_psf_caches.py` | ✅ | ✅ | `--element prism` maps to the `psf_prism` asset (`psf-prism-v1`) |
 | `wrap_with_romanisim.py` | ✅ | ✅ | Bandpass resolved **per file** from the `OPTELEM` header card (`--bandpass` overrides; `--element` covers pre-v0.13 files without the card). Globs both `grism_*` and `prism_*` product prefixes by default; `--prefix` for custom `output_prefix` runs |
 | `slurm_generate_psfs.sh` | ✅ | ✅ | Passes `--element` through to `generate_psf_caches.py` |
 | `compute_showcase_traces.py` | ✅ | ✅ | Figure script with its own `--mode` flag and hardcoded paths into the 2026-05 staging checkouts; predates the merge and was left as the record of how those figures were made |
@@ -57,12 +57,11 @@ answer. This table is the record of which is which.
 | PSF caches | `<data>/psf_cache/psf_WFI*_GRISM{0,1}_*.npz` | `<data>/psf_cache/psf_WFI*_PRISM_*.npz` — same directory; the filenames carry the STPSF filter so they cannot collide |
 | Catalog | shared — `<data>/catalogs/` | shared, **but see below** |
 
-⏳ **Not yet published.** The prism optical model, sensitivities and PSF caches
-are currently *staged by hand* into the shared reference-data directory on the
-cluster; they have no release, no manifest entry, and no `data-versions.lock`
-entry. See that directory's `PROVENANCE.md`. The hydrate asset keys exist, so
-publication is a `roman_disperser_data` release away — unblocked now that the
-merge base is settled.
+All three prism assets are **published** `roman_disperser_data` releases
+(`optical-model-prism-v0.8`, `sensitivities-prism-v1`, `psf-prism-v1`, since
+v0.14.0), carried in the remote manifest and recorded in
+`data-versions.lock` on hydrate — no hand-staging involved. A full
+`pixi run hydrate` fetches both elements (~6.5 GB).
 
 ⚠️ **The vendored catalog is still grism-only.** `catalog-v2` is on
 `linspace(9000, 21000, 6001)` Å; the prism band opens at 7500 Å, so 7500–9000 Å

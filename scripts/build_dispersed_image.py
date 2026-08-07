@@ -30,7 +30,7 @@ Supports two modes:
 
 Can also be imported as a module:
 
-    from scripts.build_grism_image import setup_pipeline, process_pointing
+    from scripts.build_dispersed_image import setup_pipeline, process_pointing
 
 **Memory note:** PSF payloads, dispersers, and JIT-compiled functions are built
 per-SCA and released after processing, so only one SCA's compiled code lives
@@ -1710,7 +1710,8 @@ def main():
                       help="Write a documented template config file and exit")
     mode.add_argument("--mosaic", type=str, metavar="DIR",
                       help="Generate mosaic PNG from a pointing directory "
-                           "containing grism_*_detSCA*.fits files")
+                           "containing *_detSCA*.fits files (any output "
+                           "prefix; either element)")
 
     # Batch mode: ECSV pointing table
     parser.add_argument("--pointings", type=str,
