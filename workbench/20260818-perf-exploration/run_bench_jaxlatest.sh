@@ -13,7 +13,7 @@ export JAX_COMPILATION_CACHE_DIR=/data/npadman/tmp/jax-cache-perf-latest
 cd "$WORKDIR"
 echo "=== node: $(hostname), GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
 rm -rf "$VENV"
-python3 -m venv "$VENV"
+/data/npadman/1-Projects/roman/roman_disperser/perf/.pixi/envs/default/bin/python -m venv "$VENV"
 source "$VENV/bin/activate"
 pip -q install -U pip
 pip -q install -e . astropy "jax[cuda12]"
