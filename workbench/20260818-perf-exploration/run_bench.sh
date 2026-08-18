@@ -8,7 +8,7 @@ set -euo pipefail
 
 WORKDIR=/data/npadman/1-Projects/roman/roman_disperser/perf
 BENCH=workbench/20260818-perf-exploration/bench_disperse.py
-RESULTS=workbench/20260818-perf-exploration/results
+RESULTS=workbench/20260818-perf-exploration/results/${BENCH_SUBDIR:-a10g}
 PIXI=/home/npadman/.pixi/bin/pixi
 
 export ROMAN_DISPERSER_DATA=/data/npadman/3-Resources/roman_disperser_data

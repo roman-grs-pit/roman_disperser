@@ -1,0 +1,51 @@
+{
+ "meta": {
+  "tag": "gpu-platform-alloc",
+  "jax": "0.7.2",
+  "backend": "gpu",
+  "device": "cuda:0",
+  "gpu": "NVIDIA A10G",
+  "host": "gpu-med-dy-g5-2xlarge-1",
+  "n_gal": 100,
+  "n_star": 300,
+  "batch": 100,
+  "chunk_size": 500,
+  "dlam_A": 2.0,
+  "seed": 0,
+  "sca": 1,
+  "env": {
+   "JAX_COMPILATION_CACHE_DIR": "/data/npadman/jax-cache-grism",
+   "XLA_PYTHON_CLIENT_ALLOCATOR": "platform",
+   "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+  }
+ },
+ "results": [
+  {
+   "order": "0",
+   "variant": "baseline",
+   "ms_per_gal": [
+    40.40956497192383,
+    12.11125373840332
+   ],
+   "compile_s": 3.243952989578247
+  },
+  {
+   "order": "1",
+   "variant": "baseline",
+   "ms_per_gal": [
+    40.87828874588013,
+    13.257322311401367
+   ],
+   "compile_s": 2.833211660385132
+  },
+  {
+   "order": "2",
+   "variant": "baseline",
+   "ms_per_gal": [
+    39.8225474357605,
+    12.07467794418335
+   ],
+   "compile_s": 2.8019847869873047
+  }
+ ]
+}

@@ -1,0 +1,82 @@
+{
+ "meta": {
+  "tag": "cpu-full",
+  "jax": "0.7.2",
+  "backend": "cpu",
+  "device": "TFRT_CPU_0",
+  "gpu": "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver. Make sure that the latest NVIDIA driver is installed and running.",
+  "host": "mem-int-dy-r6i-xlarge-1",
+  "n_gal": 12,
+  "n_star": 300,
+  "batch": 12,
+  "chunk_size": 500,
+  "dlam_A": 2.0,
+  "seed": 0,
+  "sca": 1,
+  "env": {
+   "JAX_COMPILATION_CACHE_DIR": "/data/npadman/jax-cache-grism"
+  }
+ },
+ "results": [
+  {
+   "order": "0",
+   "check": "local_equiv",
+   "rel_sum_diff": 0.0,
+   "allclose": true
+  },
+  {
+   "order": "0",
+   "variant": "baseline",
+   "ms_per_gal": [
+    4111.699461936951
+   ],
+   "compile_s": 11.955799579620361
+  },
+  {
+   "order": "0",
+   "variant": "noscatter",
+   "ms_per_gal": [
+    1382.7531337738037
+   ],
+   "compile_s": 8.857903003692627
+  },
+  {
+   "order": "0",
+   "variant": "local",
+   "ms_per_gal": [
+    4371.570249398549
+   ],
+   "compile_s": 11.999740839004517
+  },
+  {
+   "order": "1",
+   "check": "local_equiv",
+   "rel_sum_diff": 0.0,
+   "allclose": true
+  },
+  {
+   "order": "1",
+   "variant": "baseline",
+   "ms_per_gal": [
+    4212.020794550578
+   ],
+   "compile_s": 11.939207792282104
+  },
+  {
+   "order": "1",
+   "variant": "noscatter",
+   "ms_per_gal": [
+    1382.3454976081848
+   ],
+   "compile_s": 8.896536588668823
+  },
+  {
+   "order": "1",
+   "variant": "local",
+   "ms_per_gal": [
+    4369.322856267293
+   ],
+   "compile_s": 12.078706502914429
+  }
+ ]
+}

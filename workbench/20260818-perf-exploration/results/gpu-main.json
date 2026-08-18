@@ -1,0 +1,175 @@
+{
+ "meta": {
+  "tag": "gpu-main",
+  "jax": "0.7.2",
+  "backend": "gpu",
+  "device": "cuda:0",
+  "gpu": "NVIDIA A10G",
+  "host": "gpu-med-dy-g5-2xlarge-1",
+  "n_gal": 300,
+  "n_star": 300,
+  "batch": 100,
+  "chunk_size": 500,
+  "dlam_A": 2.0,
+  "seed": 0,
+  "sca": 1,
+  "env": {
+   "JAX_COMPILATION_CACHE_DIR": "/data/npadman/jax-cache-grism"
+  }
+ },
+ "results": [
+  {
+   "order": "0",
+   "check": "local_equiv",
+   "rel_sum_diff": 1.0710886755305182e-07,
+   "allclose": true
+  },
+  {
+   "order": "0",
+   "variant": "baseline",
+   "ms_per_gal": [
+    47.70230372746786,
+    9.094486236572266
+   ],
+   "compile_s": 11.68380355834961
+  },
+  {
+   "order": "0",
+   "variant": "noscatter",
+   "ms_per_gal": [
+    46.73872947692871,
+    8.960897127787272
+   ],
+   "compile_s": 11.355503797531128
+  },
+  {
+   "order": "0",
+   "variant": "spread",
+   "ms_per_gal": [
+    47.95206149419149,
+    9.273502031962076
+   ],
+   "compile_s": 11.463032484054565
+  },
+  {
+   "order": "0",
+   "variant": "local",
+   "ms_per_gal": [
+    48.446311950683594,
+    9.810662269592285
+   ],
+   "compile_s": 11.483488082885742
+  },
+  {
+   "order": "1",
+   "check": "local_equiv",
+   "rel_sum_diff": 0.0,
+   "allclose": true
+  },
+  {
+   "order": "1",
+   "variant": "baseline",
+   "ms_per_gal": [
+    48.578996658325195,
+    10.273125966389975
+   ],
+   "compile_s": 11.486177206039429
+  },
+  {
+   "order": "1",
+   "variant": "noscatter",
+   "ms_per_gal": [
+    46.76042000452677,
+    8.965028127034506
+   ],
+   "compile_s": 11.352962017059326
+  },
+  {
+   "order": "1",
+   "variant": "spread",
+   "ms_per_gal": [
+    48.083110650380455,
+    9.279274940490723
+   ],
+   "compile_s": 11.51159954071045
+  },
+  {
+   "order": "1",
+   "variant": "local",
+   "ms_per_gal": [
+    48.6696974436442,
+    10.491684277852377
+   ],
+   "compile_s": 11.525273561477661
+  },
+  {
+   "order": "2",
+   "check": "local_equiv",
+   "rel_sum_diff": 0.0,
+   "allclose": true
+  },
+  {
+   "order": "2",
+   "variant": "baseline",
+   "ms_per_gal": [
+    47.449729442596436,
+    9.226065476735434
+   ],
+   "compile_s": 11.476293325424194
+  },
+  {
+   "order": "2",
+   "variant": "noscatter",
+   "ms_per_gal": [
+    47.00162410736084,
+    8.962438106536865
+   ],
+   "compile_s": 11.374332189559937
+  },
+  {
+   "order": "2",
+   "variant": "spread",
+   "ms_per_gal": [
+    47.5996470451355,
+    9.27539030710856
+   ],
+   "compile_s": 11.620216369628906
+  },
+  {
+   "order": "2",
+   "variant": "local",
+   "ms_per_gal": [
+    48.86380195617676,
+    10.59231440226237
+   ],
+   "compile_s": 11.519396543502808
+  },
+  {
+   "order": "0",
+   "variant": "star_baseline",
+   "ms_per_star": [
+    20.36408344904582,
+    3.255190849304199
+   ],
+   "compile_s": 10.538758754730225
+  },
+  {
+   "order": "1",
+   "variant": "star_baseline",
+   "ms_per_star": [
+    20.656580130259197,
+    3.8619025548299155
+   ],
+   "compile_s": 10.449071884155273
+  },
+  {
+   "order": "2",
+   "variant": "star_baseline",
+   "ms_per_star": [
+    20.24665911992391,
+    3.336226145426432
+   ],
+   "compile_s": 10.500273942947388
+  }
+ ]
+}
