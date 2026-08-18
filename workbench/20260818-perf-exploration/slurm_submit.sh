@@ -12,7 +12,7 @@ mkdir -p "$LOGDIR" "$META"
 JOB=$(sbatch --parsable \
     -J perf-bench \
     -p gpu-med --gres=gpu:a10g:1 \
-    -c 8 --mem=24G -t 02:00:00 \
+    -c 4 --mem=24G -t 02:00:00 \
     -o "$LOGDIR/%j.out" \
     "$WORKDIR/workbench/20260818-perf-exploration/run_bench.sh")
 
