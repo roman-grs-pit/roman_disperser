@@ -223,11 +223,16 @@ def validate_catalog(meta, store, wavelengths, element):
                 f"{star_seds.shape[0]}"
             )
 
-    # Galaxy sim partition existence
+    # Galaxy sim partition existence.
+    # 20260801-xmm_lss schema shim (perf-exploration repro): partitions are
+    # galaxy_seds/sim_<name>/<component> keyed by the string 'sim' column and
+    # the 'disk_spheroid' column, replacing the older sim_<int:03d> layout.
     galaxies = meta[meta["type"] == "SER"]
     if len(galaxies) > 0:
-        for sim_val in galaxies["sim"].unique():
-            key = f"galaxy_seds/sim_{sim_val:03d}"
+        for (sim_val, component) in (
+            galaxies[["sim", "disk_spheroid"]].drop_duplicates().values
+        ):
+            key = f"galaxy_seds/sim_{sim_val}/{component}"
             if key not in store:
                 raise ValueError(f"Missing Zarr array for partition: {key}")
             if store[key].shape[1] != n_wl:
@@ -307,9 +312,10 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
     bad_total = 0
     bad_galaxies = []  # (sim, sed_index, n_bins, max_val)
 
-    # Group by sim partition for sequential Zarr access
-    for sim_val, group in galaxy_meta.groupby("sim"):
-        key = f"galaxy_seds/sim_{sim_val:03d}"
+    # Group by (sim, component) partition for sequential Zarr access
+    # (20260801-xmm_lss schema shim — see validate_catalog).
+    for (sim_val, component), group in galaxy_meta.groupby(["sim", "disk_spheroid"]):
+        key = f"galaxy_seds/sim_{sim_val}/{component}"
         arr = store[key]
         indices = group["sed_index"].values
         scales = group["flux_scale"].values.astype(np.float32)
@@ -328,7 +334,7 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
                 row_bad = bad_mask[j]
                 if row_bad.any():
                     bad_galaxies.append((
-                        int(sim_val), int(idx), int(row_bad.sum()),
+                        f"{sim_val}/{component}", int(idx), int(row_bad.sum()),
                         float(np.abs(seds_trimmed[j, row_bad]).max()),
                     ))
                     bad_total += int(row_bad.sum())
@@ -346,7 +352,7 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
         print(f"  WARNING: scrubbed {bad_total} pathological SED bins in "
               f"{len(unique)} unique catalog SED template(s):")
         for s, i, n, m in sorted(unique.values()):
-            print(f"    sim_{s:03d}/sed[{i}]: {n} bin(s) zeroed, "
+            print(f"    sim_{s}/sed[{i}]: {n} bin(s) zeroed, "
                   f"max abs value was {m:.3e}")
 
     return spectra

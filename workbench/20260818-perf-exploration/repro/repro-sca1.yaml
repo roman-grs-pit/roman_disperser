@@ -1,0 +1,15 @@
+# Repro of the 20260803_test_catalog run (Keith's full_run.yaml), 1 SCA,
+# in the project pixi env with default JAX allocator, pinned a10g.
+output_dir: /data/npadman/tmp/perf-repro-20260803/output
+
+seed: 42
+exptime: 190.22
+
+scas: [1]
+
+cone_radius: 0.6
+star_batch_size: 1000
+galaxy_batch_size: 100
+galaxy_npix: 30
+
+catalog_dir: /data/npadman/1-Projects/roman/roman_disperser/perf/workbench/20260818-perf-exploration/repro/catalog
