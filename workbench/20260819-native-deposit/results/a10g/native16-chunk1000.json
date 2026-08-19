@@ -1,0 +1,49 @@
+{
+ "meta": {
+  "tag": "native16-chunk1000",
+  "jax": "0.7.2",
+  "backend": "gpu",
+  "device": "cuda:0",
+  "gpu": "NVIDIA A10G",
+  "host": "gpu-med-dy-g5-2xlarge-1",
+  "n_gal": 100,
+  "n_star": 300,
+  "batch": 100,
+  "chunk_size": 1000,
+  "dlam_A": 2.0,
+  "seed": 0,
+  "sca": 1,
+  "env": {
+   "JAX_COMPILATION_CACHE_DIR": "/data/npadman/jax-cache-grism"
+  }
+ },
+ "results": [
+  {
+   "order": "1",
+   "check": "native16_equiv",
+   "rel_sum_diff": 3.683421027744771e-06,
+   "max_abs_diff": 0.00014400482177734375,
+   "allclose": true
+  },
+  {
+   "order": "1",
+   "variant": "baseline",
+   "ms_per_gal": [
+    65.216543674469,
+    9.935212135314941,
+    9.933884143829346
+   ],
+   "compile_s": 5.6559834480285645
+  },
+  {
+   "order": "1",
+   "variant": "native16",
+   "ms_per_gal": [
+    124.88995313644409,
+    3.4935522079467773,
+    3.4912514686584473
+   ],
+   "compile_s": 12.12907338142395
+  }
+ ]
+}
