@@ -1,0 +1,33 @@
+#!/bin/bash
+# Submit the native16-deposit prototype benchmark to one pinned a10g.
+# Cost: gpu-med a10g ~= $1.21/hr on-demand; expected wall well under 1 hr.
+# Writes an audit .env next to the results per repo convention.
+set -euo pipefail
+
+WORKDIR=/data/npadman/1-Projects/roman/roman_disperser/native_deposit
+META=$WORKDIR/workbench/20260819-native-deposit/results
+LOGDIR=/data/npadman/tmp/slurm-logs/perf
+mkdir -p "$LOGDIR" "$META"
+
+JOB=$(sbatch --parsable \
+    -J native16-bench \
+    -p gpu-med --gres=gpu:a10g:1 \
+    -c 4 --mem=24G -t 02:00:00 \
+    -o "$LOGDIR/%j.out" \
+    "$WORKDIR/workbench/20260819-native-deposit/run_bench.sh")
+
+cat > "$META/bench-$JOB.env" <<EOF
+JOB=$JOB
+PARTITION=gpu-med
+GRES=gpu:a10g:1
+MEM=24G
+TIME=02:00:00
+PROJ_ROOT=$WORKDIR
+GIT_COMMIT=$(git -C "$WORKDIR" rev-parse HEAD)
+BRANCH=$(git -C "$WORKDIR" rev-parse --abbrev-ref HEAD)
+SLURM_LOG=$LOGDIR/$JOB.out
+SUBMITTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+PURPOSE=native16 deposit prototype benchmark (issue #30): equivalence gate + end-to-end speedup vs baseline
+EOF
+
+echo "submitted job $JOB; log $LOGDIR/$JOB.out"
