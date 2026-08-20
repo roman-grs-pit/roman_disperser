@@ -1,0 +1,103 @@
+{
+ "meta": {
+  "tag": "gpu-jax0101-tutorials",
+  "jax": "0.10.1",
+  "backend": "gpu",
+  "device": "cuda:0",
+  "gpu": "NVIDIA A10G",
+  "host": "gpu-med-dy-g5-2xlarge-1",
+  "n_gal": 100,
+  "n_star": 100,
+  "batch": 100,
+  "chunk_size": 500,
+  "dlam_A": 2.0,
+  "seed": 0,
+  "sca": 1,
+  "env": {
+   "JAX_COMPILATION_CACHE_DIR": "/data/npadman/tmp/jax-cache-tut-0101"
+  }
+ },
+ "results": [
+  {
+   "order": "0",
+   "variant": "baseline",
+   "ms_per_gal": [
+    171.2889862060547,
+    9.379684925079346
+   ],
+   "compile_s": 17.564831972122192
+  },
+  {
+   "order": "0",
+   "variant": "noscatter",
+   "ms_per_gal": [
+    169.1407871246338,
+    8.574705123901367
+   ],
+   "compile_s": 16.262219190597534
+  },
+  {
+   "order": "1",
+   "variant": "baseline",
+   "ms_per_gal": [
+    173.5520625114441,
+    10.436985492706299
+   ],
+   "compile_s": 16.206626892089844
+  },
+  {
+   "order": "1",
+   "variant": "noscatter",
+   "ms_per_gal": [
+    170.41748523712158,
+    8.572652339935303
+   ],
+   "compile_s": 16.16534996032715
+  },
+  {
+   "order": "2",
+   "variant": "baseline",
+   "ms_per_gal": [
+    170.58674573898315,
+    9.244163036346436
+   ],
+   "compile_s": 16.15613579750061
+  },
+  {
+   "order": "2",
+   "variant": "noscatter",
+   "ms_per_gal": [
+    168.75557661056519,
+    8.576207160949707
+   ],
+   "compile_s": 16.042903184890747
+  },
+  {
+   "order": "0",
+   "variant": "star_baseline",
+   "ms_per_star": [
+    158.46922159194946,
+    3.3676552772521973
+   ],
+   "compile_s": 15.658078908920288
+  },
+  {
+   "order": "1",
+   "variant": "star_baseline",
+   "ms_per_star": [
+    157.96802282333374,
+    3.9631175994873047
+   ],
+   "compile_s": 15.67664885520935
+  },
+  {
+   "order": "2",
+   "variant": "star_baseline",
+   "ms_per_star": [
+    157.64541625976562,
+    3.4186601638793945
+   ],
+   "compile_s": 15.613438844680786
+  }
+ ]
+}

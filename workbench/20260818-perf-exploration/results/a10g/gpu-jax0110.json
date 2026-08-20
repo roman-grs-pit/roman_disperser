@@ -1,0 +1,76 @@
+{
+ "meta": {
+  "tag": "gpu-jax0110",
+  "jax": "0.11.0",
+  "backend": "gpu",
+  "device": "cuda:0",
+  "gpu": "NVIDIA A10G",
+  "host": "gpu-med-dy-g5-2xlarge-2",
+  "n_gal": 100,
+  "n_star": 300,
+  "batch": 100,
+  "chunk_size": 500,
+  "dlam_A": 2.0,
+  "seed": 0,
+  "sca": 1,
+  "env": {
+   "JAX_COMPILATION_CACHE_DIR": "/data/npadman/tmp/jax-cache-perf-0110"
+  }
+ },
+ "results": [
+  {
+   "order": "0",
+   "variant": "baseline",
+   "ms_per_gal": [
+    255.16229152679443,
+    156.55868530273438
+   ],
+   "compile_s": 11.19964337348938
+  },
+  {
+   "order": "0",
+   "variant": "noscatter",
+   "ms_per_gal": [
+    105.72701454162598,
+    8.570208549499512
+   ],
+   "compile_s": 9.819941282272339
+  },
+  {
+   "order": "1",
+   "variant": "baseline",
+   "ms_per_gal": [
+    276.8830466270447,
+    176.94350719451904
+   ],
+   "compile_s": 9.958404064178467
+  },
+  {
+   "order": "1",
+   "variant": "noscatter",
+   "ms_per_gal": [
+    106.12231492996216,
+    8.572559356689453
+   ],
+   "compile_s": 9.769401788711548
+  },
+  {
+   "order": "2",
+   "variant": "baseline",
+   "ms_per_gal": [
+    222.68640518188477,
+    125.34693479537964
+   ],
+   "compile_s": 9.869925498962402
+  },
+  {
+   "order": "2",
+   "variant": "noscatter",
+   "ms_per_gal": [
+    106.44265174865723,
+    8.574483394622803
+   ],
+   "compile_s": 9.785638809204102
+  }
+ ]
+}
