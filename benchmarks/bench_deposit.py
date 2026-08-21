@@ -1,0 +1,263 @@
+"""Performance-regression benchmark for the dispersal hot path.
+
+Times the *production* galaxy disperser (``galaxy_disperser.make_galaxy_disperser``,
+the exact code path used by ``scripts/build_dispersed_image.py``) against a
+"noscatter" reference on the same synthetic workload, and writes a JSON result
+that ``check_perf.py`` gates on.
+
+Why two variants
+----------------
+The dominant runtime cost is the deposit: a scatter-add of ~505M values per
+galaxy into the 4088^2 detector. Backend regressions in scatter performance
+(e.g. the jax 0.11.0 GPU scatter-add regression, jax-ml/jax#39959, which made
+the deposit ~16x slower) are exactly what this benchmark exists to catch, and
+absolute times vary between GPUs. So the primary regression signal is the
+hardware-insensitive *ratio*
+
+    baseline ms/gal  /  noscatter ms/gal
+
+where ``noscatter`` is the identical computation with the scatter replaced by
+a scalar reduction (keeps PSF interpolation + flux scaling; XLA drops the dead
+index math). Measured on an A10G (2026-08-18 exploration, branch
+explore/performance): healthy jax (0.7.2, 0.10.1, 0.11.1) gives ratio
+~1.1-1.2; jax 0.11.0 gives 15-21. ``check_perf.py`` gates at 3.0.
+
+Workload (matches the 2026-08-18 exploration bench so numbers are comparable):
+synthetic Sersic galaxies at production geometry — 30 px native stamps (120 px
+at 4x oversample), 184^2 4x-oversampled PSFs, full grism band at 2 A spacing
+(5501 wavelength samples), batched fori_loop with batch=100 exactly like the
+pipeline script. Seeded; all arrays float32; wavelengths in microns.
+
+Timing: wall time around the batched call with ``block_until_ready``, after a
+compile+warmup call; reported per-galaxy ms = wall / n_gal for each repeat.
+``check_perf.py`` uses the min over repeats (least-noise estimator).
+
+Requires hydrated reference data (``pixi run hydrate``) and, for GPU numbers,
+a CUDA jax. CPU runs work but the ratio gate threshold was chosen from GPU
+behaviour; treat CPU results as informational.
+
+Usage (repo root):
+    pixi run -e cuda python benchmarks/bench_deposit.py --out results.json
+    python benchmarks/check_perf.py results.json
+"""
+
+import argparse
+import json
+import platform
+import subprocess
+import time
+from pathlib import Path
+
+import numpy as np
+import jax
+import jax.numpy as jnp
+
+from roman_disperser import elements, galaxy_disperser, psf_model, sersic, star_disperser
+from roman_disperser.optical_model import RomanOpticalModel
+import roman_disperser.optical_model_jax as omj
+from roman_disperser.pipeline import (
+    DETECTOR_SIZE,
+    disperse_batched_galaxies,
+    load_sensitivities,
+    make_batched_galaxy_fori,
+    resolve_paths,
+)
+
+
+def make_noscatter_disperser(psf_payload, optical_payload, chunk_size):
+    """Reference disperser: identical to ``disperse_galaxy`` through the PSF
+    interpolation and flux scaling, but the deposit scatter is replaced by a
+    scalar reduction into output[0,0]. This is the compute floor the baseline
+    is compared against; it is NOT flux-equivalent output (diagnostic only).
+
+    Mirrors the steps of ``galaxy_disperser.disperse_galaxy`` using the same
+    package helpers, so a change in the shared prepare/interp path moves both
+    variants and cancels in the ratio.
+    """
+
+    def disperse(image, x0, y0, spectrum, wavelengths, output):
+        oversample = psf_payload["oversample"]
+        dx = dy = 1.0 / oversample
+
+        convolved, _, _, grid_wl = galaxy_disperser.prepare_galaxy_images(
+            optical_payload, psf_payload, image, x0, y0, dx, dy
+        )
+        xsca_disp, ysca_disp = star_disperser._compute_dispersed_positions(
+            optical_payload, x0, y0, wavelengths
+        )
+
+        n_wl = len(wavelengths)
+        n_padded = ((n_wl + chunk_size - 1) // chunk_size) * chunk_size
+        pad = n_padded - n_wl
+        n_chunks = n_padded // chunk_size
+
+        wl_p = jnp.pad(wavelengths, (0, pad), constant_values=wavelengths[-1])
+        sp_p = jnp.pad(spectrum, (0, pad), constant_values=0.0)
+        # Dispersed positions are computed (as in production) but unused by
+        # the reduction; XLA eliminates the dead index math.
+        del xsca_disp, ysca_disp
+
+        def process_chunk(carry, chunk_idx):
+            out = carry
+            start = chunk_idx * chunk_size
+            wl_c = jax.lax.dynamic_slice(wl_p, [start], [chunk_size])
+            fx_c = jax.lax.dynamic_slice(sp_p, [start], [chunk_size])
+            conv = psf_model.interp_wavelength_chunk(convolved, grid_wl, wl_c)
+            conv = conv * fx_c[:, None, None]
+            out = out.at[0, 0].add(conv.ravel().sum())
+            return out, None
+
+        output, _ = jax.lax.scan(process_chunk, output, jnp.arange(n_chunks))
+        return output
+
+    return jax.jit(disperse)
+
+
+def gpu_name():
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return out.stdout.strip() or "none"
+    except Exception:
+        return "unavailable"
+
+
+def git_commit():
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).parent, capture_output=True, text=True, timeout=10,
+        )
+        return out.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sca", type=int, default=1)
+    ap.add_argument("--orders", default="0,1,2")
+    ap.add_argument("--n-gal", type=int, default=100)
+    ap.add_argument("--batch", type=int, default=100)
+    ap.add_argument("--chunk-size", type=int, default=500)
+    ap.add_argument("--dlam", type=float, default=2.0,
+                    help="wavelength spacing in Angstrom (2.0 = production)")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--repeats", type=int, default=3)
+    ap.add_argument("--tag", default="")
+    ap.add_argument("--out", default=None)
+    args = ap.parse_args()
+
+    orders = args.orders.split(",")
+    rng = np.random.default_rng(args.seed)
+
+    meta = {
+        "tag": args.tag,
+        "jax": jax.__version__,
+        "backend": jax.default_backend(),
+        "device": str(jax.devices()[0]),
+        "gpu": gpu_name(),
+        "host": platform.node(),
+        "code_commit": git_commit(),
+        "n_gal": args.n_gal, "batch": args.batch,
+        "chunk_size": args.chunk_size, "dlam_A": args.dlam,
+        "seed": args.seed, "sca": args.sca,
+        "env": {k: v for k, v in __import__("os").environ.items()
+                if k.startswith(("XLA_", "JAX_"))},
+    }
+    print(json.dumps(meta, indent=1))
+
+    element = elements.get_element(None)  # grism
+    _, sensitivity_dir, model_path, psf_cache_dir = resolve_paths()
+    model = RomanOpticalModel(str(model_path))
+
+    wl_ang = np.arange(element.lam_min * 1e4, element.lam_max * 1e4 + 0.1,
+                       args.dlam)
+    wl_um = (wl_ang / 1e4).astype(np.float32)
+    wl_jax = jnp.array(wl_um)
+    n_wl = len(wl_um)
+    print(f"wavelengths: {n_wl} samples, {args.dlam} A")
+
+    sens = load_sensitivities(sensitivity_dir, args.sca, wl_um, orders)
+
+    detector_name = f"WFI{args.sca:02d}"
+    payloads_by_filter = {}
+    psf_payloads = {}
+    optical_payloads = {}
+    for order in orders:
+        fname = element.stpsf_filters[order]
+        if fname not in payloads_by_filter:
+            payloads_by_filter[fname] = psf_model.get_or_make_psf_payload(
+                detector=detector_name, order=order,
+                wavelengths=elements.psf_cache_wavelengths(element),
+                stpsf_filter=fname, cache_dir=psf_cache_dir, verbose=False)
+        psf_payloads[order] = payloads_by_filter[fname]
+        optical_payloads[order] = omj.make_sca_payload(
+            model, sca=args.sca, order=order)
+
+    oversample = int(psf_payloads[orders[0]]["oversample"])
+    npix_os = 30 * oversample
+
+    # Synthetic galaxies, interior positions so full traces stay on-detector.
+    n = args.n_gal
+    x_gal = rng.uniform(400, 3688, n).astype(np.float32)
+    y_gal = rng.uniform(400, 3688, n).astype(np.float32)
+    r_eff = sersic.catalog_r_eff_to_pixels(
+        jnp.array(np.exp(rng.normal(np.log(0.25), 0.5, n)), dtype=jnp.float32),
+        oversample=oversample)
+    n_ser = jnp.array(rng.uniform(1.0, 4.0, n), dtype=jnp.float32)
+    ba = jnp.array(rng.uniform(0.3, 1.0, n), dtype=jnp.float32)
+    theta = jnp.array(rng.uniform(0, np.pi, n), dtype=jnp.float32)
+    images = sersic.make_sersic_images(r_eff, n_ser, ba, theta, npix_os)
+    images.block_until_ready()
+
+    # Smooth synthetic SED at production magnitude scale.
+    sed = (1e-16 * (1.0 + 0.3 * np.sin(wl_um * 20.0))).astype(np.float32)
+    spectra = np.tile(sed, (n, 1)) * rng.uniform(0.3, 3.0, (n, 1)).astype(np.float32)
+
+    results = []
+    for order in orders:
+        variants = {
+            "baseline": galaxy_disperser.make_galaxy_disperser(
+                psf_payloads[order], optical_payloads[order],
+                chunk_size=args.chunk_size),
+            "noscatter": make_noscatter_disperser(
+                psf_payloads[order], optical_payloads[order],
+                args.chunk_size),
+        }
+        for variant, gd_fn in variants.items():
+            fori = make_batched_galaxy_fori(gd_fn, sens[order], wl_jax, args.dlam)
+
+            warm_out = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), jnp.float32)
+            t0 = time.time()
+            fori(1, jnp.zeros((args.batch, n_wl), jnp.float32),
+                 jnp.full(args.batch, 2044.0), jnp.full(args.batch, 2044.0),
+                 jnp.zeros((args.batch, npix_os, npix_os), jnp.float32),
+                 warm_out).block_until_ready()
+            t_compile = time.time() - t0
+
+            times = []
+            for _ in range(args.repeats):
+                out = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), jnp.float32)
+                t0 = time.time()
+                out = disperse_batched_galaxies(
+                    fori, spectra, x_gal, y_gal, images, out, args.batch)
+                times.append(time.time() - t0)
+            ms = [1e3 * t / n for t in times]
+            print(f"  order {order} {variant:9s}: "
+                  f"{' '.join(f'{m:7.2f}' for m in ms)} ms/gal "
+                  f"(compile {t_compile:.1f}s)")
+            results.append({"order": order, "variant": variant,
+                            "ms_per_gal": ms, "compile_s": t_compile})
+
+    if args.out:
+        outp = Path(args.out)
+        outp.parent.mkdir(parents=True, exist_ok=True)
+        outp.write_text(json.dumps({"meta": meta, "results": results}, indent=1))
+        print(f"wrote {outp}")
+
+
+if __name__ == "__main__":
+    main()

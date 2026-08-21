@@ -1,0 +1,7 @@
+{
+  "NVIDIA A10G": {
+    "ms_per_gal": {"0": 9.4, "1": 10.4, "2": 9.3},
+    "noscatter_ms_per_gal": 8.6,
+    "provenance": "2026-08-18 performance exploration (branch explore/performance, workbench/20260818-perf-exploration): steady-state repeats on A10G, n_gal=100, batch=100, chunk=500, dlam=2A, SCA1. Identical to 2 decimal places under jax 0.10.1 and 0.11.1 (9.38/10.44/9.24 ms/gal orders 0/1/2, noscatter 8.57 flat); consistent with the project pixi env (jax 0.7.2, SLURM 7135: 9.1/10.3/9.2) and with production runs 2026-03 through 2026-06 (7-9 ms/gal)."
+  }
+}
