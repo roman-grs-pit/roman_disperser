@@ -211,7 +211,9 @@ The unified pipeline (`build_dispersed_image.py`) sets `JAX_COMPILATION_CACHE_DI
     2. Run `pixi install` and commit `pixi.lock` if it changed (version bumps can update the lockfile)
     3. **Verify the installed version**: `pixi run python -c "import roman_disperser; print(roman_disperser.__version__)"` must print the new number. An editable install only picks the bump up at `pixi install`; a stale value silently poisons the `CODEVER` provenance card in every FITS product, so do not tag until this prints right.
     4. Update `CHANGELOG.md` with a summary of the changes
-    5. Tag the release
+    5. **Run the performance regression suite** (`benchmarks/README.md`):
+       `bash benchmarks/run_golden.sh` on a GPU node (SLURM: `sbatch -p <gpu-partition> --gres=gpu:1 --wrap '...'`) and require `check_perf.py` to print PASS. This catches correct-but-slow backend regressions (e.g. the jax 0.11.0 scatter-add slowdown) that no correctness test sees. It spends real GPU money, so it is a pre-tag gate, not CI.
+    6. Tag the release
 - This is a research code, so value simplicity and clarity over deep class hierarchies and generality. Prefer functional routines over complex object-oriented designs.
 
 ## Notes
