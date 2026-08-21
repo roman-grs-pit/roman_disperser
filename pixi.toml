@@ -30,15 +30,17 @@ romanisim = { features = ["romanisim"], no-default-feature = true }
 # --- FEATURES ---
 
 [feature.cpu.dependencies]
-jax = ">=0.7"
+# 0.11.0 excluded: GPU scatter-add regression — see pyproject.toml.
+jax = ">=0.7,!=0.11.0"
 
 [feature.cuda]
 platforms = ["linux-64"]
 system-requirements = { cuda = "12" }
 
 [feature.cuda.dependencies]
-jax = ">=0.7"
-jaxlib = { version = "*", build = "cuda12*" }
+# 0.11.0 excluded (jax and jaxlib): GPU scatter-add regression — see pyproject.toml.
+jax = ">=0.7,!=0.11.0"
+jaxlib = { version = "!=0.11.0", build = "cuda12*" }
 
 # romanisim wrapping environment. Isolated from the JAX/CUDA pipeline:
 # the disperser produces grism images, romanisim consumes them via

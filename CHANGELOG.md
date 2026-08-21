@@ -19,6 +19,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   latest) in throwaway venvs. Run on a GPU node before releases and after
   deposit-path or jax-floor changes; not in CI.
 
+### Changed
+- **jax 0.11.0 is now excluded** (`jax>=0.7,!=0.11.0` plus `jaxlib!=0.11.0`
+  in `pyproject.toml` and `pixi.toml`). That release has a GPU scatter-add
+  regression that slows the disperser's deposit step by ~16x on GPU
+  (measured 157/177/125 ms/galaxy for grism orders 0/1/2 on an A10G vs the
+  usual ~9 ms flat; a no-scatter variant of the same run stays at 8.6 ms,
+  isolating the deposit). jax 0.11.1 on the same hardware is fast again
+  (9.4/10.4/9.2 ms/galaxy). Diagnosed from a user environment pinned to
+  0.11.0 via PyPI; the project's own pixi lock (jax 0.7.2, conda-forge) was
+  never affected.
+- **Import-time `RuntimeWarning` when running under jax 0.11.0** — the
+  dependency exclusion cannot reach environments that already have 0.11.0
+  installed, so the package warns (with the upgrade command) instead of
+  silently running ~16x slower.
+
 ## [0.14.2] - 2026-08-07
 
 ### Changed
