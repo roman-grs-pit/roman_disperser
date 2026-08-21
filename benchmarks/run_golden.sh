@@ -25,6 +25,11 @@ WORKDIR=${WORKDIR:-${TMPDIR:-/tmp}/perf-golden}
 OUTDIR=${OUTDIR:-$REPO/benchmarks/results}
 BENCH_ARGS=${BENCH_ARGS:-}
 
+# A CUDA venv is ~8 GB; node-local /tmp cannot hold three plus a pip cache
+# (first a10g run died with ENOSPC). Keep peak usage to one venv: no pip
+# cache, and each venv is deleted after its leg.
+export PIP_NO_CACHE_DIR=1
+
 mkdir -p "$WORKDIR" "$OUTDIR"
 echo "=== node: $(hostname), GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo none)"
 
@@ -54,6 +59,7 @@ while read -r VER; do
         python "$REPO/benchmarks/bench_deposit.py" $BENCH_ARGS \
             --tag "$TAG" --out "$OUTDIR/$TAG.json"
     )
+    rm -rf "$VENV"
     RESULTS+=("$OUTDIR/$TAG.json")
 done < "$WORKDIR/versions"
 
