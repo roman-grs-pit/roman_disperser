@@ -8,9 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- **jax 0.11.0 is now excluded** (`jax>=0.7,!=0.11.0` in `pyproject.toml` and
-  `pixi.toml`). That release has a GPU scatter-add regression (upstream:
-  jax-ml/jax#39959) that slows the disperser's deposit step by ~16x on GPU
+- **jax 0.11.0 is now excluded** (`jax>=0.7,!=0.11.0` plus `jaxlib!=0.11.0`
+  in `pyproject.toml` and `pixi.toml`). That release has a GPU scatter-add
+  regression that slows the disperser's deposit step by ~16x on GPU
   (measured 157/177/125 ms/galaxy for grism orders 0/1/2 on an A10G vs the
   usual ~9 ms flat; a no-scatter variant of the same run stays at 8.6 ms,
   isolating the deposit). jax 0.11.1 on the same hardware is fast again

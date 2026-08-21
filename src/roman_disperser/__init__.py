@@ -21,20 +21,22 @@ from . import pipeline
 from . import refdata
 from . import sersic
 
-# jax 0.11.0 has a GPU scatter-add regression (jax-ml/jax#39959) that makes
-# the deposit step ~16x slower. New installs are protected by the dependency
-# exclusion (jax!=0.11.0), but package metadata cannot reach environments
-# that already have 0.11.0 installed — hence this runtime warning.
+# jax 0.11.0 has a GPU scatter-add performance regression that makes the
+# deposit step ~16x slower (measured on A10G; see PR #31). New installs are
+# protected by the dependency exclusion (jax!=0.11.0), but package metadata
+# cannot reach environments that already have 0.11.0 installed — hence this
+# runtime warning. Note jax is already imported transitively by the module
+# imports above (optical_model_jax etc.), so this adds no new constraint on
+# when jax configuration must happen relative to importing this package.
 import jax as _jax
 
 if _jax.__version__ == "0.11.0":
     import warnings
 
     warnings.warn(
-        "jax 0.11.0 has a GPU scatter-add performance regression "
-        "(jax-ml/jax#39959) that makes roman_disperser's deposit step "
-        "~16x slower. Upgrade jax (>=0.11.1), e.g. "
-        "pip install -U 'jax[cuda12]'.",
+        "jax 0.11.0 has a GPU scatter-add performance regression that "
+        "makes roman_disperser's deposit step ~16x slower. Upgrade jax "
+        "(>=0.11.1), e.g. pip install -U 'jax[cuda12]'.",
         RuntimeWarning,
         stacklevel=2,
     )

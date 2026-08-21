@@ -13,8 +13,12 @@ description = "JAX-based optical model and disperser for Roman Space Telescope s
 dependencies = [
     "numpy>=2.0",
     # jax 0.11.0 excluded: GPU scatter-add regression makes the deposit step
-    # ~16x slower (see jax-ml/jax#39959); fixed in 0.11.1.
+    # ~16x slower; measured gone in 0.11.1 (PR #31). jaxlib carries the same
+    # exclusion because the regression could live in either component and
+    # jax's own metadata may allow jaxlib 0.11.0 under a newer jax. No floor
+    # on jaxlib: jax's metadata pins the compatible range.
     "jax>=0.7,!=0.11.0",
+    "jaxlib!=0.11.0",
     "scipy",
     "pyyaml",
     "matplotlib>=3.10",
