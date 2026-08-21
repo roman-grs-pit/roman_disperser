@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (9.4/10.4/9.2 ms/galaxy). Diagnosed from a user environment pinned to
   0.11.0 via PyPI; the project's own pixi lock (jax 0.7.2, conda-forge) was
   never affected.
+- **Import-time `RuntimeWarning` when running under jax 0.11.0** — the
+  dependency exclusion cannot reach environments that already have 0.11.0
+  installed, so the package warns (with the upgrade command) instead of
+  silently running ~16x slower.
 
 ## [0.14.2] - 2026-08-07
 

@@ -21,6 +21,24 @@ from . import pipeline
 from . import refdata
 from . import sersic
 
+# jax 0.11.0 has a GPU scatter-add regression (jax-ml/jax#39959) that makes
+# the deposit step ~16x slower. New installs are protected by the dependency
+# exclusion (jax!=0.11.0), but package metadata cannot reach environments
+# that already have 0.11.0 installed — hence this runtime warning.
+import jax as _jax
+
+if _jax.__version__ == "0.11.0":
+    import warnings
+
+    warnings.warn(
+        "jax 0.11.0 has a GPU scatter-add performance regression "
+        "(jax-ml/jax#39959) that makes roman_disperser's deposit step "
+        "~16x slower. Upgrade jax (>=0.11.1), e.g. "
+        "pip install -U 'jax[cuda12]'.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+
 # Installed-package version (same source as pipeline.get_code_version and the
 # CODEVER FITS card, so the three cannot disagree). Caveat: in an editable
 # install this is the version at the last `pixi install`, not what
