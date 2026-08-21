@@ -12,7 +12,9 @@ authors = [
 description = "JAX-based optical model and disperser for Roman Space Telescope slitless spectroscopy (G150 grism and P127 prism)"
 dependencies = [
     "numpy>=2.0",
-    "jax>=0.7",
+    # jax 0.11.0 excluded: GPU scatter-add regression makes the deposit step
+    # ~16x slower (see jax-ml/jax#39959); fixed in 0.11.1.
+    "jax>=0.7,!=0.11.0",
     "scipy",
     "pyyaml",
     "matplotlib>=3.10",

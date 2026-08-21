@@ -5055,10 +5055,10 @@ packages:
 - pypi: ./
   name: roman-disperser
   version: 0.14.2
-  sha256: a29d56046b98a4ec483ee7da71ae35f85960aab87193e75f524bdaf9fd067675
+  sha256: 675fa6b1f15f0e329e4c79d464dea1b45ad9631a2d8cc88e4e7229e4e8317402
   requires_dist:
   - numpy>=2.0
-  - jax>=0.7
+  - jax>=0.7,!=0.11.0
   - scipy
   - pyyaml
   - matplotlib>=3.10
