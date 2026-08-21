@@ -1,0 +1,21 @@
+# Golden jax versions for the performance-regression sweep (run_golden.sh).
+#
+# Policy: we support jax>=0.7,!=0.11.0 but cannot perf-test every release,
+# so we regress a small fixed set spanning how users actually get jax:
+#
+#   0.7.2   - the version pinned in this repo's pixi.lock (conda-forge);
+#             what every project/pixi environment runs.
+#   0.11.1  - first release after the excluded 0.11.0 (GPU scatter-add
+#             regression, jax-ml/jax#39959); representative of current
+#             pip installs.
+#   latest  - resolved to the newest PyPI release at run time; the early
+#             warning for the next 0.11.0-style regression.
+#
+# Revisit this set at each roman_disperser release: when the pixi.lock jax
+# moves, replace 0.7.2; when "latest" ages into what pip users typically
+# have, consider promoting a pinned copy of it in place of 0.11.1.
+# One version per line; "latest" means unpinned. Lines starting with # are
+# comments.
+0.7.2
+0.11.1
+latest

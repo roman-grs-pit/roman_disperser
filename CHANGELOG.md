@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`benchmarks/` — performance regression suite.** `bench_deposit.py` times
+  the production galaxy disperser (ms/galaxy per grism order, seeded
+  synthetic workload at production geometry) against a no-scatter compute
+  floor; `check_perf.py` gates on the hardware-insensitive baseline/noscatter
+  ratio (≤3; healthy ~1.1–1.2, the jax 0.11.0 scatter regression measured
+  15–21) and, where a `baselines/gpu.json` entry exists, on absolute ms/gal
+  (≤1.5× reference). `run_golden.sh` sweeps a small set of "golden" jax
+  versions (`golden-jax-versions.txt`: the pixi.lock version, 0.11.1, PyPI
+  latest) in throwaway venvs. Run on a GPU node before releases and after
+  deposit-path or jax-floor changes; not in CI.
+
 ## [0.14.2] - 2026-08-07
 
 ### Changed
