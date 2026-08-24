@@ -81,7 +81,7 @@ ASSETS = {
     # done marker is version-specific so publishing a new version triggers a
     # fresh download on the next hydrate.
     "golden_frames": Asset("golden_frames", "golden_frames", extract=True,
-                           done_marker="golden-frames-v1/provenance.json"),
+                           done_marker="golden-frames-v1/cpu/provenance.json"),
 }
 
 # Bootstrap fallback used only when the remote manifest is unavailable. The

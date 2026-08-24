@@ -49,18 +49,37 @@ Design decisions (agreed 2026-08-24, see the research log)
   publish the new asset in the same change, keeping code and reference
   atomic. Provenance (code version, git sha, jax version, platform, seed)
   is stored inside each ``.npz``.
+* **References are per-backend** (``cpu/`` and ``gpu-a10g/`` subdirs),
+  because tight cross-backend comparison is ill-conditioned. Measured on
+  this scene (2026-08-24, a10g vs CPU, jax 0.7.2): total flux agrees to
+  ~3e-8, and GPU run-to-run repeats agree to <=6e-7 of frame peak (the
+  issue #22 scatter-order floor) — but CPU-vs-GPU *per-pixel* differences
+  reach 3.2e-2 of peak (prism) with a characteristic signature: paired
+  adjacent rows with equal-and-opposite net flux. Mechanism: runs of
+  wavelength samples whose dispersed position sits within float32 ULPs of
+  a pixel boundary flip to the neighboring row when the backends round
+  position arithmetic differently; the prism's compressed trace stacks
+  hundreds of samples at near-identical positions, so one flip moves a
+  visible block of flux by exactly one row (flux-conserving). This is
+  benign rounding, not a bug — but it caps any cross-backend per-pixel
+  gate at the few-%-of-peak level, so each backend gets its own blessed
+  frames and a tight gate, and only an *unmatched* GPU model falls back
+  to a loose cross-backend comparison. A future tight-gate failure showing
+  the paired-row signature (equal-and-opposite net flux in adjacent rows,
+  total flux unchanged) is this mechanism resurfacing after a
+  jax/cuFFT/driver change, not necessarily a code bug — inspect, then
+  re-bless deliberately if confirmed benign.
 
-Regenerating (only for an *intentional* results change)::
+Regenerating (only for an *intentional* results change) — once per backend,
+on the deterministic CPU and on the production GPU (a10g)::
 
-    pixi run python -m tests.golden_frame            # writes into <data>/golden_frames/<GOLDEN_VERSION>/
-    pixi run python -m tests.golden_frame --out-dir /tmp/golden   # elsewhere
+    JAX_PLATFORMS=cpu pixi run python -m tests.golden_frame
+    pixi run -e cuda python -m tests.golden_frame    # on an a10g node
 
-then publish the directory as a ``roman_disperser_data`` release named
-``GOLDEN_VERSION`` (tarball of the version-named directory), update
-``manifest.json`` there, and bump ``GOLDEN_VERSION`` here. References are
-generated on **CPU** (``JAX_PLATFORMS=cpu``) so the blessed values come from
-the deterministic backend; the comparison gate absorbs CPU/GPU differences
-(see ``tests/test_golden_frame.py``).
+Each run writes into ``<data>/golden_frames/<GOLDEN_VERSION>/<backend>/``
+(``--out-dir`` overrides). Then publish the version-named directory as a
+``roman_disperser_data`` release named ``GOLDEN_VERSION`` (tarball), update
+``manifest.json`` there, and bump ``GOLDEN_VERSION`` here.
 """
 
 import argparse
@@ -227,14 +246,25 @@ def golden_dir(version=GOLDEN_VERSION):
     return Path(paths.data_dir()) / "golden_frames" / version
 
 
+def backend_subdir():
+    """Reference subdir for the current jax backend: 'cpu', or 'gpu-<model>'
+    (e.g. 'gpu-a10g' from device_kind 'NVIDIA A10G')."""
+    if jax.default_backend() == "cpu":
+        return "cpu"
+    kind = jax.devices()[0].device_kind.lower()
+    slug = kind.replace("nvidia", "").strip().replace(" ", "-")
+    return f"gpu-{slug}"
+
+
 def frame_filename(element_name, order, tier):
     return f"{element_name}_order{order}_{tier}.npz"
 
 
-def load_reference(element_name, order, tier, version=GOLDEN_VERSION):
+def load_reference(element_name, order, tier, subdir="cpu",
+                   version=GOLDEN_VERSION):
     """Return (frame, provenance dict) for a pinned reference, or raise
     FileNotFoundError with a hydration hint."""
-    path = golden_dir(version) / frame_filename(element_name, order, tier)
+    path = golden_dir(version) / subdir / frame_filename(element_name, order, tier)
     if not path.exists():
         raise FileNotFoundError(
             f"golden reference {path} not hydrated "
@@ -292,13 +322,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--out-dir", default=None,
                     help="destination (default: <data>/golden_frames/"
-                         f"{GOLDEN_VERSION}/)")
+                         f"{GOLDEN_VERSION}/<backend>/)")
     args = ap.parse_args()
-    if jax.default_backend() != "cpu":
-        raise SystemExit(
-            "golden references must be generated on CPU "
-            "(run with JAX_PLATFORMS=cpu) — see module docstring")
-    write_references(args.out_dir or golden_dir())
+    write_references(args.out_dir or golden_dir() / backend_subdir())
 
 
 if __name__ == "__main__":

@@ -13,8 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   covering detector-center, edge-clipped, off-grid sub-pixel, overlapping-pair,
   and star code paths) is rendered through the *production* dispersal path on
   real reference data (SCA 1) and compared full-frame against pinned reference
-  frames at the standing equivalence gate (per-pixel rtol 1e-5 with
-  frame-scaled atol; total flux to 1e-7 in float64). Two tiers: *coarse*
+  frames. References are **per-backend** (`cpu/`, `gpu-a10g/`): the tight
+  gate (per-pixel rtol 1e-5 with frame-scaled atol; total flux to 1e-7 in
+  float64) applies against the matching backend's blessed frames, because
+  cross-backend per-pixel comparison is ill-conditioned — measured
+  CPU-vs-GPU differences reach 3.2e-2 of frame peak from benign,
+  flux-conserving position-rounding boundary flips (runs of λ samples
+  within float32 ULPs of a pixel boundary landing one row apart), while
+  total flux agrees to ~3e-8 and GPU run-to-run repeats stay ≤6e-7 of peak
+  (the issue #22 floor). A GPU model without blessed frames falls back to
+  the CPU reference at a loose gross-breakage gate (0.1·peak) plus the
+  always-on flux gate. Two tiers: *coarse*
   (20 Å, grism orders 0/1/2 + prism, default suite) and *full* (production
   2 Å sampling, grism orders 1 and 0, `-m slow`) — the full tier exists
   because per-pixel accumulation depth and the deposit-collision regime only
