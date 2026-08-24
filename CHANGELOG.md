@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Galaxy PSF convolution now transforms at a fast FFT size**
+  (`galaxy_disperser.fft_convolve_full`, replacing the vmapped
+  `jax.scipy.signal.fftconvolve` in `prepare_galaxy_images`). The full
+  linear conv support is exactly X = stamp + PSF − 1, so a circular
+  convolution at the next 7-smooth size ≥ X (chosen by rule in
+  `_next_fast_fft_size`, not hard-coded — the optimum is
+  hardware/cuFFT-version dependent), cropped to [:X, :X], is the same
+  answer up to float rounding (measured max |diff| ~6e-9 vs
+  `fftconvolve`; both golden-frame tiers pass unchanged). At production
+  geometry X = 303 = 3·101 forced cuFFT onto its Bluestein path;
+  transforming at 315 = 3²·5·7 measured ~1.7x faster for the convolution
+  and ~1.6x for fused `prepare_galaxy_images` on an A10G (2026-08-19
+  workbench, SLURM 7145). Applies to both grism and prism galaxy paths;
+  the star path has no per-source FFT and is unaffected.
+
 ### Added
 - **Golden-frame end-to-end regression test** (`tests/golden_frame.py`,
   `tests/test_golden_frame.py`). A small curated scene (5 galaxies + 2 stars
