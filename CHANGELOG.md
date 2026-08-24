@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Golden-frame end-to-end regression test** (`tests/golden_frame.py`,
+  `tests/test_golden_frame.py`). A small curated scene (5 galaxies + 2 stars
+  covering detector-center, edge-clipped, off-grid sub-pixel, overlapping-pair,
+  and star code paths) is rendered through the *production* dispersal path on
+  real reference data (SCA 1) and compared full-frame against pinned reference
+  frames at the standing equivalence gate (per-pixel rtol 1e-5 with
+  frame-scaled atol; total flux to 1e-7 in float64). Two tiers: *coarse*
+  (20 Å, grism orders 0/1/2 + prism, default suite) and *full* (production
+  2 Å sampling, grism orders 1 and 0, `-m slow`) — the full tier exists
+  because per-pixel accumulation depth and the deposit-collision regime only
+  appear at production sampling. Reference frames are a vendored
+  `roman_disperser_data` asset (`golden-frames-v1`, fetched by
+  `pixi run hydrate`), version-pinned in the test so intentional
+  results-changing PRs must bump the pin and publish regenerated frames in
+  the same change. This is the durable guard for refactorings of the
+  dispersal internals (FFT and native-deposit work), replacing throwaway
+  old-vs-new workbench comparisons.
+- **Merge-gate convention recorded in CLAUDE.md**: every PR merge requires
+  the usual suite on CPU and GPU, plus the full-tier golden test and the
+  `benchmarks/` performance regression suite.
+
 ## [0.14.3] - 2026-08-21
 
 ### Added

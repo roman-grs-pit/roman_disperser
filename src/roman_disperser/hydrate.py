@@ -75,6 +75,13 @@ ASSETS = {
                                  extract=True,
                                  done_marker="sensitivity_map.yaml"),
     "psf_prism": Asset("psf_prism", "psf_cache", sca_filter=True),
+    # Golden regression frames for tests/test_golden_frame.py. The tarball
+    # extracts a version-named directory (golden-frames-vN/), so successive
+    # versions coexist and the test's pinned GOLDEN_VERSION selects one; the
+    # done marker is version-specific so publishing a new version triggers a
+    # fresh download on the next hydrate.
+    "golden_frames": Asset("golden_frames", "golden_frames", extract=True,
+                           done_marker="golden-frames-v1/provenance.json"),
 }
 
 # Bootstrap fallback used only when the remote manifest is unavailable. The
@@ -88,6 +95,7 @@ DEFAULT_MANIFEST = {
     "optical_model_prism": "optical-model-prism-v0.8",
     "sensitivities_prism": "sensitivities-prism-v1",
     "psf_prism": "psf-prism-v1",
+    "golden_frames": "golden-frames-v1",
 }
 
 
