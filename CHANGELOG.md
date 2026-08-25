@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Native-resolution deposit (16-phase pre-binning) in both dispersers**
+  (`star_disperser.deposit_stack_native`, shared by `disperse_galaxy` and
+  `disperse_star_psf`; issue #30). The per-subpixel oversampled scatter —
+  ~92k elements per wavelength per galaxy — is replaced by pre-binning the
+  stamp stack to native detector pixels in the 16 boundary-phase variants
+  (once per source) and depositing ~16x fewer elements. The additions are
+  identical, merely regrouped (run-length-4 blocking of the floor deposit;
+  verified exactly in float64 on 2,000 random centers), so outputs are
+  equivalent up to f32 summation order. Wavelength chunk defaults change
+  from 500 (galaxy) / 1000 (star) to 2000 — measured best on a10g for the
+  16x-smaller per-chunk work. The `rel_x`/`rel_y` arguments of
+  `disperse_star_psf` are now unused (kept for backward compatibility).
+  **This is a results-changing release at the total-flux level, for the
+  better**: the old deposit's deep sequential f32 accumulation was
+  systematically low by ~3e-7 (coarse λ sampling) up to ~1e-5 (order 0 at
+  production 2 Å, ~59k adds/px), verified against a float64 truth
+  computation — the native deposit lands ~1e-8 from truth. Golden
+  references bumped to `golden-frames-v2` accordingly; per-pixel
+  differences stay within the tight gate.
 - **Galaxy PSF convolution now transforms at a fast FFT size**
   (`galaxy_disperser.fft_convolve_full`, replacing the vmapped
   `jax.scipy.signal.fftconvolve` in `prepare_galaxy_images`). The full

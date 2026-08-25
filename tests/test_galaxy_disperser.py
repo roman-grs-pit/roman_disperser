@@ -685,3 +685,39 @@ class TestFFTConvolveFull:
         out = fft_convolve_full(img, ker)
         np.testing.assert_allclose(float(out.sum()), float(img.sum()),
                                    rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Test: galaxy stamp-size sweep through the full dispersal path
+# ---------------------------------------------------------------------------
+
+class TestGalaxyStampSizes:
+    """Flux conservation through disperse_galaxy at several image sizes.
+
+    The native deposit's binning geometry depends on the conv-stamp size
+    (image + PSF - 1) mod oversample; sweeping the image size walks the
+    conv size through every residue so no size class is only covered by
+    the single production geometry.
+    """
+
+    @pytest.mark.parametrize("image_size", [18, 19, 20, 21])
+    def test_flux_conserved_across_sizes(self, payload, mock_psf_payload,
+                                         image_size):
+        y, x = jnp.mgrid[:image_size, :image_size]
+        center = (image_size - 1) / 2.0
+        image = jnp.exp(-((x - center) ** 2 + (y - center) ** 2)
+                        / (2 * 2.0 ** 2)).astype(jnp.float32)
+
+        wavelengths = jnp.array([1.3, 1.5])
+        spectrum = jnp.array([1.0, 1.0])
+
+        output = jnp.zeros((4088, 4088), dtype=jnp.float32)
+        output = disperse_galaxy(
+            payload, mock_psf_payload,
+            image, 2000.0, 2000.0,
+            spectrum, wavelengths, output,
+            chunk_size=10,
+        )
+
+        expected = float(image.sum()) * float(spectrum.sum())
+        np.testing.assert_allclose(float(output.sum()), expected, rtol=1e-4)

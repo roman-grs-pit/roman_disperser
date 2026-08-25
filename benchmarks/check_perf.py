@@ -5,10 +5,13 @@ Two gates, applied per grism order:
 1. **Scatter ratio** (always applied, hardware-insensitive):
    min-over-repeats baseline ms/gal divided by min-over-repeats noscatter
    ms/gal must be <= --max-ratio (default 3.0). Healthy jax on GPU measures
-   ~1.1-1.2; the jax 0.11.0 scatter-add regression (jax-ml/jax#39959)
-   measured 15-21, so 3.0 leaves wide margin on both sides. The threshold
-   was calibrated on GPU; CPU runs are reported but ratio behaviour there
-   has not been characterised — use --max-ratio to loosen if gating CPU.
+   ~0.73-0.75 since the native-deposit port (the fused deposit kernel beats
+   noscatter's separate reduction; pre-native16 it was ~1.1-1.2). The jax
+   0.11.0 scatter-add regression (jax-ml/jax#39959) measured 15-21 on the
+   old deposit and a scatter regression inflates only the baseline, so 3.0
+   keeps wide margin on both sides. The threshold was calibrated on GPU;
+   CPU runs are reported but ratio behaviour there has not been
+   characterised — use --max-ratio to loosen if gating CPU.
 
 2. **Absolute time** (only when the result's GPU has an entry in the
    baselines file): baseline ms/gal must be <= recorded reference *

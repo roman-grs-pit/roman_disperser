@@ -309,7 +309,7 @@ def disperse_galaxy(
     spectrum,
     wavelengths,
     output,
-    chunk_size=500,
+    chunk_size=2000,
 ):
     """Disperse a galaxy onto the detector.
 
@@ -317,8 +317,9 @@ def disperse_galaxy(
     1. Warps the galaxy shape through the dispersion Jacobian at each PSF
        grid wavelength
     2. Convolves with wavelength-dependent PSFs
-    3. Interpolates convolved images to the fine wavelength grid
-    4. Deposits flux onto the detector using wavelength chunking
+    3. Deposits flux onto the detector at native resolution via 16-phase
+       pre-binning with per-chunk wavelength interpolation (see
+       star_disperser.deposit_stack_native for the exactness argument)
 
     Parameters
     ----------
@@ -337,7 +338,8 @@ def disperse_galaxy(
     output : jnp.ndarray
         [H, W] detector accumulator (typically 4088x4088)
     chunk_size : int, optional
-        Wavelengths per chunk (default: 500)
+        Wavelengths per chunk (default: 2000 — measured best on a10g for
+        the native-binned deposit; see star_disperser.deposit_stack_native)
 
     Returns
     -------
@@ -352,83 +354,22 @@ def disperse_galaxy(
         optical_payload, psf_payload, image, x0, y0, dx, dy
     )  # [N_grid_wl, Conv_y, Conv_x]
 
-    # Step 2: Build relative coordinate grid for convolved image
-    conv_shape = convolved.shape[1:]  # (Conv_y, Conv_x)
-    rel_y, rel_x = star_disperser.make_psf_pixel_grid(conv_shape, oversample)
-    rel_x_flat = rel_x.ravel()
-    rel_y_flat = rel_y.ravel()
-
-    # Step 3: Compute exact dispersed positions at every fine wavelength
+    # Step 2: Compute exact dispersed positions at every fine wavelength
     # (cheap vectorized trace_beam call — no interpolation needed here)
     xsca_disp, ysca_disp = star_disperser._compute_dispersed_positions(
         optical_payload, x0, y0, wavelengths
     )
 
-    # Step 4: Pad inputs to chunk_size multiples
-    n_wl = len(wavelengths)
-    n_padded = ((n_wl + chunk_size - 1) // chunk_size) * chunk_size
-    pad_size = n_padded - n_wl
-    n_chunks = n_padded // chunk_size
-
-    wavelengths_padded = jnp.pad(
-        wavelengths, (0, pad_size), constant_values=wavelengths[-1]
-    )
-    spectrum_padded = jnp.pad(
-        spectrum, (0, pad_size), constant_values=0.0
-    )
-    x_disp_padded = jnp.pad(
-        xsca_disp, (0, pad_size), constant_values=xsca_disp[-1]
-    )
-    y_disp_padded = jnp.pad(
-        ysca_disp, (0, pad_size), constant_values=ysca_disp[-1]
+    # Step 3: Native-resolution chunked deposit (16-phase pre-binning; see
+    # star_disperser.deposit_stack_native for the exactness argument)
+    return star_disperser.deposit_stack_native(
+        convolved, grid_wl, wavelengths, spectrum,
+        xsca_disp, ysca_disp, output,
+        oversample=oversample, chunk_size=chunk_size,
     )
 
-    # Step 5: Process wavelengths in chunks using lax.scan
-    def process_chunk(output, chunk_idx):
-        start = chunk_idx * chunk_size
 
-        wl_chunk = jax.lax.dynamic_slice(
-            wavelengths_padded, [start], [chunk_size]
-        )
-        flux_chunk = jax.lax.dynamic_slice(
-            spectrum_padded, [start], [chunk_size]
-        )
-        x_chunk = jax.lax.dynamic_slice(
-            x_disp_padded, [start], [chunk_size]
-        )
-        y_chunk = jax.lax.dynamic_slice(
-            y_disp_padded, [start], [chunk_size]
-        )
-
-        # Interpolate convolved images to chunk wavelengths
-        conv_chunk = psf_model.interp_wavelength_chunk(
-            convolved, grid_wl, wl_chunk
-        )  # [chunk_size, Conv_y, Conv_x]
-
-        # Scale by spectrum flux
-        conv_chunk = conv_chunk * flux_chunk[:, None, None]
-
-        # Build detector coordinates for all pixels in all chunk wavelengths
-        det_x = x_chunk[:, None] + rel_x_flat[None, :]  # [chunk, n_conv]
-        det_y = y_chunk[:, None] + rel_y_flat[None, :]
-
-        # Convert FITS 1-indexed to 0-indexed array indices
-        idx_x = jnp.floor(det_x - 0.5).astype(jnp.int32).ravel()
-        idx_y = jnp.floor(det_y - 0.5).astype(jnp.int32).ravel()
-        values = conv_chunk.ravel()
-
-        # Scatter-add to output
-        output = output.at[idx_y, idx_x].add(
-            values, mode="drop", wrap_negative_indices=False
-        )
-        return output, None
-
-    output, _ = jax.lax.scan(process_chunk, output, jnp.arange(n_chunks))
-
-    return output
-
-
-def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=500):
+def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000):
     """Create a JIT-compiled galaxy disperser with payloads captured in closure.
 
     Parameters
@@ -439,7 +380,8 @@ def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=500):
     optical_payload : dict
         Optical model payload from optical_model_jax.make_sca_payload()
     chunk_size : int, optional
-        Wavelengths per chunk (default: 500)
+        Wavelengths per chunk (default: 2000 — measured best on a10g for
+        the native-binned deposit; see star_disperser.deposit_stack_native)
 
     Returns
     -------

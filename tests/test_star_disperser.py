@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 import roman_disperser.optical_model_jax as omj
+from roman_disperser import star_disperser
 from roman_disperser.star_disperser import (
     make_psf_pixel_grid,
     deposit_psf,
@@ -590,3 +591,143 @@ class TestInterpWavelengthChunk:
         result_old = interpolate_psf_wavelength(psfs_grid, grid_wl, target_wl)
 
         np.testing.assert_allclose(result_new, result_old, rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Test: deposit_stack_native — stamp-size sweep against a float64 reference
+# ---------------------------------------------------------------------------
+
+def _reference_deposit_f64(stack, grid_wl, wavelengths, flux,
+                           x_disp, y_disp, shape, oversample):
+    """The baseline per-subpixel deposit, in float64 numpy.
+
+    Mirrors the pre-native16 algorithm exactly: per wavelength, interpolate
+    the oversampled stamp between bracketing grid wavelengths, scale by
+    flux, and floor-deposit every subpixel j at
+    floor(center - 0.5 + (j - (S-1)/2)/os), dropping out-of-bounds
+    indices. deposit_stack_native performs the identical additions
+    regrouped, so it must agree for every stamp size and phase.
+    """
+    out = np.zeros(shape, dtype=np.float64)
+    stack = np.asarray(stack, dtype=np.float64)
+    grid_wl = np.asarray(grid_wl, dtype=np.float64)
+    n_grid = stack.shape[0]
+    s_y, s_x = stack.shape[-2:]
+    os_ = oversample
+
+    for wl, fx, xc, yc in zip(np.asarray(wavelengths, dtype=np.float64),
+                              np.asarray(flux, dtype=np.float64),
+                              np.asarray(x_disp, dtype=np.float64),
+                              np.asarray(y_disp, dtype=np.float64)):
+        i0 = int(np.clip(np.searchsorted(grid_wl, wl) - 1, 0, n_grid - 2))
+        t = np.clip((wl - grid_wl[i0]) / (grid_wl[i0 + 1] - grid_wl[i0]),
+                    0.0, 1.0)
+        stamp = (stack[i0] + t * (stack[i0 + 1] - stack[i0])) * fx
+        idx_y = np.floor(yc - 0.5
+                         + (np.arange(s_y) - (s_y - 1) / 2.0) / os_
+                         ).astype(np.int64)
+        idx_x = np.floor(xc - 0.5
+                         + (np.arange(s_x) - (s_x - 1) / 2.0) / os_
+                         ).astype(np.int64)
+        ok_y = (idx_y >= 0) & (idx_y < shape[0])
+        ok_x = (idx_x >= 0) & (idx_x < shape[1])
+        np.add.at(out,
+                  (idx_y[ok_y][:, None], idx_x[ok_x][None, :]),
+                  stamp[np.ix_(ok_y, ok_x)])
+    return out
+
+
+class TestDepositStackNativeSizes:
+    """Stamp-size sweep for the 16-phase native deposit.
+
+    The binning arithmetic (native size (S-2)//os + 2, per-phase padding,
+    the extra boundary pixel) depends on S mod os, but the production paths
+    only ever exercise one residue (stamps 120, 184, conv 303+pad). This
+    sweep checks every residue, non-square stamps, and a second oversample
+    factor against the float64 per-subpixel reference above.
+
+    Positions are exact multiples of 1/8 (all representable in f32), so
+    the phase and floor computations agree bit-for-bit between the f32
+    code and the f64 reference even AT the quarter-pixel boundaries — all
+    16 phases are hit deterministically, including the degenerate
+    frac == p/4 cases. One generic non-representable position is included
+    per config, placed away from boundaries.
+    """
+
+    SHAPE = (64, 64)
+
+    def _run(self, s_y, s_x, oversample, chunk_size=4):
+        rng = np.random.default_rng(1000 * s_y + s_x)
+        n_grid = 3
+        stack = jnp.array(rng.uniform(0.1, 1.0, (n_grid, s_y, s_x)),
+                          dtype=jnp.float32)
+        grid_wl = jnp.array([1.0, 1.5, 2.0], dtype=jnp.float32)
+
+        # 16 phase combinations via exact eighths, + boundary and generic
+        # extras; n_wl=18 also exercises the pad-to-chunk-multiple path.
+        fracs = jnp.array([0.0, 0.25, 0.5, 0.75], dtype=jnp.float32)
+        base = 30.0
+        x_disp = jnp.concatenate([
+            base + jnp.repeat(fracs, 4),
+            jnp.array([base + 0.125, 27.13], dtype=jnp.float32)])
+        y_disp = jnp.concatenate([
+            base + jnp.tile(fracs, 4),
+            jnp.array([base + 0.625, 33.87], dtype=jnp.float32)])
+        n_wl = len(x_disp)
+        wavelengths = jnp.linspace(0.9, 2.1, n_wl).astype(jnp.float32)
+        flux = jnp.array(rng.uniform(0.5, 2.0, n_wl), dtype=jnp.float32)
+
+        out = jnp.zeros(self.SHAPE, dtype=jnp.float32)
+        got = star_disperser.deposit_stack_native(
+            stack, grid_wl, wavelengths, flux, x_disp, y_disp, out,
+            oversample=oversample, chunk_size=chunk_size)
+        want = _reference_deposit_f64(
+            stack, grid_wl, wavelengths, flux, x_disp, y_disp,
+            self.SHAPE, oversample)
+
+        # Identical additions regrouped: agreement to f32 rounding. A
+        # grouping/size bug shifts whole stamp rows -> order-unity errors.
+        atol = 1e-5 * float(np.abs(want).max())
+        np.testing.assert_allclose(np.asarray(got, dtype=np.float64), want,
+                                   rtol=1e-5, atol=atol)
+        # Flux: everything is on-detector in this configuration.
+        np.testing.assert_allclose(
+            float(np.asarray(got, np.float64).sum()), want.sum(), rtol=1e-6)
+
+    @pytest.mark.parametrize("s_y,s_x", [
+        (12, 12),   # S % 4 == 0 (the production residue)
+        (9, 9),     # S % 4 == 1
+        (10, 10),   # S % 4 == 2
+        (11, 11),   # S % 4 == 3
+        (10, 13),   # non-square, mixed residues
+        (11, 8),    # non-square, mixed residues
+    ])
+    def test_sizes_match_subpixel_reference(self, s_y, s_x):
+        self._run(s_y, s_x, oversample=4)
+
+    def test_oversample_2(self):
+        self._run(7, 10, oversample=2)
+
+    def test_edge_drop_matches_reference(self):
+        """Stamps straddling the detector edge: mode='drop' must drop
+        exactly the native pixels whose subpixels the baseline dropped."""
+        rng = np.random.default_rng(7)
+        stack = jnp.array(rng.uniform(0.1, 1.0, (2, 11, 10)),
+                          dtype=jnp.float32)
+        grid_wl = jnp.array([1.0, 2.0], dtype=jnp.float32)
+        # Centers near (0,0) and beyond the far corner: partial overlap.
+        x_disp = jnp.array([1.25, 63.5, -0.375], dtype=jnp.float32)
+        y_disp = jnp.array([0.75, 62.875, 64.25], dtype=jnp.float32)
+        wavelengths = jnp.array([1.1, 1.5, 1.9], dtype=jnp.float32)
+        flux = jnp.ones(3, dtype=jnp.float32)
+
+        out = jnp.zeros(self.SHAPE, dtype=jnp.float32)
+        got = star_disperser.deposit_stack_native(
+            stack, grid_wl, wavelengths, flux, x_disp, y_disp, out,
+            oversample=2, chunk_size=2)
+        want = _reference_deposit_f64(
+            stack, grid_wl, wavelengths, flux, x_disp, y_disp,
+            self.SHAPE, 2)
+        atol = 1e-5 * float(np.abs(want).max())
+        np.testing.assert_allclose(np.asarray(got, dtype=np.float64), want,
+                                   rtol=1e-5, atol=atol)
