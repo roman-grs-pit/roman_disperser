@@ -17,6 +17,8 @@ import numpy as np
 import pytest
 
 from roman_disperser.galaxy_disperser import (
+    _next_fast_fft_size,
+    fft_convolve_full,
     trace_beam_sca,
     trace_beam_sca_with_jacobian,
     disperse_galaxy_shape,
@@ -589,3 +591,97 @@ class TestWavelengthInterpolation:
         interp_at_grid = interp_wavelength_chunk(convolved, grid_wl, grid_wl)
 
         np.testing.assert_allclose(interp_at_grid, convolved, rtol=1e-4, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Test: fast-size FFT convolution (the pad-to-fast-size optimization)
+# ---------------------------------------------------------------------------
+
+class TestNextFastFFTSize:
+    """The fast-size rule: smallest m >= n with prime factors in {2,3,5,7}."""
+
+    def test_production_size(self):
+        # The case that motivated all this: 303 = 3*101 -> 315 = 3^2*5*7
+        assert _next_fast_fft_size(303) == 315
+
+    @pytest.mark.parametrize("n", [1, 2, 8, 105, 128, 315, 512, 735])
+    def test_fast_sizes_are_fixed_points(self, n):
+        assert _next_fast_fft_size(n) == n
+
+    def test_scan_properties(self):
+        """For all n up to 2000: result >= n, is 7-smooth, and minimal."""
+        def smooth(k):
+            for p in (2, 3, 5, 7):
+                while k % p == 0:
+                    k //= p
+            return k == 1
+
+        prev = 1
+        for n in range(1, 2001):
+            m = _next_fast_fft_size(n)
+            assert m >= n
+            assert smooth(m)
+            # minimal: no 7-smooth size in [n, m)
+            assert all(not smooth(j) for j in range(n, m))
+            # monotone in n
+            assert m >= prev
+            prev = m
+
+
+class TestFFTConvolveFull:
+    """fft_convolve_full must match jax.scipy.signal.fftconvolve(mode='full').
+
+    This is the permanent equivalence guard for the pad-to-fast-size
+    optimization: the reference (jax's own fftconvolve) never goes away, so
+    unlike old-vs-new code comparisons this test outlives the refactor.
+    Tolerances follow the standing gate style (rtol 1e-5, atol scaled to
+    the reference peak); the measured difference at production dims is
+    ~6e-9 absolute on O(1) values.
+    """
+
+    @pytest.mark.parametrize("img_shape,ker_shape", [
+        ((120, 120), (184, 184)),   # production geometry: conv 303 (Bluestein case)
+        ((17, 23), (9, 11)),        # odd, non-square: conv 25 x 33
+        ((13, 13), (3, 3)),         # conv 15 = 3*5, already a fast size
+        ((1, 1), (5, 5)),           # degenerate image
+    ])
+    def test_matches_fftconvolve(self, img_shape, ker_shape):
+        rng = np.random.default_rng(42)
+        img = jnp.array(rng.normal(size=img_shape), dtype=jnp.float32)
+        ker = jnp.array(rng.normal(size=ker_shape), dtype=jnp.float32)
+
+        got = fft_convolve_full(img, ker)
+        want = jax.scipy.signal.fftconvolve(img, ker, mode="full")
+
+        assert got.shape == want.shape == (
+            img_shape[0] + ker_shape[0] - 1, img_shape[1] + ker_shape[1] - 1)
+        atol = 1e-5 * float(jnp.abs(want).max())
+        np.testing.assert_allclose(np.asarray(got), np.asarray(want),
+                                   rtol=1e-5, atol=atol)
+
+    def test_batched_matches_vmapped_fftconvolve(self):
+        """Leading batch axis (as used in prepare_galaxy_images)."""
+        rng = np.random.default_rng(7)
+        imgs = jnp.array(rng.normal(size=(6, 24, 24)), dtype=jnp.float32)
+        kers = jnp.array(rng.normal(size=(6, 10, 10)), dtype=jnp.float32)
+
+        got = fft_convolve_full(imgs, kers)
+        want = jax.vmap(
+            lambda a, b: jax.scipy.signal.fftconvolve(a, b, mode="full")
+        )(imgs, kers)
+
+        atol = 1e-5 * float(jnp.abs(want).max())
+        np.testing.assert_allclose(np.asarray(got), np.asarray(want),
+                                   rtol=1e-5, atol=atol)
+
+    def test_flux_conservation(self):
+        """Unit-sum kernel preserves total flux (the property the disperser
+        relies on)."""
+        rng = np.random.default_rng(3)
+        img = jnp.array(rng.uniform(size=(30, 30)), dtype=jnp.float32)
+        ker = jnp.array(rng.uniform(size=(21, 21)), dtype=jnp.float32)
+        ker = ker / ker.sum()
+
+        out = fft_convolve_full(img, ker)
+        np.testing.assert_allclose(float(out.sum()), float(img.sum()),
+                                   rtol=1e-5)

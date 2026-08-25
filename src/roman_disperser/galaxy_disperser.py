@@ -178,6 +178,65 @@ def disperse_galaxy_shape(image, jacobian, dx, dy):
     return warped
 
 
+def _next_fast_fft_size(n):
+    """Smallest integer >= n whose prime factors are all in {2, 3, 5, 7}.
+
+    FFT backends (cuFFT on GPU, pocketfft on CPU) only have fast kernels
+    for small prime radices; a size with a large prime factor falls back to
+    the much slower Bluestein algorithm. Chosen by rule rather than
+    hard-coding a size because the best padding is hardware/cuFFT-version
+    dependent (315 beat 320 by ~4% on an A10G but that margin is not
+    portable). Host-side Python ints — runs at trace time, so the choice is
+    baked into the compiled function.
+    """
+    m = int(n)
+    while True:
+        k = m
+        for p in (2, 3, 5, 7):
+            while k % p == 0:
+                k //= p
+        if k == 1:
+            return m
+        m += 1
+
+
+def fft_convolve_full(images, kernels):
+    """Full 2D linear convolution via FFT at a fast transform size.
+
+    Equivalent to ``jax.scipy.signal.fftconvolve(images, kernels,
+    mode='full')`` applied over the last two axes (leading axes broadcast),
+    up to float rounding: a full linear convolution of sizes (Ny, Py) has
+    support exactly X = Ny + Py - 1, so a circular convolution at any FFT
+    size S >= X, cropped to [:X, :X], is the same answer.
+
+    We transform at the next fast FFT size rather than at X itself: at
+    production geometry X = 120 + 184 - 1 = 303 = 3*101, and the prime
+    factor 101 forces cuFFT onto its slow Bluestein path — transforming at
+    S = 315 = 3^2*5*7 measured ~1.7x faster for the whole convolution on an
+    A10G, with max |diff| ~6e-9 vs fftconvolve (workbench 2026-08-19,
+    SLURM 7145). ``jax.scipy.signal.fftconvolve`` (jax 0.7.2) transforms at
+    the literal full shape (its source carries a TODO(jakevdp) about
+    next_fast_len), so we do the padding by hand.
+
+    Parameters
+    ----------
+    images, kernels : jnp.ndarray
+        [..., Ny, Nx] and [..., Py, Px]; leading axes must broadcast.
+
+    Returns
+    -------
+    jnp.ndarray
+        [..., Ny + Py - 1, Nx + Px - 1] full linear convolution.
+    """
+    ny, nx = images.shape[-2:]
+    py, px = kernels.shape[-2:]
+    conv_y, conv_x = ny + py - 1, nx + px - 1
+    s_y, s_x = _next_fast_fft_size(conv_y), _next_fast_fft_size(conv_x)
+    spectrum = (jnp.fft.rfft2(images, s=(s_y, s_x))
+                * jnp.fft.rfft2(kernels, s=(s_y, s_x)))
+    return jnp.fft.irfft2(spectrum, s=(s_y, s_x))[..., :conv_y, :conv_x]
+
+
 def prepare_galaxy_images(optical_payload, psf_payload, image, x0, y0, dx, dy):
     """Prepare dispersed, PSF-convolved galaxy images at PSF grid wavelengths.
 
@@ -234,11 +293,8 @@ def prepare_galaxy_images(optical_payload, psf_payload, image, x0, y0, dx, dy):
 
     warped_images = jax.vmap(warp_at_wl)(jacobians)  # [N_wl, Ny, Nx]
 
-    # Convolve each warped image with corresponding PSF
-    def convolve_at_wl(warped, psf):
-        return jax.scipy.signal.fftconvolve(warped, psf, mode='full')
-
-    convolved = jax.vmap(convolve_at_wl)(warped_images, psfs)
+    # Convolve each warped image with its PSF (batched over wavelength).
+    convolved = fft_convolve_full(warped_images, psfs)
     # [N_wl, Ny + PSF_y - 1, Nx + PSF_x - 1]
 
     return convolved, centers_x, centers_y, grid_wl
