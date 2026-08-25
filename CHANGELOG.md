@@ -25,9 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the CPU reference at a loose gross-breakage gate (0.1·peak) plus the
   always-on flux gate. Two tiers: *coarse*
   (20 Å, grism orders 0/1/2 + prism, default suite) and *full* (production
-  2 Å sampling, grism orders 1 and 0, `-m slow`) — the full tier exists
-  because per-pixel accumulation depth and the deposit-collision regime only
-  appear at production sampling. Reference frames are a vendored
+  2 Å sampling, grism orders 1 and 0 + prism, `-m slow`) — the full tier
+  exists because per-pixel accumulation depth and the deposit-collision
+  regime only appear at production sampling. Reference frames are a vendored
   `roman_disperser_data` asset (`golden-frames-v1`, fetched by
   `pixi run hydrate`), version-pinned in the test so intentional
   results-changing PRs must bump the pin and publish regenerated frames in
@@ -36,7 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   old-vs-new workbench comparisons.
 - **Merge-gate convention recorded in CLAUDE.md**: every PR merge requires
   the usual suite on CPU and GPU, plus the full-tier golden test and the
-  `benchmarks/` performance regression suite.
+  `benchmarks/` performance regression suite. `scripts/slurm_run_tests.sh`
+  now runs the golden full tier after the suite, so it is the whole GPU
+  half of the gate; its partition/GRES/log dir are env-overridable.
 
 ## [0.14.3] - 2026-08-21
 

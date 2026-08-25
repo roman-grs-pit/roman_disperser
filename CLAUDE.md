@@ -212,6 +212,8 @@ The unified pipeline (`build_dispersed_image.py`) sets `JAX_COMPILATION_CACHE_DI
     1. The **full-tier golden regression test**
        (`pixi run pytest -m slow tests/test_golden_frame.py`) — the
        end-to-end output guard at production wavelength sampling.
+       `scripts/slurm_run_tests.sh` runs the GPU half of the gate in one
+       job (suite, then the golden full tier).
     2. The **performance regression suite** (`benchmarks/README.md`,
        `check_perf.py` must print PASS).
   Both spend real GPU money, so they are merge/pre-tag gates, not CI. A PR

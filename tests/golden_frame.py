@@ -38,9 +38,13 @@ Design decisions (agreed 2026-08-24, see the research log)
   collisions/px at production sampling), and those are exactly what the
   native-deposit restructure touches. So: a *coarse* tier (20 A, all
   element/order configs) that runs in the default suite, and a *full* tier
-  (2 A = production, grism orders 1 and 0 — order 0 is the
-  collision-extreme case) marked ``slow`` and required before merging any
-  PR that touches the dispersal path.
+  (2 A = production: grism orders 1 and 0, plus the prism) marked ``slow``
+  and required before merging any PR that touches the dispersal path.
+  Order 0 is the collision *extreme* (every wavelength lands on one spot);
+  the prism is the distinct dispersed-but-compressed regime, where its
+  lambda-compression stacks hundreds of samples per pixel along a real
+  trace — and it is where the cross-backend boundary flips (below) were
+  largest, so it is not a case the grism configs stand in for.
 * **References are a vendored asset, pinned by name in the test.** Frames
   live in the ``roman_disperser_data`` store (this test already needs
   hydrated PSF/sensitivity data, so this adds no new dependency) under a
@@ -117,7 +121,7 @@ SCA = 1  # matches all perf/benchmark work (bench_deposit.py, the workbench runs
 DLAM_COARSE_A = 20.0
 DLAM_FULL_A = 2.0  # production spacing (matches build_dispersed_image.py default)
 CONFIGS_COARSE = (("grism", "0"), ("grism", "1"), ("grism", "2"), ("prism", "1"))
-CONFIGS_FULL = (("grism", "1"), ("grism", "0"))
+CONFIGS_FULL = (("grism", "1"), ("grism", "0"), ("prism", "1"))
 
 # ---------------------------------------------------------------------------
 # The scene. Positions are 1-indexed SCA pixels (package convention).
@@ -158,7 +162,17 @@ LINE_AMPLITUDE = 5.0
 
 
 def wavelength_grid(element, dlam_A):
-    """Wavelength grid over the element band: microns, float32, dlam in A."""
+    """Wavelength grid over the element band: microns, float32, dlam in A.
+
+    An *input fixture*, not a unit under test. The production path has no
+    grid constructor of its own: ``build_dispersed_image.py`` takes the grid
+    from the catalog's ``wavelengths`` array and trims it to the band
+    (``trim_wavelength_grid``), and each catalog builder rolls its own
+    ``linspace``. This reproduces what a standard 2 A catalog yields after
+    trimming (grism: 9000..20000 A inclusive, 5501 samples). Consolidating
+    the repo's ad-hoc grid constructions into an ``elements`` helper is
+    tracked separately (GitHub issue #36).
+    """
     wl_ang = np.arange(element.lam_min * 1e4, element.lam_max * 1e4 + 0.1, dlam_A)
     return (wl_ang / 1e4).astype(np.float32)
 
