@@ -65,19 +65,23 @@ from roman_disperser.pipeline import (
 
 
 def make_noscatter_disperser(psf_payload, optical_payload, chunk_size):
-    """Reference disperser: identical to ``disperse_galaxy`` through the PSF
-    interpolation and flux scaling, but the deposit scatter is replaced by a
-    scalar reduction into output[0,0]. This is the compute floor the baseline
-    is compared against; it is NOT flux-equivalent output (diagnostic only).
+    """Reference disperser: identical to ``disperse_galaxy`` through the
+    16-phase binning, phase selection, wavelength interpolation, and flux
+    scaling, but the deposit scatter is replaced by a scalar reduction into
+    output[0,0]. This is the compute floor the baseline is compared against;
+    it is NOT flux-equivalent output (diagnostic only).
 
-    Mirrors the steps of ``galaxy_disperser.disperse_galaxy`` using the same
-    package helpers, so a change in the shared prepare/interp path moves both
-    variants and cancels in the ratio.
+    Mirrors the steps of ``star_disperser.deposit_stack_native`` (the shared
+    native-resolution hot loop, since the 16-phase pre-binning port), so a
+    change in the shared prepare/bin/interp path moves both variants and
+    cancels in the ratio. If ``deposit_stack_native`` changes, keep this in
+    step or the ratio gate loses its meaning.
     """
 
     def disperse(image, x0, y0, spectrum, wavelengths, output):
         oversample = psf_payload["oversample"]
         dx = dy = 1.0 / oversample
+        os_ = int(oversample)
 
         convolved, _, _, grid_wl = galaxy_disperser.prepare_galaxy_images(
             optical_payload, psf_payload, image, x0, y0, dx, dy
@@ -86,6 +90,27 @@ def make_noscatter_disperser(psf_payload, optical_payload, chunk_size):
             optical_payload, x0, y0, wavelengths
         )
 
+        # 16-phase pre-binning, exactly as deposit_stack_native does it.
+        n_grid = convolved.shape[0]
+        s_y, s_x = convolved.shape[-2:]
+        n_y = (s_y - 2) // os_ + 2
+        n_x = (s_x - 2) // os_ + 2
+        rel0_y = -(s_y - 1) / (2.0 * os_)
+        rel0_x = -(s_x - 1) / (2.0 * os_)
+
+        def bin_phase(p_y, p_x):
+            padded = jnp.pad(
+                convolved,
+                ((0, 0),
+                 (p_y, os_ * n_y - s_y - p_y),
+                 (p_x, os_ * n_x - s_x - p_x)))
+            return padded.reshape(n_grid, n_y, os_, n_x, os_).sum(axis=(2, 4))
+
+        binned = jnp.stack([
+            jnp.stack([bin_phase(p_y, p_x) for p_x in range(os_)])
+            for p_y in range(os_)
+        ])
+
         n_wl = len(wavelengths)
         n_padded = ((n_wl + chunk_size - 1) // chunk_size) * chunk_size
         pad = n_padded - n_wl
@@ -93,18 +118,35 @@ def make_noscatter_disperser(psf_payload, optical_payload, chunk_size):
 
         wl_p = jnp.pad(wavelengths, (0, pad), constant_values=wavelengths[-1])
         sp_p = jnp.pad(spectrum, (0, pad), constant_values=0.0)
-        # Dispersed positions are computed (as in production) but unused by
-        # the reduction; XLA eliminates the dead index math.
-        del xsca_disp, ysca_disp
+        x_p = jnp.pad(xsca_disp, (0, pad), constant_values=xsca_disp[-1])
+        y_p = jnp.pad(ysca_disp, (0, pad), constant_values=ysca_disp[-1])
 
         def process_chunk(carry, chunk_idx):
             out = carry
             start = chunk_idx * chunk_size
             wl_c = jax.lax.dynamic_slice(wl_p, [start], [chunk_size])
             fx_c = jax.lax.dynamic_slice(sp_p, [start], [chunk_size])
-            conv = psf_model.interp_wavelength_chunk(convolved, grid_wl, wl_c)
-            conv = conv * fx_c[:, None, None]
-            out = out.at[0, 0].add(conv.ravel().sum())
+            x_c = jax.lax.dynamic_slice(x_p, [start], [chunk_size])
+            y_c = jax.lax.dynamic_slice(y_p, [start], [chunk_size])
+
+            u_x = x_c - 0.5 + rel0_x
+            u_y = y_c - 0.5 + rel0_y
+            m_x = jnp.floor(u_x).astype(jnp.int32)
+            m_y = jnp.floor(u_y).astype(jnp.int32)
+            p_x = jnp.clip(jnp.floor((u_x - m_x) * os_), 0, os_ - 1
+                           ).astype(jnp.int32)
+            p_y = jnp.clip(jnp.floor((u_y - m_y) * os_), 0, os_ - 1
+                           ).astype(jnp.int32)
+
+            i0 = jnp.clip(jnp.searchsorted(grid_wl, wl_c) - 1, 0, n_grid - 2)
+            t = jnp.clip((wl_c - grid_wl[i0])
+                         / (grid_wl[i0 + 1] - grid_wl[i0]), 0.0, 1.0)
+            lo = binned[p_y, p_x, i0]
+            hi = binned[p_y, p_x, i0 + 1]
+            nat = (lo + t[:, None, None] * (hi - lo)) * fx_c[:, None, None]
+            # Scatter replaced by a reduction; the base indices m_x/m_y
+            # become dead index math that XLA eliminates.
+            out = out.at[0, 0].add(nat.ravel().sum())
             return out, None
 
         output, _ = jax.lax.scan(process_chunk, output, jnp.arange(n_chunks))
@@ -141,7 +183,9 @@ def main():
     ap.add_argument("--orders", default="0,1,2")
     ap.add_argument("--n-gal", type=int, default=100)
     ap.add_argument("--batch", type=int, default=100)
-    ap.add_argument("--chunk-size", type=int, default=500)
+    ap.add_argument("--chunk-size", type=int, default=2000,
+                    help="wavelengths per chunk (2000 = the production "
+                         "default since the native-deposit port)")
     ap.add_argument("--dlam", type=float, default=2.0,
                     help="wavelength spacing in Angstrom (2.0 = production)")
     ap.add_argument("--seed", type=int, default=0)
