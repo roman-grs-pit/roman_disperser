@@ -7,20 +7,26 @@ that ``check_perf.py`` gates on.
 
 Why two variants
 ----------------
-The dominant runtime cost is the deposit: a scatter-add of ~505M values per
-galaxy into the 4088^2 detector. Backend regressions in scatter performance
-(e.g. the jax 0.11.0 GPU scatter-add regression, jax-ml/jax#39959, which made
-the deposit ~16x slower) are exactly what this benchmark exists to catch, and
-absolute times vary between GPUs. So the primary regression signal is the
+Scatter-add performance is what this benchmark exists to police: backend
+regressions there (e.g. the jax 0.11.0 GPU scatter-add regression,
+jax-ml/jax#39959, ~16x slower) produce correct images slowly. Since the
+16-phase native-deposit port the scatter is ~32M elements per galaxy (was
+~505M oversampled), but a scatter regression still lands on it. Absolute
+times vary between GPUs, so the primary regression signal is the
 hardware-insensitive *ratio*
 
     baseline ms/gal  /  noscatter ms/gal
 
 where ``noscatter`` is the identical computation with the scatter replaced by
-a scalar reduction (keeps PSF interpolation + flux scaling; XLA drops the dead
-index math). Measured on an A10G (2026-08-18 exploration, branch
-explore/performance): healthy jax (0.7.2, 0.10.1, 0.11.1) gives ratio
-~1.1-1.2; jax 0.11.0 gives 15-21. ``check_perf.py`` gates at 3.0.
+a scalar reduction (keeps the 16-phase binning, phase selection, wavelength
+interpolation, and flux scaling; XLA drops the dead index math). The healthy
+ratio is ~0.73-0.75, *below* 1: the baseline fuses gather+interp+scatter into
+one kernel while the reduction variant pays for a separate reduction kernel
+(2.26 vs 3.03 ms/gal on an A10G, SLURM 7183, 2026-08-25). A scatter
+regression inflates only the baseline, so the ``check_perf.py`` gate at 3.0
+still trips — a 0.11.0-class 16x scatter slowdown puts the ratio far above
+it. (Pre-native16 history, oversampled deposit: healthy jax 0.7.2/0.10.1/
+0.11.1 gave ~1.1-1.2; jax 0.11.0 gave 15-21.)
 
 Workload (matches the 2026-08-18 exploration bench so numbers are comparable):
 synthetic Sersic galaxies at production geometry — 30 px native stamps (120 px

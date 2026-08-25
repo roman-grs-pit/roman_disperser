@@ -1,7 +1,7 @@
 {
   "NVIDIA A10G": {
-    "ms_per_gal": {"0": 9.4, "1": 10.4, "2": 9.3},
-    "noscatter_ms_per_gal": 8.6,
-    "provenance": "2026-08-18 performance exploration (branch explore/performance, workbench/20260818-perf-exploration): steady-state repeats on A10G, n_gal=100, batch=100, chunk=500, dlam=2A, SCA1. Identical to 2 decimal places under jax 0.10.1 and 0.11.1 (9.38/10.44/9.24 ms/gal orders 0/1/2, noscatter 8.57 flat); consistent with the project pixi env (jax 0.7.2, SLURM 7135: 9.1/10.3/9.2) and with production runs 2026-03 through 2026-06 (7-9 ms/gal)."
+    "ms_per_gal": {"0": 2.20, "1": 2.26, "2": 2.22},
+    "noscatter_ms_per_gal": 3.03,
+    "provenance": "2026-08-25 native-deposit PR bench (branch feature/native-deposit-port @ 56499cb, SLURM 7183): steady-state repeats on A10G, n_gal=100, batch=100, chunk=2000, dlam=2A, SCA1, jax 0.7.2 (pixi cuda env). Includes the fast-FFT-size prepare (PR #34) and the 16-phase native deposit. Chunk 500 measured identical (SLURM 7182). Healthy ratio is now ~0.73-0.75 (noscatter's separate reduction kernel is slower than the fused gather+interp+scatter baseline); the <=3 ratio gate still catches scatter regressions, which inflate only the baseline. Pre-series baselines for comparison: 9.20/10.26/9.07 ms/gal, noscatter 8.6 (2026-08-18 exploration + SLURM 7180)."
   }
 }
