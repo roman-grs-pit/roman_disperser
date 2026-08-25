@@ -206,12 +206,29 @@ The unified pipeline (`build_dispersed_image.py`) sets `JAX_COMPILATION_CACHE_DI
 ## Coding Guidelines
 
 - Significant changes should ALWAYS be done on a new branch. Create a descriptive branch name for the feature or bug fix.
+- **PR merge gate** (convention, agreed 2026-08-24): before merging ANY PR,
+  on top of the usual suite (`pixi run pytest -q tests`, run on **both** CPU
+  and GPU — the GPU run needs a GPU node and the `cuda` env), also require:
+    1. The **full-tier golden regression test**
+       (`pixi run pytest -m slow tests/test_golden_frame.py`) — the
+       end-to-end output guard at production wavelength sampling.
+       `scripts/slurm_run_tests.sh` runs the GPU half of the gate in one
+       job (suite, then the golden full tier).
+    2. The **performance regression suite** (`benchmarks/README.md`,
+       `check_perf.py` must print PASS).
+  Both spend real GPU money, so they are merge/pre-tag gates, not CI. A PR
+  that *intentionally* changes results must bump `GOLDEN_VERSION` in
+  `tests/golden_frame.py` and publish the regenerated frames as a
+  `roman_disperser_data` release of the same name in the same change (see
+  the `tests/golden_frame.py` docstring).
 - When merging a branch back in to `main`, finish by tagging the release with a version number. Use semantic versioning and ask if you have a question. The release process is:
     1. Bump the version in `pyproject.toml`
     2. Run `pixi install` and commit `pixi.lock` if it changed (version bumps can update the lockfile)
     3. **Verify the installed version**: `pixi run python -c "import roman_disperser; print(roman_disperser.__version__)"` must print the new number. An editable install only picks the bump up at `pixi install`; a stale value silently poisons the `CODEVER` provenance card in every FITS product, so do not tag until this prints right.
     4. Update `CHANGELOG.md` with a summary of the changes
-    5. **Run the performance regression suite** (`benchmarks/README.md`):
+    5. **Run the full-tier golden regression test**
+       (`pixi run pytest -m slow tests/test_golden_frame.py`) and the
+       **performance regression suite** (`benchmarks/README.md`):
        `bash benchmarks/run_golden.sh` on a GPU node (SLURM: `sbatch -p <gpu-partition> --gres=gpu:1 --wrap '...'`) and require `check_perf.py` to print PASS. This catches correct-but-slow backend regressions (e.g. the jax 0.11.0 scatter-add slowdown) that no correctness test sees. It spends real GPU money, so it is a pre-tag gate, not CI.
     6. Tag the release
 - This is a research code, so value simplicity and clarity over deep class hierarchies and generality. Prefer functional routines over complex object-oriented designs.

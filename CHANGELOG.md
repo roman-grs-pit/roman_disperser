@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Golden-frame end-to-end regression test** (`tests/golden_frame.py`,
+  `tests/test_golden_frame.py`). A small curated scene (5 galaxies + 2 stars
+  covering detector-center, edge-clipped, off-grid sub-pixel, overlapping-pair,
+  and star code paths) is rendered through the *production* dispersal path on
+  real reference data (SCA 1) and compared full-frame against pinned reference
+  frames. References are **per-backend** (`cpu/`, `gpu-a10g/`): the tight
+  gate (per-pixel rtol 1e-5 with frame-scaled atol; total flux to 1e-7 in
+  float64) applies against the matching backend's blessed frames, because
+  cross-backend per-pixel comparison is ill-conditioned — measured
+  CPU-vs-GPU differences reach 3.2e-2 of frame peak from benign,
+  flux-conserving position-rounding boundary flips (runs of λ samples
+  within float32 ULPs of a pixel boundary landing one row apart), while
+  total flux agrees to ~3e-8 and GPU run-to-run repeats stay ≤6e-7 of peak
+  (the issue #22 floor). A GPU model without blessed frames falls back to
+  the CPU reference at a loose gross-breakage gate (0.1·peak) plus the
+  always-on flux gate. Two tiers: *coarse*
+  (20 Å, grism orders 0/1/2 + prism, default suite) and *full* (production
+  2 Å sampling, grism orders 1 and 0 + prism, `-m slow`) — the full tier
+  exists because per-pixel accumulation depth and the deposit-collision
+  regime only appear at production sampling. Reference frames are a vendored
+  `roman_disperser_data` asset (`golden-frames-v1`, fetched by
+  `pixi run hydrate`), version-pinned in the test so intentional
+  results-changing PRs must bump the pin and publish regenerated frames in
+  the same change. This is the durable guard for refactorings of the
+  dispersal internals (FFT and native-deposit work), replacing throwaway
+  old-vs-new workbench comparisons.
+- **Merge-gate convention recorded in CLAUDE.md**: every PR merge requires
+  the usual suite on CPU and GPU, plus the full-tier golden test and the
+  `benchmarks/` performance regression suite. `scripts/slurm_run_tests.sh`
+  now runs the golden full tier after the suite, so it is the whole GPU
+  half of the gate; its partition/GRES/log dir are env-overridable.
+
 ## [0.14.3] - 2026-08-21
 
 ### Added

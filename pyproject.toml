@@ -40,7 +40,7 @@ roman-disperser-hydrate = "roman_disperser.hydrate:main"
 
 [tool.pytest.ini_options]
 markers = [
-    "slow: marks tests as slow (require STPSF PSF generation)",
+    "slow: marks tests as slow (STPSF PSF generation; the production-sampling golden-frame tier)",
     "stpsf: marks tests that require STPSF library",
 ]
 filterwarnings = [

@@ -27,6 +27,16 @@
 # no GPU path at all), so running them here would burn GPU-hours to exercise
 # NumPy. Generate caches with scripts/generate_psf_caches.py instead.
 #
+# The exception to the exclusion is the golden-frame *full* tier
+# (tests/test_golden_frame.py, also marked `slow`, ~1 min on an a10g): it is
+# the end-to-end output guard at production wavelength sampling and part of
+# the PR merge gate (CLAUDE.md), so it runs here as a second pytest step. This
+# script is therefore the whole GPU half of the merge gate: the suite, then
+# the golden full tier. The perf suite (benchmarks/) is separate.
+#
+# Cluster-specific bits (partition, GRES, log dir) are env-overridable:
+#   SLURM_PARTITION, SLURM_GRES, SLURM_LOG_DIR.
+#
 # Usage
 # -----
 #   scripts/slurm_run_tests.sh                 # submit and return
@@ -41,6 +51,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="${SLURM_LOG_DIR:-/data/npadman/tmp/slurm-logs/tests}"
+PARTITION="${SLURM_PARTITION:-gpu-med}"
+GRES="${SLURM_GRES:-gpu:a10g:1}"
 mkdir -p "$LOG_DIR"
 
 WAIT_FLAG=""
@@ -51,12 +63,13 @@ fi
 # shellcheck disable=SC2086
 sbatch $WAIT_FLAG \
     --job-name=rd-gputests \
-    --partition=gpu-med \
-    --gres=gpu:a10g:1 \
-    --time=00:30:00 \
+    --partition="$PARTITION" \
+    --gres="$GRES" \
+    --time=00:40:00 \
     --output="$LOG_DIR/gputests-%j.out" \
     --wrap="cd '$REPO_ROOT' && \
             pixi run -e cuda python -c 'import jax; print(\"devices:\", jax.devices())' && \
-            pixi run -e cuda python -m pytest tests -v -m 'not slow'"
+            pixi run -e cuda python -m pytest tests -v -m 'not slow' && \
+            pixi run -e cuda python -m pytest -v -m slow tests/test_golden_frame.py"
 
 echo "Submitted. Logs: $LOG_DIR/gputests-<jobid>.out"
