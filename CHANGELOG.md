@@ -5,7 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.15.0] - 2026-08-25
+
+Results-changing at the total-flux level (for the better — see the native
+deposit entry); golden references are `golden-frames-v2`. Roughly 4x faster
+end-to-end on an A10G and 6-7x on CPU, flat across orders.
 
 ### Changed
 - **Native-resolution deposit (16-phase pre-binning) in both dispersers**
@@ -55,16 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CPU-vs-GPU differences reach 3.2e-2 of frame peak from benign,
   flux-conserving position-rounding boundary flips (runs of λ samples
   within float32 ULPs of a pixel boundary landing one row apart), while
-  total flux agrees to ~3e-8 and GPU run-to-run repeats stay ≤6e-7 of peak
-  (the issue #22 floor). A GPU model without blessed frames falls back to
+  total flux agrees to ~3e-8 and GPU run-to-run repeats stay ≲8e-7 of peak
+  (the issue #22 floor; measured 2e-7–8e-7 over two a10g renders). A GPU model without blessed frames falls back to
   the CPU reference at a loose gross-breakage gate (0.1·peak) plus the
   always-on flux gate. Two tiers: *coarse*
   (20 Å, grism orders 0/1/2 + prism, default suite) and *full* (production
   2 Å sampling, grism orders 1 and 0 + prism, `-m slow`) — the full tier
   exists because per-pixel accumulation depth and the deposit-collision
   regime only appear at production sampling. Reference frames are a vendored
-  `roman_disperser_data` asset (`golden-frames-v1`, fetched by
-  `pixi run hydrate`), version-pinned in the test so intentional
+  `roman_disperser_data` asset (`golden-frames-v2` at this release; `-v1`
+  is the pre-native-deposit bless, fetched by `pixi run hydrate`), version-pinned in the test so intentional
   results-changing PRs must bump the pin and publish regenerated frames in
   the same change. This is the durable guard for refactorings of the
   dispersal internals (FFT and native-deposit work), replacing throwaway
