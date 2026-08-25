@@ -74,6 +74,19 @@ Design decisions (agreed 2026-08-24, see the research log)
   jax/cuFFT/driver change, not necessarily a code bug — inspect, then
   re-bless deliberately if confirmed benign.
 
+Version history
+---------------
+* ``golden-frames-v1`` — blessed from the v0.14.3-era code (per-subpixel
+  oversampled deposit).
+* ``golden-frames-v2`` — blessed after the native-resolution deposit
+  (16-phase pre-binning). A results-changing PR at the total-flux level:
+  the old deposit's deep sequential f32 accumulation was systematically
+  *low* by ~3e-7 (coarse sampling) up to ~1e-5 (order 0 at production
+  sampling, ~59k adds/px); the binned deposit's 16x-shallower accumulation
+  lands ~1e-8 from a float64 truth computation (verified 2026-08-25 on an
+  isolated on-detector star; see the research log). Per-pixel differences
+  stayed within the tight gate — the 1e-7 flux gate is what caught it.
+
 Regenerating (only for an *intentional* results change) — once per backend,
 on the deterministic CPU and on the production GPU (a10g)::
 
@@ -113,7 +126,7 @@ from roman_disperser.pipeline import (
 # The pinned reference version. Bumping this is a *results-changing* act:
 # do it only together with publishing the regenerated frames as a
 # roman_disperser_data release of the same name (see module docstring).
-GOLDEN_VERSION = "golden-frames-v1"
+GOLDEN_VERSION = "golden-frames-v2"
 
 SCA = 1  # matches all perf/benchmark work (bench_deposit.py, the workbench runs)
 

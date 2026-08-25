@@ -81,7 +81,7 @@ ASSETS = {
     # done marker is version-specific so publishing a new version triggers a
     # fresh download on the next hydrate.
     "golden_frames": Asset("golden_frames", "golden_frames", extract=True,
-                           done_marker="golden-frames-v1/cpu/provenance.json"),
+                           done_marker="golden-frames-v2/cpu/provenance.json"),
 }
 
 # Bootstrap fallback used only when the remote manifest is unavailable. The
@@ -95,7 +95,7 @@ DEFAULT_MANIFEST = {
     "optical_model_prism": "optical-model-prism-v0.8",
     "sensitivities_prism": "sensitivities-prism-v1",
     "psf_prism": "psf-prism-v1",
-    "golden_frames": "golden-frames-v1",
+    "golden_frames": "golden-frames-v2",
 }
 
 
