@@ -16,6 +16,7 @@ from . import psf_utils
 from . import psf_model
 from . import catalog
 from . import hydrate
+from . import ice
 from . import paths
 from . import pipeline
 from . import refdata

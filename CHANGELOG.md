@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Water-ice throughput model** (`roman_disperser.ice`, `docs/ice.md`),
+  off by default. Implements the `ice-toy-model` (2026-09-21): a per-SCA
+  growth-rate map on 32-px bins × days since the last decon (20-day cycle
+  from MJD 61295.0 by default) gives an ice thickness; a table of
+  transmission ratios T(λ; d)/T(λ; 0) interpolated linearly in thickness
+  gives the factor. Evaluated once per fine wavelength at the stamp's
+  *dispersed* centre and multiplied into the flux vector in
+  `disperse_star_psf` / `disperse_galaxy` — the deposit loop is untouched
+  and the ice-off program is byte-identical to before (golden frames
+  unchanged). The pointing-dependent thickness map is a dynamic argument
+  (`ice_thickness_nm`) so a new exposure time does not recompile; the
+  factories (`make_star_disperser`, `make_galaxy_disperser`) and the batched
+  fori helpers grow an optional `ice_payload=` / `ice=True` and, when set,
+  one trailing argument.
+- Pipeline: config `ice_dir:` (`default` = `<data>/ice/`), CLI
+  `--ice-dir` / `--mjd`; with ice on the pointing ECSV needs an `MJD`
+  column. Provenance cards `ICEMJD`, `ICEDT`, `ICEEPOCH`, `ICEPER`,
+  `ICERATE`, `ICETABLE` and an `ice:` block in the meta YAML.
+- `paths.ice_dir()`. The model inputs are **embargoed** (Roman calibration /
+  spectrophotometric WGs) and are neither shipped nor hydrated: they are
+  hand-copied into the ice directory and indexed by `ice_map.yaml`; the test
+  suite uses synthetic files with the same schema (`tests/test_ice.py`).
+
 ## [0.15.0] - 2026-08-25
 
 Results-changing at the total-flux level (for the better — see the native

@@ -74,6 +74,8 @@ import numpy as np
 import pyarrow.parquet as pq
 import zarr
 
+from roman_disperser import ice
+from roman_disperser import paths
 from roman_disperser import (
     elements, galaxy_disperser, psf_model, sersic, star_disperser,
 )
@@ -356,6 +358,19 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
 # Pipeline setup
 # ---------------------------------------------------------------------------
 
+def resolve_ice_dir(value):
+    """Config/CLI value for the ice model -> directory Path or None (off).
+
+    ``None``/``False`` -> off; ``True`` or ``"default"`` -> ``paths.ice_dir()``
+    (``<data>/ice/``); any other string -> that directory.
+    """
+    if value is None or value is False:
+        return None
+    if value is True or value == "default":
+        return paths.ice_dir()
+    return Path(value)
+
+
 def setup_pipeline(
     sca_list,
     *,
@@ -369,6 +384,7 @@ def setup_pipeline(
     galaxy_batch_size=100,
     galaxy_npix=30,
     verbose=True,
+    ice_dir=None,
 ):
     """One-time setup: load model, catalog, optical payloads, sensitivities.
 
@@ -397,6 +413,11 @@ def setup_pipeline(
         Oversampled size is ``galaxy_npix * oversample``.
     verbose : bool
         Print progress information.
+    ice_dir : str or Path, optional
+        Directory with the ice model (``ice_map.yaml`` + files; see
+        ``roman_disperser.ice`` and docs/ice.md). ``None`` (default)
+        disables the ice model entirely -- the pre-existing code path.
+        When set, every pointing needs an ``mjd``.
 
     Returns
     -------
@@ -491,9 +512,20 @@ def setup_pipeline(
             sensitivity_dir, sca_num, wavelengths_um, element.orders,
         )
 
+        # Ice model (optional; small: 128x128 rate map + [n_thick, N_wl])
+        ice_payload = None
+        if ice_dir is not None:
+            ice_payload = ice.load_ice_payload(ice_dir, sca_num, wavelengths_um)
+            log(f"    ice: {ice_payload['table_file']}, rate "
+                f"{float(ice_payload['rate_nm_per_day'].min()):.1f}-"
+                f"{float(ice_payload['rate_nm_per_day'].max()):.1f} nm/day, "
+                f"decon every {ice_payload['decon_period_days']:g} d from "
+                f"MJD {ice_payload['epoch_mjd']:g}")
+
         sca_data[sca_num] = {
             "optical_payloads": optical_payloads,
             "sensitivities": sensitivities,
+            "ice": ice_payload,
         }
 
     timings["setup_total"] = time.time() - t_total
@@ -515,6 +547,7 @@ def setup_pipeline(
         "psf_cache_dir": str(psf_cache_dir),
         # Which delivery actually loaded -- provenance for header + meta
         "optical_model_file": Path(optical_model_path).name,
+        "ice_dir": None if ice_dir is None else str(ice_dir),
         "star_batch_size": star_batch_size,
         "galaxy_batch_size": galaxy_batch_size,
         "galaxy_npix": galaxy_npix,
@@ -543,6 +576,7 @@ def process_pointing(
     extra_headers=None,
     extra_meta=None,
     output_prefix=None,
+    mjd=None,
 ):
     """Process a single pointing: select sources, generate spectra, disperse.
 
@@ -574,6 +608,10 @@ def process_pointing(
         (``<prefix>_<dirname>_detSCA05.fits`` etc.). Default: the element
         name — ``grism`` for grism runs (unchanged historical naming),
         ``prism`` for prism runs.
+    mjd : float, optional
+        Exposure start (MJD). Required when the pipeline was set up with
+        an ``ice_dir``; sets the ice thickness map for this exposure
+        (``ice.thickness_map``). Ignored otherwise.
 
     Returns
     -------
@@ -602,6 +640,38 @@ def process_pointing(
                      "Optical-model delivery file"),
         **(extra_headers or {}),
     }
+
+    # Ice model: one thickness map per SCA for this exposure's time. The
+    # schedule parameters are per payload but identical across SCAs (one
+    # ice_map.yaml), so the exposure-level cards come from the first one.
+    ice_on = pipeline.get("ice_dir") is not None
+    ice_meta = None
+    if ice_on:
+        if mjd is None:
+            raise ValueError("the ice model is enabled (ice_dir set) but no "
+                             "mjd was given for this pointing")
+        first_ice = next(sd["ice"] for sd in pipeline["sca_data"].values())
+        ice_dt = ice.time_since_decon(
+            mjd, first_ice["epoch_mjd"], first_ice["decon_period_days"])
+        extra_headers.update({
+            "ICEMJD": (float(mjd), "Exposure MJD (ice model)"),
+            "ICEDT": (float(ice_dt), "Days since decon (ice model)"),
+            "ICEEPOCH": (float(first_ice["epoch_mjd"]), "Decon epoch [MJD]"),
+            "ICEPER": (float(first_ice["decon_period_days"]),
+                       "Decon period [days]"),
+            "ICERATE": (first_ice["rate_file"], "Ice growth-rate mosaic"),
+        })
+        ice_meta = {
+            "ice_dir": pipeline["ice_dir"],
+            "mjd": float(mjd),
+            "days_since_decon": float(ice_dt),
+            "epoch_mjd": float(first_ice["epoch_mjd"]),
+            "decon_period_days": float(first_ice["decon_period_days"]),
+            "rate_file": first_ice["rate_file"],
+            "tables": {int(n): sd["ice"]["table_file"]
+                       for n, sd in pipeline["sca_data"].items()},
+        }
+        log(f"Ice:      MJD {mjd:.3f} -> {ice_dt:.2f} d since decon")
     galaxy_batch_size = pipeline["galaxy_batch_size"]
     galaxy_npix_os = pipeline["galaxy_npix_os"]
     oversample = pipeline["oversample"]
@@ -727,23 +797,39 @@ def process_pointing(
                 )
             psf_payloads[order] = payloads_by_filter[fname]
 
+        ice_payload = sd.get("ice")
+        ice_thickness = None
+        sca_headers = extra_headers
+        if ice_payload is not None:
+            ice_thickness = ice.thickness_map(ice_payload, mjd)
+            log(f"    ice: {float(ice_thickness.min()):.1f}-"
+                f"{float(ice_thickness.max()):.1f} nm "
+                f"(table to {ice_payload['thickness_max_nm']:g} nm)")
+            sca_headers = {**extra_headers,
+                           "ICETABLE": (ice_payload["table_file"],
+                                        "Ice transmission-ratio table")}
         star_fori_fns = {}
         galaxy_fori_fns = {}
         for order in element.orders:
             sd_fn = star_disperser.make_star_disperser(
                 psf_payloads[order], sd["optical_payloads"][order],
+                ice_payload=ice_payload,
             )
             star_fori_fns[order] = make_batched_star_fori(
                 sd_fn, sd["sensitivities"][order],
                 wavelengths_jax, dlam_angstroms,
+                ice=ice_payload is not None,
             )
             gd_fn = galaxy_disperser.make_galaxy_disperser(
                 psf_payloads[order], sd["optical_payloads"][order],
+                ice_payload=ice_payload,
             )
             galaxy_fori_fns[order] = make_batched_galaxy_fori(
                 gd_fn, sd["sensitivities"][order],
                 wavelengths_jax, dlam_angstroms,
+                ice=ice_payload is not None,
             )
+        ice_extra = () if ice_thickness is None else (ice_thickness,)
 
         # JIT warmup (hits disk cache after first run)
         warmup_output = jnp.zeros(
@@ -766,10 +852,11 @@ def process_pointing(
         for order in element.orders:
             star_fori_fns[order](
                 1, warmup_spec, warmup_x, warmup_y, warmup_output,
+                *ice_extra,
             ).block_until_ready()
             galaxy_fori_fns[order](
                 1, warmup_gspec, warmup_gx, warmup_gy,
-                warmup_imgs, warmup_output,
+                warmup_imgs, warmup_output, *ice_extra,
             ).block_until_ready()
         del warmup_output, warmup_spec, warmup_x, warmup_y
         del warmup_gspec, warmup_gx, warmup_gy, warmup_imgs
@@ -902,6 +989,7 @@ def process_pointing(
                         star_fori_fns[order],
                         spec_star, x_star, y_star,
                         output, star_batch_size,
+                        ice_thickness_nm=ice_thickness,
                     )
                     elapsed = time.time() - t_order
                     ms_per = elapsed / n_star_order * 1e3
@@ -930,6 +1018,7 @@ def process_pointing(
                         galaxy_fori_fns[order],
                         spec_gal, x_gal, y_gal, imgs_gal,
                         output, galaxy_batch_size,
+                        ice_thickness_nm=ice_thickness,
                     )
                     elapsed = time.time() - t_order
                     ms_per = elapsed / n_gal_order * 1e3
@@ -1009,7 +1098,7 @@ def process_pointing(
         write_fits(output_np, isim_np, fits_path,
                    pointing_ra, pointing_dec, pointing_pa, sca_num,
                    exptime, key_data, seed,
-                   extra_headers=extra_headers)
+                   extra_headers=sca_headers)
         t_fits = time.time() - t0
         t0 = time.time()
         write_png(output_np, png_path)
@@ -1061,6 +1150,7 @@ def process_pointing(
         "exptime": exptime,
         "element": element.name,
         "optical_model": pipeline["optical_model_file"],
+        "ice": ice_meta,
         "codever": get_code_version(),
         "git_sha": get_git_sha(),
         "seed": seed,
@@ -1116,6 +1206,8 @@ def build_dispersed_image(
     galaxy_npix=30,
     verbose=True,
     force=False,
+    ice_dir=None,
+    mjd=None,
 ):
     """Build a simulated grism image for a single SCA.
 
@@ -1149,6 +1241,10 @@ def build_dispersed_image(
         Print progress information (default: True).
     force : bool
         Overwrite existing output file (default: skip).
+    ice_dir : str or Path, optional
+        Enable the ice model from this directory (see ``setup_pipeline``).
+    mjd : float, optional
+        Exposure MJD; required with ``ice_dir``.
 
     Returns
     -------
@@ -1173,6 +1269,7 @@ def build_dispersed_image(
         galaxy_batch_size=galaxy_batch_size,
         galaxy_npix=galaxy_npix,
         verbose=verbose,
+        ice_dir=ice_dir,
     )
 
     # Use a temp directory, then move the files to match the requested output
@@ -1182,7 +1279,7 @@ def build_dispersed_image(
         pipeline, pointing_ra, pointing_dec, pointing_pa,
         str(tmp_dir), cone_radius=cone_radius,
         exptime=exptime, pointing_key=pointing_key, seed=seed,
-        verbose=verbose,
+        verbose=verbose, mjd=mjd,
     )
     element_name = pipeline["element"].name
 
@@ -1296,6 +1393,14 @@ galaxy_npix: 30
 # sensitivity_dir: data/sensitivities
 # optical_model: data/Roman_grism_OpticalModel_v0.8.yaml
 # psf_cache_dir: data/psf_cache
+
+# -- Ice model (optional, off by default) -------------------------------------
+# Water-ice throughput variation (roman_disperser.ice; docs/ice.md).  Set to
+# "default" for <data>/ice/, or to a directory holding ice_map.yaml plus the
+# (embargoed, hand-copied) growth-rate mosaic and transmission-ratio tables.
+# When enabled, the pointing ECSV must carry an MJD column (exposure start);
+# the days since the last decon and the thickness map follow from it.
+# ice_dir: default
 """
 
 
@@ -1364,6 +1469,9 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
 
     element = elements.get_element(cfg.get("element"))
     log(f"Dispersing element: {element.name}")
+    ice_dir = resolve_ice_dir(cfg.get("ice_dir"))
+    if ice_dir is not None:
+        log(f"Ice model: {ice_dir}")
 
     # Resolve data paths (catalog_dir needed for wavelength grid)
     catalog_dir, sensitivity_dir, optical_model_path, psf_cache_dir = \
@@ -1426,6 +1534,12 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
         sensitivities = load_sensitivities(
             sensitivity_dir, sca_num, wavelengths_um, element.orders,
         )
+        ice_payload = None
+        ice_extra = ()
+        if ice_dir is not None:
+            ice_payload = ice.load_ice_payload(ice_dir, sca_num, wavelengths_um)
+            # Any thickness map compiles the same program; zeros will do.
+            ice_extra = (jnp.zeros_like(ice_payload["rate_nm_per_day"]),)
 
         # Build dispersers and JIT-compile
         star_fori_fns = {}
@@ -1433,17 +1547,21 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
         for order in element.orders:
             sd_fn = star_disperser.make_star_disperser(
                 psf_payloads[order], optical_payloads[order],
+                ice_payload=ice_payload,
             )
             star_fori_fns[order] = make_batched_star_fori(
                 sd_fn, sensitivities[order],
                 wavelengths_jax, dlam_angstroms,
+                ice=ice_payload is not None,
             )
             gd_fn = galaxy_disperser.make_galaxy_disperser(
                 psf_payloads[order], optical_payloads[order],
+                ice_payload=ice_payload,
             )
             galaxy_fori_fns[order] = make_batched_galaxy_fori(
                 gd_fn, sensitivities[order],
                 wavelengths_jax, dlam_angstroms,
+                ice=ice_payload is not None,
             )
 
         t_jit = time.time()
@@ -1470,10 +1588,11 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
         for order in element.orders:
             star_fori_fns[order](
                 1, warmup_spec, warmup_x, warmup_y, warmup_output,
+                *ice_extra,
             ).block_until_ready()
             galaxy_fori_fns[order](
                 1, warmup_gspec, warmup_gx, warmup_gy,
-                warmup_imgs, warmup_output,
+                warmup_imgs, warmup_output, *ice_extra,
             ).block_until_ready()
 
         # Release compiled functions and PSF payloads
@@ -1555,6 +1674,13 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         log(f"No {element.bandpass} pointings found in pointing table.")
         return
 
+    ice_dir = resolve_ice_dir(cfg.get("ice_dir"))
+    if ice_dir is not None and "MJD" not in ptable.colnames:
+        raise ValueError(
+            "ice_dir is set in the config, so the pointing table needs an "
+            "'MJD' column (exposure start, Modified Julian Date) -- see "
+            "docs/ice.md")
+
     # Parse SCA list
     scas = cfg.get("scas", "all")
     if scas == "all":
@@ -1608,6 +1734,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         galaxy_batch_size=cfg.get("galaxy_batch_size", 100),
         galaxy_npix=cfg.get("galaxy_npix", 30),
         verbose=verbose,
+        ice_dir=ice_dir,
     )
 
     # Process pointings
@@ -1618,6 +1745,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
     for i, row in enumerate(pointings_todo):
         name = _pointing_dir_name(pointing_filename, row)
         exptime = float(row["EXPOSURE_TIME"])
+        mjd = float(row["MJD"]) if ice_dir is not None else None
 
         # Derive deterministic RNG key
         pointing_key = make_pointing_key(
@@ -1674,6 +1802,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
             extra_headers=extra_headers,
             extra_meta=extra_meta,
             output_prefix=cfg.get("output_prefix"),
+            mjd=mjd,
         )
 
     total = time.time() - t_all
@@ -1757,6 +1886,12 @@ def main():
                         help="RNG seed (required for quick mode)")
     parser.add_argument("--exptime", type=float, default=190.22,
                         help="Exposure time in seconds (quick mode)")
+    parser.add_argument("--ice-dir", type=str, default=None,
+                        help="Enable the ice model from this directory "
+                             "('default' = <data>/ice); quick mode")
+    parser.add_argument("--mjd", type=float, default=None,
+                        help="Exposure MJD (required with --ice-dir; "
+                             "quick mode)")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress progress output")
     parser.add_argument("--force", action="store_true",
@@ -1863,6 +1998,8 @@ def main():
         galaxy_npix=args.galaxy_npix,
         verbose=not args.quiet,
         force=args.force,
+        ice_dir=resolve_ice_dir(args.ice_dir),
+        mjd=args.mjd,
     )
 
 

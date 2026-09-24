@@ -36,6 +36,7 @@ import jax.scipy.signal
 from . import optical_model_jax as omj
 from . import psf_model
 from . import star_disperser
+from . import ice
 
 
 def trace_beam_sca(payload, xsca, ysca, wavelength):
@@ -310,6 +311,8 @@ def disperse_galaxy(
     wavelengths,
     output,
     chunk_size=2000,
+    ice_payload=None,
+    ice_thickness_nm=None,
 ):
     """Disperse a galaxy onto the detector.
 
@@ -340,6 +343,12 @@ def disperse_galaxy(
     chunk_size : int, optional
         Wavelengths per chunk (default: 2000 — measured best on a10g for
         the native-binned deposit; see star_disperser.deposit_stack_native)
+    ice_payload, ice_thickness_nm : optional
+        Ice model payload (:func:`ice.load_ice_payload`, built for this
+        ``wavelengths`` grid) and per-exposure thickness map
+        (:func:`ice.thickness_map`). When given, ``spectrum`` is multiplied
+        by the relative ice transmission at each wavelength's dispersed
+        centre before the deposit; ``None`` leaves the pre-existing code.
 
     Returns
     -------
@@ -360,6 +369,14 @@ def disperse_galaxy(
         optical_payload, x0, y0, wavelengths
     )
 
+    # Step 2b (optional): ice transmission at the stamp's dispersed centre,
+    # per wavelength (see star_disperser.disperse_star_psf / ice.py).
+    if ice_payload is not None:
+        if ice_thickness_nm is None:
+            raise ValueError("ice_thickness_nm is required with ice_payload")
+        spectrum = spectrum * ice.transmission_factor(
+            ice_payload, ice_thickness_nm, xsca_disp, ysca_disp)
+
     # Step 3: Native-resolution chunked deposit (16-phase pre-binning; see
     # star_disperser.deposit_stack_native for the exactness argument)
     return star_disperser.deposit_stack_native(
@@ -369,7 +386,8 @@ def disperse_galaxy(
     )
 
 
-def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000):
+def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000,
+                          ice_payload=None):
     """Create a JIT-compiled galaxy disperser with payloads captured in closure.
 
     Parameters
@@ -383,11 +401,18 @@ def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000):
         Wavelengths per chunk (default: 2000 — measured best on a10g for
         the native-binned deposit; see star_disperser.deposit_stack_native)
 
+    ice_payload : dict, optional
+        Ice model payload (:func:`ice.load_ice_payload`). When given the
+        returned function takes one extra trailing argument, the
+        per-exposure thickness map from :func:`ice.thickness_map`.
+
     Returns
     -------
     disperse_fn : Callable
         JIT-compiled function with signature:
         (image, x0, y0, spectrum, wavelengths, output) -> output
+        or, with ``ice_payload``,
+        (image, x0, y0, spectrum, wavelengths, output, ice_thickness_nm)
 
     Raises
     ------
@@ -401,6 +426,18 @@ def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000):
             f"geometry, got {oversample}. Even oversampling (e.g., 2, 4) "
             f"places the PSF center at the cross-hairs of central pixels."
         )
+
+    if ice_payload is not None:
+        @jax.jit
+        def disperse_fn_ice(image, x0, y0, spectrum, wavelengths, output,
+                            ice_thickness_nm):
+            return disperse_galaxy(
+                optical_payload, psf_payload, image, x0, y0, spectrum,
+                wavelengths, output, chunk_size,
+                ice_payload=ice_payload, ice_thickness_nm=ice_thickness_nm,
+            )
+
+        return disperse_fn_ice
 
     @jax.jit
     def disperse_fn(image, x0, y0, spectrum, wavelengths, output):

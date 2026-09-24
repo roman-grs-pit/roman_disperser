@@ -23,6 +23,7 @@ from pathlib import Path
 # Layout within the data directory. (Sensitivities are per-element —
 # SENSITIVITIES_SUBDIR is the grism one; see elements.sensitivities_subdir.)
 CATALOGS_SUBDIR = "catalogs"
+ICE_SUBDIR = "ice"
 SENSITIVITIES_SUBDIR = "sensitivities"
 PSF_CACHE_SUBDIR = "psf_cache"
 SYNPHOT_SUBDIR = "synphot"
@@ -66,6 +67,16 @@ def sensitivity_dir(explicit=None, element=None):
         return Path(explicit)
     from roman_disperser.elements import get_element
     return data_dir() / get_element(element).sensitivities_subdir
+
+
+def ice_dir(explicit=None):
+    """Ice-model directory (``ice_map.yaml`` + rate mosaic + ratio tables).
+
+    ``explicit`` is a *directory* path, returned as-is; otherwise
+    ``<data>/ice/``. Not hydrated: the contents are embargoed (see
+    ``roman_disperser.ice``) and are copied in by hand.
+    """
+    return Path(explicit) if explicit is not None else data_dir() / ICE_SUBDIR
 
 
 def psf_cache_dir(explicit=None):

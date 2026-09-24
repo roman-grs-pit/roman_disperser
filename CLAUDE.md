@@ -14,6 +14,7 @@ JAX-based optical model and disperser for Roman Space Telescope slitless spectro
 - **PSF model** (`psf_model.py`): STPSF-based PSF grids with trilinear interpolation
 - **Sérsic profiles** (`sersic.py`): JAX/vmap Sérsic profile generator for galaxy morphologies
 - **Pipeline** (`pipeline.py`): Shared utilities for dispersed-image simulation (I/O, batching, sensitivity loading)
+- **Ice model** (`ice.py`): Optional water-ice throughput factor (position- and time-dependent) applied to each source's flux vector before the deposit; off unless an ice directory is configured. Inputs are embargoed and live outside the repo.
 - **Unified pipeline script** (`scripts/build_dispersed_image.py`): Full-field dispersed-image simulation (either element) from a unified star+galaxy catalog. `scripts/build_grism_image.py` is a deprecated forwarding alias.
 
 ## Documentation map
@@ -28,6 +29,7 @@ lines and rarely all matter to one session).
  - `docs/stpsf.md` : STPSF quick reference for Roman WFI.
  - `docs/grism_pipeline.md` : User guide for `scripts/build_dispersed_image.py` (unified stars+galaxies pipeline, output format, config, catalog).
  - `docs/element_support.md` : Status table of grism/prism support per module and script, including the deliberate non-ports.
+ - `docs/ice.md` : Water-ice throughput model (`ice.py`): the toy model, where the factor is applied in the dispersers (stamp centre, per wavelength), static vs dynamic JIT arguments, the embargoed data drop-in and `ice_map.yaml`.
  - `docs/migrating-v0.10-to-v0.14.md` : User-facing migration guide across 0.11-0.14, including the results-changing placement/RNG fixes.
 
 **Design notes** (historical implementation plans — the record of how modules

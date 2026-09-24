@@ -300,7 +300,8 @@ def load_sensitivities(sensitivity_dir, sca, wavelengths, orders):
 # Star batching
 # ---------------------------------------------------------------------------
 
-def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
+def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms,
+                           ice=False):
     """Build a JIT-compiled fori_loop that processes a fixed-size batch of stars.
 
     The compiled function takes padded arrays of shape [batch_size, ...]
@@ -314,12 +315,29 @@ def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
     sens : jnp.ndarray [N_wl]
     wavelengths_jax : jnp.ndarray [N_wl]
     dlam_angstroms : float
+    ice : bool
+        ``disperser_fn`` was built with an ice payload; the returned
+        function then takes a trailing ``ice_thickness_nm`` argument
+        ([n_bins, n_bins], from ``ice.thickness_map``) forwarded to it.
 
     Returns
     -------
     run : callable(n_sources, spectra, xsca, ysca, output) -> output
-        spectra: [batch_size, N_wl], xsca/ysca: [batch_size]
+        spectra: [batch_size, N_wl], xsca/ysca: [batch_size].
+        With ``ice=True``: (n_sources, spectra, xsca, ysca, output,
+        ice_thickness_nm) -> output.
     """
+    if ice:
+        @jax.jit
+        def run_ice(n_sources, spectra, xsca, ysca, output, ice_thickness_nm):
+            def body_fn(i, output):
+                counts = spectra[i] * sens * dlam_angstroms
+                return disperser_fn(xsca[i], ysca[i], wavelengths_jax,
+                                    counts, output, ice_thickness_nm)
+            return jax.lax.fori_loop(0, n_sources, body_fn, output)
+
+        return run_ice
+
     @jax.jit
     def run(n_sources, spectra, xsca, ysca, output):
         def body_fn(i, output):
@@ -331,7 +349,8 @@ def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
     return run
 
 
-def disperse_batched_stars(fori_fn, spectra, xsca, ysca, output, batch_size):
+def disperse_batched_stars(fori_fn, spectra, xsca, ysca, output, batch_size,
+                           ice_thickness_nm=None):
     """Disperse sources in fixed-size batches, reusing compiled code.
 
     Parameters
@@ -341,6 +360,8 @@ def disperse_batched_stars(fori_fn, spectra, xsca, ysca, output, batch_size):
     xsca, ysca : ndarray [N]
     output : jnp.ndarray [4088, 4088]
     batch_size : int
+    ice_thickness_nm : jnp.ndarray [n_bins, n_bins], optional
+        Forwarded to ``fori_fn`` when it was built with ``ice=True``.
 
     Returns
     -------
@@ -349,6 +370,7 @@ def disperse_batched_stars(fori_fn, spectra, xsca, ysca, output, batch_size):
     n_sources = len(xsca)
     n_wl = spectra.shape[1]
     n_batches = (n_sources + batch_size - 1) // batch_size
+    extra = () if ice_thickness_nm is None else (ice_thickness_nm,)
 
     for b in range(n_batches):
         start = b * batch_size
@@ -369,6 +391,7 @@ def disperse_batched_stars(fori_fn, spectra, xsca, ysca, output, batch_size):
             jnp.array(x_batch),
             jnp.array(y_batch),
             output,
+            *extra,
         )
 
     output.block_until_ready()
@@ -380,7 +403,7 @@ def disperse_batched_stars(fori_fn, spectra, xsca, ysca, output, batch_size):
 # ---------------------------------------------------------------------------
 
 def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
-                             dlam_angstroms):
+                             dlam_angstroms, ice=False):
     """Build a JIT-compiled fori_loop for galaxy dispersion.
 
     Like the star version but the loop body also indexes into a galaxy
@@ -393,13 +416,28 @@ def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
     sens : jnp.ndarray [N_wl]
     wavelengths_jax : jnp.ndarray [N_wl]
     dlam_angstroms : float
+    ice : bool
+        As in :func:`make_batched_star_fori`.
 
     Returns
     -------
     run : callable(n_sources, spectra, xsca, ysca, images, output) -> output
         spectra: [batch_size, N_wl], xsca/ysca: [batch_size],
-        images: [batch_size, npix, npix]
+        images: [batch_size, npix, npix]. With ``ice=True`` a trailing
+        ``ice_thickness_nm`` argument is added.
     """
+    if ice:
+        @jax.jit
+        def run_ice(n_sources, spectra, xsca, ysca, images, output,
+                    ice_thickness_nm):
+            def body_fn(i, output):
+                counts = spectra[i] * sens * dlam_angstroms
+                return disperser_fn(images[i], xsca[i], ysca[i], counts,
+                                    wavelengths_jax, output, ice_thickness_nm)
+            return jax.lax.fori_loop(0, n_sources, body_fn, output)
+
+        return run_ice
+
     @jax.jit
     def run(n_sources, spectra, xsca, ysca, images, output):
         def body_fn(i, output):
@@ -412,7 +450,7 @@ def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
 
 
 def disperse_batched_galaxies(fori_fn, spectra, xsca, ysca, images, output,
-                              batch_size):
+                              batch_size, ice_thickness_nm=None):
     """Disperse galaxies in fixed-size batches, reusing compiled code.
 
     Parameters
@@ -424,6 +462,8 @@ def disperse_batched_galaxies(fori_fn, spectra, xsca, ysca, images, output,
         Galaxy images (already on GPU).
     output : jnp.ndarray [4088, 4088]
     batch_size : int
+    ice_thickness_nm : jnp.ndarray [n_bins, n_bins], optional
+        Forwarded to ``fori_fn`` when it was built with ``ice=True``.
 
     Returns
     -------
@@ -433,6 +473,7 @@ def disperse_batched_galaxies(fori_fn, spectra, xsca, ysca, images, output,
     n_wl = spectra.shape[1]
     npix = images.shape[1]
     n_batches = (n_sources + batch_size - 1) // batch_size
+    extra = () if ice_thickness_nm is None else (ice_thickness_nm,)
 
     for b in range(n_batches):
         start = b * batch_size
@@ -458,6 +499,7 @@ def disperse_batched_galaxies(fori_fn, spectra, xsca, ysca, images, output,
             jnp.array(y_batch),
             img_batch,
             output,
+            *extra,
         )
 
     output.block_until_ready()

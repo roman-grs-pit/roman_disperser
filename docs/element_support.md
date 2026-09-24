@@ -31,6 +31,7 @@ answer. This table is the record of which is which.
 | `optical_model.py`, `optical_model_jax.py` | ✅ element-independent by construction; `wl_transform: log` (prism) was already handled generically |
 | `disperser.py`, `star_disperser.py`, `galaxy_disperser.py`, `sersic.py`, `psf_utils.py` | ✅ element-independent — they take payloads, not elements |
 | `refdata.py`, `demo_utils.py` | ✅ element-independent (synphot bandpasses, synthetic demos) |
+| `ice.py` | ✅ element-independent: the ratio table (480–2300 nm) covers both bands and is resampled onto whatever run grid the element produces; the factor is applied at the dispersed position, so every order gets the right thickness (`docs/ice.md`) |
 
 ## Scripts (`scripts/`)
 

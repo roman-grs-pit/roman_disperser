@@ -21,6 +21,7 @@ import jax.numpy as jnp
 
 from . import optical_model_jax as omj
 from . import psf_model
+from . import ice
 
 
 def make_psf_pixel_grid(psf_shape, oversample):
@@ -344,6 +345,8 @@ def disperse_star_psf(
     rel_x=None,
     rel_y=None,
     chunk_size=2000,
+    ice_payload=None,
+    ice_thickness_nm=None,
 ):
     """
     Disperse a single star through the Roman grism using wavelength-dependent PSFs.
@@ -385,6 +388,16 @@ def disperse_star_psf(
         per-chunk arrays are 16x smaller than the oversampled deposit's,
         so larger chunks amortize scan overhead without the old memory
         cost).
+    ice_payload : dict, optional
+        Ice model payload from :func:`ice.load_ice_payload` (built for the
+        same ``wavelengths`` grid). When given, ``star_flux`` is multiplied
+        by the relative ice transmission evaluated at each wavelength's
+        dispersed centre before the deposit (see :mod:`roman_disperser.ice`).
+        ``None`` (default) leaves the flux untouched -- the ice-off path is
+        the pre-existing code.
+    ice_thickness_nm : jnp.ndarray, optional
+        [n_bins, n_bins] thickness map from :func:`ice.thickness_map` for
+        this exposure's time. Required with ``ice_payload``.
 
     Returns
     -------
@@ -448,6 +461,16 @@ def disperse_star_psf(
         optical_payload, xsca_star, ysca_star, wavelengths
     )  # [N_wl] each
 
+    # Step 2b (optional): ice transmission at each wavelength's dispersed
+    # centre -- a per-wavelength scalar, so it folds into the flux vector
+    # and the deposit below is untouched. Python-level branch: with no
+    # payload the traced program is identical to the ice-free one.
+    if ice_payload is not None:
+        if ice_thickness_nm is None:
+            raise ValueError("ice_thickness_nm is required with ice_payload")
+        star_flux = star_flux * ice.transmission_factor(
+            ice_payload, ice_thickness_nm, xsca_disp, ysca_disp)
+
     # Step 3: Native-resolution chunked deposit
     return deposit_stack_native(
         psfs_grid, psf_payload['wavelengths'], wavelengths, star_flux,
@@ -456,7 +479,8 @@ def disperse_star_psf(
     )
 
 
-def make_star_disperser(psf_payload, optical_payload, chunk_size=2000):
+def make_star_disperser(psf_payload, optical_payload, chunk_size=2000,
+                        ice_payload=None):
     """
     Create a JIT-compiled star disperser for a specific detector/order.
 
@@ -477,12 +501,21 @@ def make_star_disperser(psf_payload, optical_payload, chunk_size=2000):
         is approximately: chunk_size × PSF_y × PSF_x × 4 bytes × 4.
         For 5000 wavelengths with chunk_size=1000, peak memory is ~620 MB.
 
+    ice_payload : dict, optional
+        Ice model payload from :func:`ice.load_ice_payload`. When given the
+        returned function takes one extra trailing argument, the per-exposure
+        thickness map (see below); when ``None`` the compiled function is
+        the pre-existing ice-free one.
+
     Returns
     -------
     disperse_star : Callable
         JIT-compiled function with signature:
         (xsca, ysca, wavelengths, flux, output) -> output
-        where wavelengths are in **microns**
+        where wavelengths are in **microns**. With ``ice_payload``:
+        (xsca, ysca, wavelengths, flux, output, ice_thickness_nm) -> output,
+        ``ice_thickness_nm`` [n_bins, n_bins] from :func:`ice.thickness_map`
+        (dynamic, so a new exposure time does not recompile).
 
     Raises
     ------
@@ -522,6 +555,19 @@ def make_star_disperser(psf_payload, optical_payload, chunk_size=2000):
             f"geometry, got {oversample}. Even oversampling (e.g., 2, 4) "
             f"places the PSF center at the cross-hairs of central pixels."
         )
+
+    if ice_payload is not None:
+        @jax.jit
+        def disperse_star_ice(xsca, ysca, wavelengths, flux, output,
+                              ice_thickness_nm):
+            """Disperse a single star with the ice factor applied."""
+            return disperse_star_psf(
+                psf_payload, optical_payload, xsca, ysca, wavelengths, flux,
+                output, chunk_size=chunk_size, ice_payload=ice_payload,
+                ice_thickness_nm=ice_thickness_nm,
+            )
+
+        return disperse_star_ice
 
     @jax.jit
     def disperse_star(xsca, ysca, wavelengths, flux, output):

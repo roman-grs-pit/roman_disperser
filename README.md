@@ -140,6 +140,7 @@ pytest -v tests/test_psf_model.py           # PSF model tests
 - [Optical Model API](docs/optical_model.md) — JAX optical model functions and examples
 - [Dispersed-Image Pipeline](docs/grism_pipeline.md) — User guide for `build_dispersed_image.py` (stars + galaxies, either element)
 - [Element Support](docs/element_support.md) — Grism/prism status per module and script
+- [Water-Ice Throughput Model](docs/ice.md) — Optional per-position, per-time transmission factor from detector ice; embargoed inputs, off by default
 - [JIT Compilation Strategy](docs/jit_compilation.md) — Closure pattern for non-traceable payloads
 - [STPSF Quick Reference](docs/stpsf.md) — Roman WFI PSF generation
 - [Catalog Format](data/catalogs/README.md) — Unified source catalog format specification

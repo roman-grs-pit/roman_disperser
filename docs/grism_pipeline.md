@@ -91,6 +91,7 @@ Quick mode writes a single FITS, PNG, source manifest, and metadata YAML at the 
 | SEED       | Top-level RNG seed |
 | OPTELEM    | Dispersing element (`grism` / `prism`) |
 | OPTMODEL   | Optical-model delivery filename resolved for this run |
+| ICEMJD, ICEDT, ICEEPOCH, ICEPER, ICERATE, ICETABLE | Ice model provenance (only when `ice_dir` is set): exposure MJD, days since decon, decon epoch/period, rate-mosaic and per-SCA table filenames. See `docs/ice.md` |
 | RNDSEED0   | JAX RNG key word 0 (per-SCA) |
 | RNDSEED1   | JAX RNG key word 1 (per-SCA) |
 | CODEVER    | roman_disperser package version |
@@ -233,6 +234,7 @@ and `scripts/example_prism_config.yaml`; regenerate the template with
 | `optical_model` | str | resolved | Explicit optical-model YAML path; wins over `optical_model_version` |
 | `optical_model_version` | str | from lock | Delivery version (e.g. `v0.8`). Default: the delivery recorded in the data dir's `data-versions.lock` by hydrate — you get what you hydrated. See `docs/element_support.md` §Optical-model delivery resolution |
 | `psf_cache_dir` | str | `data/psf_cache` | Path to PSF cache directory |
+| `ice_dir` | str | off | Enable the water-ice throughput model: `default` (= `<data>/ice/`) or a directory holding `ice_map.yaml` + the embargoed model files. Requires an `MJD` pointing column. See `docs/ice.md` |
 
 **Deprecated:** `batch_size` is accepted as an alias for `star_batch_size` with a warning.
 
@@ -280,6 +282,12 @@ An astropy ECSV file with APT-format columns. Rows whose `BANDPASS` does not mat
 | `EXPOSURE` | int | APT exposure number |
 | `BANDPASS` | str | Filter name (only rows matching the active element are processed) |
 | `MA_TABLE_NUMBER` | int | MA table number (stored in FITS header) |
+
+Required only when `ice_dir` is set:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `MJD` | float | Exposure start, Modified Julian Date (sets the ice thickness via the decon schedule; `docs/ice.md`) |
 
 ## Catalog Format
 
