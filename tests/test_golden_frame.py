@@ -17,8 +17,9 @@ CPU, jax 0.7.2 — see the golden_frame docstring and the research log):
   backends; one decade of headroom.
 * **Per-pixel, same-backend reference** (CPU on CPU; a GPU model with its
   own blessed frames): ``allclose(rtol=1e-5, atol=1e-5 * max|ref|)``. CPU
-  renders are deterministic; GPU run-to-run repeats measured <=6e-7 of
-  peak (issue #22 scatter-order floor), so this gate has >=10x headroom.
+  renders are deterministic; GPU run-to-run repeats measured 2e-7–8e-7
+  of peak (issue #22 scatter-order floor), so this gate has >=10x
+  headroom.
 * **Per-pixel, cross-backend fallback** (a GPU model without blessed
   frames, compared against the CPU reference): ``atol = 0.1 * max|ref|``.
   Cross-backend pixel differences reach 3.2e-2 of peak from benign
