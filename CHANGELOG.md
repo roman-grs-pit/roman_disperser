@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Documentation-only follow-up to the post-merge review of the native deposit
+(PR #35). No code or results change; golden references stay
+`golden-frames-v2`.
+
+### Fixed
+- **`chunk_size` docstrings** (`deposit_stack_native`, `disperse_star_psf`,
+  `make_star_disperser`, `disperse_galaxy`, `make_galaxy_disperser`): the
+  claim that chunk 2000 was "measured best" (500/1000 being 17%/5% slower)
+  came from the pre-FFT-fix prototype. On the shipped code chunk 500 and
+  2000 measured identical on a10g (SLURM 7183); 2000 is kept because
+  per-chunk memory at native resolution is ~4x below the old default's.
+  `make_star_disperser` also still documented the old default (1000) and
+  the old oversampled memory estimate.
+- **Native-deposit accuracy statement** (0.15.0 entry below,
+  `tests/golden_frame.py`): "lands ~1e-8 from truth" was the 20 Å figure
+  only. Measured on an isolated on-detector star, prism order 1, relative
+  to a float64 truth: native +9e-9 (20 Å) and −1.4e-7 (production 2 Å);
+  old deposit −3.2e-7 and −1.5e-5.
+- **GPU run-to-run floor** in the golden-frame docstrings: "≤6e-7 of peak"
+  was a single pair; measured 2e-7–8e-7 over two a10g renders (this
+  changelog already said ≲8e-7).
+
+### Changed
+- **Comments in `deposit_stack_native`** describing its two stages (bin the
+  stamps once per source for all 16 phases; then per fine wavelength select
+  phase, interpolate, scale, scatter-add) and noting that `bin_phase`
+  operates on the closed-over `stack`, i.e. the stamps themselves.
+
 ## [0.15.0] - 2026-08-25
 
 Results-changing at the total-flux level (for the better — see the native
@@ -21,14 +51,16 @@ end-to-end on an A10G and 6-7x on CPU, flat across orders.
   identical, merely regrouped (run-length-4 blocking of the floor deposit;
   verified exactly in float64 on 2,000 random centers), so outputs are
   equivalent up to f32 summation order. Wavelength chunk defaults change
-  from 500 (galaxy) / 1000 (star) to 2000 — measured best on a10g for the
-  16x-smaller per-chunk work. The `rel_x`/`rel_y` arguments of
+  from 500 (galaxy) / 1000 (star) to 2000 — no faster than 500 on the
+  shipped code, but affordable: per-chunk memory at native resolution is
+  ~4x below the old default's. The `rel_x`/`rel_y` arguments of
   `disperse_star_psf` are now unused (kept for backward compatibility).
   **This is a results-changing release at the total-flux level, for the
   better**: the old deposit's deep sequential f32 accumulation was
   systematically low by ~3e-7 (coarse λ sampling) up to ~1e-5 (order 0 at
   production 2 Å, ~59k adds/px), verified against a float64 truth
-  computation — the native deposit lands ~1e-8 from truth. Golden
+  computation — the native deposit lands ~1e-8 from truth at 20 Å and
+  ~1e-7 at production (2 Å) prism sampling. Golden
   references bumped to `golden-frames-v2` accordingly; per-pixel
   differences stay within the tight gate.
 - **Galaxy PSF convolution now transforms at a fast FFT size**

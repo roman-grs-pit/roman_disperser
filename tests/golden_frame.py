@@ -56,8 +56,9 @@ Design decisions (agreed 2026-08-24, see the research log)
 * **References are per-backend** (``cpu/`` and ``gpu-a10g/`` subdirs),
   because tight cross-backend comparison is ill-conditioned. Measured on
   this scene (2026-08-24, a10g vs CPU, jax 0.7.2): total flux agrees to
-  ~3e-8, and GPU run-to-run repeats agree to <=6e-7 of frame peak (the
-  issue #22 scatter-order floor) — but CPU-vs-GPU *per-pixel* differences
+  ~3e-8, and GPU run-to-run repeats agree to 2e-7–8e-7 of frame peak
+  (the issue #22 scatter-order floor; range over the configs of two a10g
+  renders, prism coarse the largest) — but CPU-vs-GPU *per-pixel* differences
   reach 3.2e-2 of peak (prism) with a characteristic signature: paired
   adjacent rows with equal-and-opposite net flux. Mechanism: runs of
   wavelength samples whose dispersed position sits within float32 ULPs of
@@ -83,8 +84,11 @@ Version history
   the old deposit's deep sequential f32 accumulation was systematically
   *low* by ~3e-7 (coarse sampling) up to ~1e-5 (order 0 at production
   sampling, ~59k adds/px); the binned deposit's 16x-shallower accumulation
-  lands ~1e-8 from a float64 truth computation (verified 2026-08-25 on an
-  isolated on-detector star; see the research log). Per-pixel differences
+  lands much closer to a float64 truth computation, though not uniformly
+  at 1e-8: on an isolated on-detector star, prism order 1 (2026-08-25;
+  see the research log), native is +9e-9 from truth at 20 Å and -1.4e-7
+  at production 2 Å, against -3.2e-7 and -1.5e-5 for the old deposit.
+  Per-pixel differences
   stayed within the tight gate — the 1e-7 flux gate is what caught it.
 
 Regenerating (only for an *intentional* results change) — once per backend,
