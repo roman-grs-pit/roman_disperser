@@ -235,10 +235,15 @@ def deposit_stack_native(
     oversample : int
         Stamp oversampling factor (4 in production).
     chunk_size : int
-        Wavelengths per scan chunk. 2000 measured best on a10g for the
-        native-binned element count (500/1000 were 17%/5% slower — the
-        per-chunk work is 16x smaller than before, so scan overhead
-        matters more than it did for the oversampled deposit).
+        Wavelengths per scan chunk. Speed is insensitive to it: chunk 500
+        and 2000 measured identical on a10g on the shipped code (SLURM
+        7183, 2026-08-25). The callers default to 2000 because it is
+        affordable, not because it is faster — per-chunk arrays are
+        [chunk, n_y, n_x] at *native* resolution, so chunk 2000 costs
+        ~4x less per-chunk memory than the old oversampled deposit did at
+        chunk 500 (galaxy, 77x77 native stamp: ~47 MB f32 values + ~95 MB
+        int32 indices, vs ~184 + ~367 MB; sizes computed from the array
+        shapes, not a measured peak).
 
     Returns
     -------
@@ -258,12 +263,18 @@ def deposit_stack_native(
     rel0_y = -(s_y - 1) / (2.0 * os_)
     rel0_x = -(s_x - 1) / (2.0 * os_)
 
-    # Phase (p_y, p_x) left-pads by p subpixels before the os x os
-    # block-sum, reproducing the run-length-os grouping that
-    # floor(u + j/os) induces when frac(u) is in [p/os, (p+1)/os).
+    # Two stages:
+    #   1. Here, once per source: bin the oversampled stamps to native
+    #      pixels. Which subpixels share a native pixel depends on the
+    #      stamp centre's phase p = which quarter-pixel frac(u) falls in,
+    #      so bin for all os x os (=16) phases. Phase p pads p subpixels
+    #      at the low edge, then sums os x os blocks.
+    #   2. process_chunk, per fine wavelength: get (m, p) from the dispersed
+    #      centre, take the phase-p binned stamps bracketing the wavelength,
+    #      interpolate, scale by flux, scatter-add at native pixel m + k.
     def bin_phase(p_y, p_x):
         padded = jnp.pad(
-            stack,
+            stack,  # the stamps themselves (from the enclosing scope)
             ((0, 0),
              (p_y, os_ * n_y - s_y - p_y),
              (p_x, os_ * n_x - s_x - p_x)))
@@ -383,11 +394,10 @@ def disperse_star_psf(
     rel_y : jnp.ndarray, optional
         Unused; kept for backward compatibility.
     chunk_size : int, optional
-        Number of wavelengths to process per chunk (default: 2000 —
-        measured best on a10g for the native-binned element count; the
-        per-chunk arrays are 16x smaller than the oversampled deposit's,
-        so larger chunks amortize scan overhead without the old memory
-        cost).
+        Number of wavelengths to process per chunk (default: 2000). Speed
+        is insensitive to it (500 and 2000 measured identical on a10g);
+        2000 is kept because the native-resolution per-chunk arrays make
+        it cheap in memory. See :func:`deposit_stack_native`.
     ice_payload : dict, optional
         Ice model payload from :func:`ice.load_ice_payload` (built for the
         same ``wavelengths`` grid). When given, ``star_flux`` is multiplied
@@ -496,10 +506,11 @@ def make_star_disperser(psf_payload, optical_payload, chunk_size=2000,
     optical_payload : dict
         Optical model payload from optical_model_jax.make_sca_payload()
     chunk_size : int, optional
-        Number of wavelengths to process per chunk (default: 1000).
-        Larger chunks use more memory but may be faster. Memory per chunk
-        is approximately: chunk_size × PSF_y × PSF_x × 4 bytes × 4.
-        For 5000 wavelengths with chunk_size=1000, peak memory is ~620 MB.
+        Number of wavelengths to process per chunk (default: 2000). Speed
+        is insensitive to it (500 and 2000 measured identical on a10g);
+        it sets per-chunk memory, which at native resolution is
+        chunk_size × n_y × n_x × 4 bytes for the values plus twice that
+        for the int32 indices. See :func:`deposit_stack_native`.
 
     ice_payload : dict, optional
         Ice model payload from :func:`ice.load_ice_payload`. When given the

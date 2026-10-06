@@ -341,8 +341,10 @@ def disperse_galaxy(
     output : jnp.ndarray
         [H, W] detector accumulator (typically 4088x4088)
     chunk_size : int, optional
-        Wavelengths per chunk (default: 2000 — measured best on a10g for
-        the native-binned deposit; see star_disperser.deposit_stack_native)
+        Wavelengths per chunk (default: 2000). Speed is insensitive to it
+        (500 and 2000 measured identical on a10g); 2000 is kept because
+        it is cheap in memory at native resolution — see
+        star_disperser.deposit_stack_native.
     ice_payload, ice_thickness_nm : optional
         Ice model payload (:func:`ice.load_ice_payload`, built for this
         ``wavelengths`` grid) and per-exposure thickness map
@@ -398,8 +400,10 @@ def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000,
     optical_payload : dict
         Optical model payload from optical_model_jax.make_sca_payload()
     chunk_size : int, optional
-        Wavelengths per chunk (default: 2000 — measured best on a10g for
-        the native-binned deposit; see star_disperser.deposit_stack_native)
+        Wavelengths per chunk (default: 2000). Speed is insensitive to it
+        (500 and 2000 measured identical on a10g); 2000 is kept because
+        it is cheap in memory at native resolution — see
+        star_disperser.deposit_stack_native.
 
     ice_payload : dict, optional
         Ice model payload (:func:`ice.load_ice_payload`). When given the
