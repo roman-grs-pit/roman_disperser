@@ -44,9 +44,16 @@ jaxlib = { version = "!=0.11.0", build = "cuda12*" }
 
 # romanisim wrapping environment. Isolated from the JAX/CUDA pipeline:
 # the disperser produces grism images, romanisim consumes them via
-# `--extra-counts`. Pinned to the roman-grs-pit fork on `extra_counts`
-# until those patches land upstream. Linux-only (crds & friends are not
-# packaged for osx-arm64 on conda-forge).
+# `--extra-counts`. Upstream spacetelescope/romanisim, pinned to a main
+# commit: the roman-grs-pit `extra_counts` fork patches (named-HDU
+# --extra-counts, GRISM/PRISM bandpass) are upstream since v0.15.0, and
+# main adds IPC / CRDS-pedestal / flight wfi_cen fixes on top. Linux-only
+# (crds & friends are not packaged for osx-arm64 on conda-forge).
+#
+# roman_datamodels is pinned to 1.1.x (=> rad 1.1.x) because CRDS contexts
+# from roman_0072 on serve 2.0.0-tagged reference schemas (readnoise, gain,
+# linearity, ...) that rad < 1.0 cannot deserialize ("Unknown datamodel
+# type TaggedDict"). Bump rad/rdm and the CRDS context together.
 #
 # Reference data caches (CRDS, STPSF) live OUTSIDE the repo. Set
 # CRDS_PATH, CRDS_SERVER_URL, and STPSF_PATH in your shell (e.g. via
@@ -67,7 +74,8 @@ fftw = "*"
 # transitive dep tree.
 crds = ">=13.0.2"
 stpsf = ">=2.1.0"
-romanisim = { git = "https://github.com/roman-grs-pit/romanisim.git", branch = "extra_counts" }
+roman_datamodels = ">=1.1.0,<1.2"
+romanisim = { git = "https://github.com/spacetelescope/romanisim.git", rev = "2ecdd85" }
 
 [feature.romanisim.tasks]
 hydrate-romanisim = "python scripts/hydrate_romanisim.py"

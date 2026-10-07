@@ -675,10 +675,11 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/b8/e8/37bad20ef0215b13ace46f1f9a32848511fb7a4bd0c06fff9e63070e14a8/pyvo-1.8.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/8b/9d/b3589d3877982d4f2329302ef98a8026e7f4443c765c46cfecc8858c6b4b/pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
-      - pypi: https://files.pythonhosted.org/packages/6f/6f/83836ee6efe3a4e6718c5920d38cef786b6205ecc19e2d863b13f2fd8317/rad-0.31.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/35/61/d6858f10173f7bf73e3571b2ecf9c4d7011bf7dcf210ca0c43a524d9a230/rad-1.1.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/d7/8e/7540e8a2036f79a125c1d2ebadf69ed7901608859186c856fa0388ef4197/requests-2.33.1-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/ac/18/a8b2d984b8e0720f7f25e825289d2fe804f20f16a57b274f956f1b8b83d8/roman_datamodels-0.31.0-py3-none-any.whl
-      - pypi: git+https://github.com/roman-grs-pit/romanisim.git?branch=extra_counts#988ebcccc71aa2775f6afef1f9a3a963d761b833
+      - pypi: https://files.pythonhosted.org/packages/c9/8d/140f12fa6d1d0aeaab24e2ecbec0eeec6103db73f4bb1232dcd0bbc0bd14/roman_datamodels-1.1.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/c9/9a/dfedfdf89213a7c9241702d44fe72deab29ae326ac381670c091c778f644/roman_technical_information-1.5.0-py3-none-any.whl
+      - pypi: git+https://github.com/spacetelescope/romanisim.git?rev=2ecdd85#2ecdd8546376506f6791c58b26238c1ccb6359ce
       - pypi: https://files.pythonhosted.org/packages/01/8e/1e35281b8ab6d5d72ebe9911edcdffa3f36b04ed9d51dec6dd140396e220/scipy-1.17.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/b7/46/f5af3402b579fd5e11573ce652019a67074317e18c1935cc0b4ba9b35552/secretstorage-3.5.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/6a/23/8146aad7d88f4fcb3a6218f41a60f6c2d4e3a72de72da1825dc7c8f7877c/semantic_version-2.10.0-py2.py3-none-any.whl
@@ -4903,10 +4904,10 @@ packages:
   requires_dist:
   - cffi ; implementation_name == 'pypy'
   requires_python: '>=3.8'
-- pypi: https://files.pythonhosted.org/packages/6f/6f/83836ee6efe3a4e6718c5920d38cef786b6205ecc19e2d863b13f2fd8317/rad-0.31.0-py3-none-any.whl
+- pypi: https://files.pythonhosted.org/packages/35/61/d6858f10173f7bf73e3571b2ecf9c4d7011bf7dcf210ca0c43a524d9a230/rad-1.1.0-py3-none-any.whl
   name: rad
-  version: 0.31.0
-  sha256: 25381fdb20f6023019dd30e29e6c270ddbfd9e803308168ed2fd06b2e286d0dc
+  version: 1.1.0
+  sha256: a1aa6ccc9b57b2c199c7661ba9ba5c61ef4ce5942d3ff01d17f458f92206907f
   requires_dist:
   - asdf>=4.1.0
   - asdf-astropy>=0.8.0
@@ -5029,28 +5030,28 @@ packages:
   - lark>=1.2.2
   - pytest>=8.3.5 ; extra == 'testing'
   requires_python: '>=3.9'
-- pypi: https://files.pythonhosted.org/packages/ac/18/a8b2d984b8e0720f7f25e825289d2fe804f20f16a57b274f956f1b8b83d8/roman_datamodels-0.31.0-py3-none-any.whl
+- pypi: https://files.pythonhosted.org/packages/c9/8d/140f12fa6d1d0aeaab24e2ecbec0eeec6103db73f4bb1232dcd0bbc0bd14/roman_datamodels-1.1.0-py3-none-any.whl
   name: roman-datamodels
-  version: 0.31.0
-  sha256: 77676f6a9733526c3eb3909f89e3fe1b6727a2c20a3c152ee2f042fcb5dfff7a
+  version: 1.1.0
+  sha256: 51d52c98e2c3909754bd2f82794166efadf6e954e0dbf99ed4fb3e204e5e71c1
   requires_dist:
   - asdf>=4.1.0
-  - lz4>=4.3.0
+  - astropy>=6.0.0
   - asdf-astropy>=0.8.0
   - gwcs>=0.20.0
+  - lz4>=4.3.0
   - numpy>=1.25
-  - astropy>=6.0.0
-  - rad>=0.31.0,<0.32
-  - asdf-standard>=1.1.0
   - pyarrow>=10.0.1
+  - pyyaml>=6.0
   - semantic-version>=2.10
+  - rad>=1.1.0,<1.2.0
+  - pandas>=2.2.3 ; extra == 'test'
   - pytest>=9.0.0 ; extra == 'test'
   - pytest-doctestplus>=1.3.0 ; extra == 'test'
-  - pandas>=2.2.3 ; extra == 'test'
   - sphinx ; extra == 'docs'
+  - sphinx-astropy ; extra == 'docs'
   - sphinx-automodapi ; extra == 'docs'
   - sphinx-rtd-theme ; extra == 'docs'
-  - sphinx-astropy ; extra == 'docs'
   requires_python: '>=3.11'
 - pypi: ./
   name: roman-disperser
@@ -5071,9 +5072,17 @@ packages:
   - synphot>=1.6.1,<2 ; extra == 'full'
   - pytest>=9.0.2,<10 ; extra == 'full'
   requires_python: '>=3.12'
-- pypi: git+https://github.com/roman-grs-pit/romanisim.git?branch=extra_counts#988ebcccc71aa2775f6afef1f9a3a963d761b833
+- pypi: https://files.pythonhosted.org/packages/c9/9a/dfedfdf89213a7c9241702d44fe72deab29ae326ac381670c091c778f644/roman_technical_information-1.5.0-py3-none-any.whl
+  name: roman-technical-information
+  version: 1.5.0
+  sha256: f20cb9dda33df7ca70ef5a86ff8d12802122a9bb6174b9aa3a256356236854a5
+  requires_dist:
+  - pyyaml
+  - astropy
+  requires_python: '>=3.9'
+- pypi: git+https://github.com/spacetelescope/romanisim.git?rev=2ecdd85#2ecdd8546376506f6791c58b26238c1ccb6359ce
   name: romanisim
-  version: 0.1.dev560+g988ebcccc
+  version: 0.15.1.dev31+g2ecdd8546
   requires_dist:
   - asdf>=4.1.0
   - astropy>=6.0
@@ -5086,6 +5095,7 @@ packages:
   - gwcs>=0.25.0
   - numpy>1.26
   - photutils>=2.3.0
+  - roman-technical-information>=1.5
   - sphinx<7 ; extra == 'docs'
   - sphinx-automodapi ; extra == 'docs'
   - sphinx-rtd-theme ; extra == 'docs'
