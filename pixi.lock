@@ -679,7 +679,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/d7/8e/7540e8a2036f79a125c1d2ebadf69ed7901608859186c856fa0388ef4197/requests-2.33.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/c9/8d/140f12fa6d1d0aeaab24e2ecbec0eeec6103db73f4bb1232dcd0bbc0bd14/roman_datamodels-1.1.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/c9/9a/dfedfdf89213a7c9241702d44fe72deab29ae326ac381670c091c778f644/roman_technical_information-1.5.0-py3-none-any.whl
-      - pypi: git+https://github.com/spacetelescope/romanisim.git?rev=2ecdd85#2ecdd8546376506f6791c58b26238c1ccb6359ce
+      - pypi: https://files.pythonhosted.org/packages/53/6c/6dca6c758d7481501859285d9db5938441440d0b3e797c174c30dbf160da/romanisim-0.15.0-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/01/8e/1e35281b8ab6d5d72ebe9911edcdffa3f36b04ed9d51dec6dd140396e220/scipy-1.17.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/b7/46/f5af3402b579fd5e11573ce652019a67074317e18c1935cc0b4ba9b35552/secretstorage-3.5.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/6a/23/8146aad7d88f4fcb3a6218f41a60f6c2d4e3a72de72da1825dc7c8f7877c/semantic_version-2.10.0-py2.py3-none-any.whl
@@ -5080,9 +5080,10 @@ packages:
   - pyyaml
   - astropy
   requires_python: '>=3.9'
-- pypi: git+https://github.com/spacetelescope/romanisim.git?rev=2ecdd85#2ecdd8546376506f6791c58b26238c1ccb6359ce
+- pypi: https://files.pythonhosted.org/packages/53/6c/6dca6c758d7481501859285d9db5938441440d0b3e797c174c30dbf160da/romanisim-0.15.0-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
   name: romanisim
-  version: 0.15.1.dev31+g2ecdd8546
+  version: 0.15.0
+  sha256: f0906c6f845985a82edcc3b74ffa69ef91ca1dd3e99149fd121a9c1fe2b289ce
   requires_dist:
   - asdf>=4.1.0
   - astropy>=6.0

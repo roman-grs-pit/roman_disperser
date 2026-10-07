@@ -44,10 +44,13 @@ jaxlib = { version = "!=0.11.0", build = "cuda12*" }
 
 # romanisim wrapping environment. Isolated from the JAX/CUDA pipeline:
 # the disperser produces grism images, romanisim consumes them via
-# `--extra-counts`. Upstream spacetelescope/romanisim, pinned to a main
-# commit: the roman-grs-pit `extra_counts` fork patches (named-HDU
-# --extra-counts, GRISM/PRISM bandpass) are upstream since v0.15.0, and
-# main adds IPC / CRDS-pedestal / flight wfi_cen fixes on top. Linux-only
+# `--extra-counts`. Upstream spacetelescope/romanisim release v0.15.0
+# (romanisim's own versioning, unrelated to roman_disperser's): the
+# roman-grs-pit `extra_counts` fork patches (named-HDU --extra-counts,
+# GRISM/PRISM bandpass) are upstream since that release. NOT main: romanisim
+# PR #388 (2026-09-11) added `epsf` to the default CRDS reference set, fetched
+# whenever --usecrds regardless of --psftype, and the epsf rmap has no
+# GRISM/PRISM entry -> CrdsLookupError for every spectroscopic wrap. Linux-only
 # (crds & friends are not packaged for osx-arm64 on conda-forge).
 #
 # roman_datamodels is pinned to 1.1.x (=> rad 1.1.x) because CRDS contexts
@@ -75,7 +78,7 @@ fftw = "*"
 crds = ">=13.0.2"
 stpsf = ">=2.1.0"
 roman_datamodels = ">=1.1.0,<1.2"
-romanisim = { git = "https://github.com/spacetelescope/romanisim.git", rev = "2ecdd85" }
+romanisim = "==0.15.0"
 
 [feature.romanisim.tasks]
 hydrate-romanisim = "python scripts/hydrate_romanisim.py"
