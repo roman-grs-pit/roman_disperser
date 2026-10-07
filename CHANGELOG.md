@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Environment-only change, confined to the `romanisim` pixi env, which wraps
+disperser output to L2. The disperser code, the `default`/`cuda` envs and
+the golden references are all untouched.
+
+### Changed
+- **`romanisim` env: upstream romanisim 0.15.0 replaces the
+  `roman-grs-pit/romanisim@extra_counts` fork.** The fork's patches are
+  upstream as of romanisim 0.15.0: named-HDU `--extra-counts` and
+  GRISM/PRISM bandpasses. romanisim versions independently of this package,
+  so the matching 0.15 is a coincidence.
+  - It is pinned to the 0.15.0 release, **not** main. romanisim PR #388
+    (2026-09-11) added `epsf` to the default CRDS reference set. That
+    reference is fetched whenever `--usecrds` is set, regardless of
+    `--psftype`. The epsf rmap has no GRISM/PRISM entry, so every
+    spectroscopic wrap fails with `CrdsLookupError`.
+  - Release 0.15.0 lacks romanisim's later IPC (#384), CRDS-pedestal (#401)
+    and flight `wfi_cen` (#406) changes.
+- **`roman_datamodels` pinned to 1.1.x, which brings in rad 1.1.0** (was
+  0.31.0). CRDS contexts from `roman_0072.pmap` on serve 2.0.0-tagged
+  reference schemas: readnoise, gain, linearity, saturation, mask, …. rad
+  < 1.0 cannot deserialize these (`Unknown datamodel type TaggedDict`).
+  Bump rad/rdm and the CRDS context together. L2 files wrapped with this env
+  are not bit-comparable to earlier wraps (fork + rdm 0.31 + CRDS 0058).
+
+### Notes
+- romanisim (0.15.0 and main alike) looks up the MA table with the CRDS
+  server's *operational* context and ignores `CRDS_CONTEXT`. To honour a
+  pinned non-operational context, run the wrap with
+  `CRDS_SERVER_URL=https://127.0.0.1:9 CRDS_MODE=local CRDS_READONLY_CACHE=1`
+  against a hydrated cache.
+- First production use: the 4-roll RA 10 / Dec 0 GRISM rerun (2026-10-07),
+  with CRDS `roman_0072`, 72/72 L2 files verified.
+
 ## [0.15.1] - 2026-10-05
 
 Documentation-only follow-up to the post-merge review of the native deposit
