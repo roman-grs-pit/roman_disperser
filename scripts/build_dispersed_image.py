@@ -223,11 +223,19 @@ def validate_catalog(meta, store, wavelengths, element):
                 f"{star_seds.shape[0]}"
             )
 
-    # Galaxy sim partition existence
+    # Galaxy SED array existence (sim partitions, or HEALPix pixels)
     galaxies = meta[meta["type"] == "SER"]
     if len(galaxies) > 0:
-        for sim_val in galaxies["sim"].unique():
-            key = f"galaxy_seds/sim_{sim_val:03d}"
+        layout = galaxy_sed_layout(store)
+        if layout == "healpix":
+            missing = [c for c in ("hp_uniq", "hp_row") if c not in meta.columns]
+            if missing:
+                raise ValueError(
+                    f"galaxy_seds layout is 'healpix' but metadata lacks "
+                    f"{missing}; use the metadata.parquet written with the store")
+        group_col, key_fmt, _ = _GALAXY_SED_LAYOUTS[layout]
+        for val in galaxies[group_col].unique():
+            key = key_fmt.format(int(val))
             if key not in store:
                 raise ValueError(f"Missing Zarr array for partition: {key}")
             if store[key].shape[1] != n_wl:
@@ -282,8 +290,41 @@ def trim_wavelength_grid(wavelengths, element):
 _GALAXY_SED_VALUE_LIMIT = 1e-12
 
 
+# Galaxy SED store layouts: metadata column that names the array, array-key
+# format, and metadata column giving the row inside that array.
+#   "sim"     -- build_source_catalog.py: galaxy_seds/sim_NNN, one per
+#                Galacticus sim; every array spans the whole field.
+#   "healpix" -- scripts/healpix_repartition_seds.py: galaxy_seds/hp_<uniq>,
+#                one per NESTED HEALPix pixel (MOC UNIQ key), so a cone
+#                touches only a few arrays. Declared by the galaxy_seds
+#                group attribute layout="healpix"; absent means "sim".
+_GALAXY_SED_LAYOUTS = {
+    "sim": ("sim", "galaxy_seds/sim_{:03d}", "sed_index"),
+    "healpix": ("hp_uniq", "galaxy_seds/hp_{}", "hp_row"),
+}
+
+
+def galaxy_sed_layout(store):
+    """Return the galaxy SED layout of an opened catalog store ("sim"/"healpix")."""
+    layout = store["galaxy_seds"].attrs.get("layout", "sim")
+    if layout not in _GALAXY_SED_LAYOUTS:
+        raise ValueError(f"Unknown galaxy_seds layout {layout!r}")
+    return layout
+
+
 def load_galaxy_seds(store, galaxy_meta, wl_mask):
-    """Load galaxy SEDs from Zarr, grouping by sim partition for efficient I/O.
+    """Load galaxy SEDs from Zarr, grouping by array for efficient I/O.
+
+    Two store layouts are supported (see ``_GALAXY_SED_LAYOUTS``):
+
+    - ``sim``: group by ``sim`` and read the needed ``sed_index`` rows of
+      each ``galaxy_seds/sim_NNN`` array (scattered inner-chunk reads).
+    - ``healpix``: group by ``hp_uniq`` and read each needed
+      ``galaxy_seds/hp_<uniq>`` pixel **whole**, then select ``hp_row``.
+      One large sequential read per pixel is much faster on the S3-backed
+      mount than many ~50 ms per-chunk requests, and pixels are sized
+      (~0.5 GB compressed) so that whole reads stay cheap. Re-reads from
+      other SCAs of the same pointing hit the OS page cache.
 
     Parameters
     ----------
@@ -291,7 +332,8 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
         Opened Zarr store.
     galaxy_meta : pandas.DataFrame
         Subset of metadata for galaxies only (must have 'sim', 'sed_index',
-        'flux_scale' columns). Row order is preserved.
+        'flux_scale' columns, plus 'hp_uniq', 'hp_row' for the healpix
+        layout). Row order is preserved.
     wl_mask : ndarray bool
         Boolean mask for trimming wavelengths.
 
@@ -304,31 +346,38 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
     n_wl = int(wl_mask.sum())
     spectra = np.zeros((n_galaxies, n_wl), dtype=np.float32)
 
+    layout = galaxy_sed_layout(store)
+    group_col, key_fmt, row_col = _GALAXY_SED_LAYOUTS[layout]
+
     bad_total = 0
     bad_galaxies = []  # (sim, sed_index, n_bins, max_val)
 
-    # Group by sim partition for sequential Zarr access
-    for sim_val, group in galaxy_meta.groupby("sim"):
-        key = f"galaxy_seds/sim_{sim_val:03d}"
-        arr = store[key]
-        indices = group["sed_index"].values
+    for key_val, group in galaxy_meta.groupby(group_col):
+        arr = store[key_fmt.format(int(key_val))]
+        indices = group[row_col].values
         scales = group["flux_scale"].values.astype(np.float32)
 
-        # Read all needed rows from this partition
-        seds_full = np.array(arr[indices])  # [N_group, N_wl_full]
+        if layout == "healpix":
+            seds_full = np.asarray(arr[:])[indices]  # whole-pixel read
+        else:
+            seds_full = np.array(arr[indices])  # [N_group, N_wl_full]
         seds_trimmed = seds_full[:, wl_mask]
 
         # Scrub catalog SED corruption: zero any non-finite or out-of-range
         # bins. Only flagged bins are zeroed; the rest of the SED is preserved.
+        # Reported by (sim, sed_index), the source-template identity, which
+        # both layouts carry in the metadata.
         bad_mask = ~np.isfinite(seds_trimmed) | (
             np.abs(seds_trimmed) > _GALAXY_SED_VALUE_LIMIT
         )
         if bad_mask.any():
-            for j, idx in enumerate(indices):
+            sims = group["sim"].values
+            sed_idx = group["sed_index"].values
+            for j in range(len(group)):
                 row_bad = bad_mask[j]
                 if row_bad.any():
                     bad_galaxies.append((
-                        int(sim_val), int(idx), int(row_bad.sum()),
+                        int(sims[j]), int(sed_idx[j]), int(row_bad.sum()),
                         float(np.abs(seds_trimmed[j, row_bad]).max()),
                     ))
                     bad_total += int(row_bad.sum())

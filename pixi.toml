@@ -18,6 +18,9 @@ roman_disperser = { path = ".", editable = true, extras = ["full"] }
 h5py = "*"
 stsynphot = ">=1.5.0, <2"
 stpsf = ">=2.1.0, <3"
+# scripts/healpix_repartition_seds.py only (catalog afterburner); the
+# pipeline reader does not need it, so it is not a package dependency.
+astropy-healpix = ">=1.0"
 ipykernel = "*"
 jupyterlab = "*"
 
