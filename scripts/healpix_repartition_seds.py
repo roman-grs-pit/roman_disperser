@@ -86,6 +86,25 @@ Usage (three steps)
 
 ``fill`` skips pixels that already carry ``complete=True``, so reruns are
 cheap.
+
+Memory vs. source re-reads
+--------------------------
+Every source ``sim_NNN`` array spans the whole field, so every pixel needs
+rows from every source array. ``fill`` therefore holds its pixels whole in
+RAM (``--task-mem-gb`` raw float32 per task) while streaming the *entire*
+source through, and writes each pixel shard exactly once. The number of
+tasks is ~ raw output / budget, and each task re-reads the full source, so
+memory per task trades directly against total source reads. Peak RSS is
+the buffer plus ~one source array plus per-pixel copies; ``fill`` logs it.
+
+Considered and set aside (2026-10-09): stream each source array once and
+append rows to their pixel. A zarr shard cannot be appended to (zarr 3
+read-modify-writes the whole shard, so appends cost ~n_sims x output in
+writes). Appending to flat scratch files instead, then converting each to a
+shard, keeps memory at ~one array + one pixel and reads the source once,
+but needs scratch the size of the (compressed) output and a sequential
+append pass. Not worth it while the largest catalog (XMM, ~350 GB raw est.)
+fits in a few tasks on 124-187 GB nodes; revisit for much larger catalogs.
 """
 
 import argparse
@@ -252,6 +271,23 @@ def _dir_bytes(path):
         for f in files:
             total += os.stat(os.path.join(root, f)).st_size
     return total
+
+
+def _peak_rss_gb():
+    """Peak resident memory of this process (VmHWM), GB; NaN if unavailable.
+
+    Logged by ``fill`` because ``sacct`` (MaxRSS) does not work on this
+    cluster, and the overhead above the ``--task-mem-gb`` buffer is what
+    sizes ``--mem`` for the next run.
+    """
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) * 1024 / 1e9  # kB -> GB
+    except OSError:
+        pass
+    return float("nan")
 
 
 def _sim_key(sim):
@@ -464,6 +500,7 @@ def cmd_fill(args):
         o = offsets[u]
         _write_pixel(gal, u, buf[o:o + n_rows[j]])
     print(f"  wrote {len(todo)} pixels ({time.time() - t0:.0f}s)")
+    print(f"  peak RSS {_peak_rss_gb():.1f} GB (buffer {buf.nbytes / 1e9:.1f} GB)")
 
 
 # ---------------------------------------------------------------------------
