@@ -3,13 +3,19 @@
 Timing: parses the per-SCA "Galaxy SEDs: ... in <t>s" and "Total: <t>s" lines
 from the worker logs of A, B and the original array-10117 worker 1 (REF).
 
-Images: for each SCA and each image extension (MODEL = noiseless count rate,
-ISIM = with noise), checks B against A and A against REF with the GPU golden-
-frame tolerance from tests/test_golden_frame.py:
-``allclose(new, ref, rtol=1e-5, atol=1e-5 * max|ref|)``. The store change is a
-pure copy of the SED bytes, so the only expected difference is GPU atomic-add
-ordering (last-bit), which that tolerance absorbs. Also reports max |diff| and
-the relative difference of the image sums.
+Images: for each SCA, checks MODEL (noiseless count rate) of B against A and
+of A against REF with the GPU golden-frame tolerance from
+tests/test_golden_frame.py: ``allclose(new, ref, rtol=1e-5, atol=1e-5 *
+max|ref|)``, plus max |diff| and the relative difference of the image sums.
+The store change is a pure copy of the SED bytes, so the only expected
+difference is GPU scatter-add ordering (last bit), which that tolerance absorbs.
+
+ISIM (Poisson realisation) is *reported, not gated*: last-bit MODEL noise
+flips a handful of Poisson draws run-to-run even with identical keys (see
+``pipeline.make_sca_keys``), so ISIM can never be bitwise-stable on GPU. We
+print the number of differing ISIM pixels, how many of those have a
+bit-identical MODEL (expected 0), and the largest flip in units of
+sqrt(expected counts).
 
 Usage: pixi run python compare.py   (any env with astropy)
 """
@@ -46,17 +52,24 @@ def fits_path(root, sca):
     return root / POINTING / f"grism_{POINTING}_detSCA{sca:02d}.fits"
 
 
+EXPTIME = 190.22287  # s, all 4-roll visits (MA table 1036)
+
+
 def compare(new_path, ref_path):
-    out = {}
+    """MODEL gate (ok, max|d|, rel dsum) and ISIM flip stats (n, n_same_model, max sigma)."""
     with fits.open(new_path) as hn, fits.open(ref_path) as hr:
-        for ext in ("MODEL", "ISIM"):
-            new = hn[ext].data.astype(np.float64)
-            ref = hr[ext].data.astype(np.float64)
-            atol = ATOL_SCALE * np.abs(ref).max()
-            out[ext] = (bool(np.allclose(new, ref, rtol=RTOL, atol=atol)),
-                        float(np.abs(new - ref).max()),
-                        float(abs(new.sum() - ref.sum()) / abs(ref.sum())))
-    return out
+        mn, mr = hn["MODEL"].data, hr["MODEL"].data
+        inew, iref = hn["ISIM"].data, hr["ISIM"].data
+    new, ref = mn.astype(np.float64), mr.astype(np.float64)
+    atol = ATOL_SCALE * np.abs(ref).max()
+    model = (bool(np.allclose(new, ref, rtol=RTOL, atol=atol)),
+             float(np.abs(new - ref).max()),
+             float(abs(new.sum() - ref.sum()) / abs(ref.sum())))
+    di = inew != iref
+    lam = np.maximum(ref[di] * EXPTIME, 1.0)
+    nsig = (np.abs(inew[di].astype(np.float64) - iref[di]) / np.sqrt(lam)).max() if di.any() else 0.0
+    isim = (int(di.sum()), int((di & (mn == mr)).sum()), float(nsig))
+    return model, isim
 
 
 def main():
@@ -77,17 +90,18 @@ def main():
         print(f"{k:>3}: sum SED {sum(sed.values()):7.0f}s, sum SCA {sum(tot.values()):7.0f}s, "
               f"run total {run_total}")
 
-    print("\nImages (golden GPU tolerance rtol=1e-5, atol=1e-5*max|ref|)")
+    print("\nMODEL gate (golden GPU tolerance rtol=1e-5, atol=1e-5*max|ref|); "
+          "ISIM flips reported only")
     n_fail = 0
     for label, new_root, ref_root in (("B vs A", OUT / "B/output", OUT / "A/output"),
                                       ("A vs REF", OUT / "A/output", REF / "output")):
         for sca in range(1, 19):
-            r = compare(fits_path(new_root, sca), fits_path(ref_root, sca))
-            ok = all(v[0] for v in r.values())
+            (ok, dmax, dsum), (nflip, nflip_same, nsig) = compare(
+                fits_path(new_root, sca), fits_path(ref_root, sca))
             n_fail += not ok
-            print(f"  {label} SCA{sca:02d}: " + "  ".join(
-                f"{e} {'ok' if v[0] else 'FAIL'} max|d|={v[1]:.2e} dsum={v[2]:.1e}"
-                for e, v in r.items()))
+            print(f"  {label} SCA{sca:02d}: MODEL {'ok' if ok else 'FAIL'} "
+                  f"max|d|={dmax:.2e} dsum={dsum:.1e} | ISIM flips {nflip:3d} "
+                  f"(same-MODEL {nflip_same}), max {nsig:.2f} sigma")
     print("PASS" if n_fail == 0 else f"FAIL ({n_fail} SCA comparisons)")
 
 
