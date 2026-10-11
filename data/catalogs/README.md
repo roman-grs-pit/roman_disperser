@@ -138,6 +138,13 @@ Multiple stars may share the same `sed_index` (template).
 
 ## Galaxy SEDs (Zarr)
 
+> **Alternative layout.** A catalog may instead store galaxy SEDs per HEALPix
+> pixel (`galaxy_seds/hp_<uniq>`, located by the metadata columns `hp_uniq` and
+> `hp_row`). Such a catalog is produced from this one by
+> `scripts/healpix_repartition_seds.py` and declared by the `galaxy_seds` group
+> attribute `layout="healpix"`. Everything else in this file still applies. See
+> [`docs/healpix_sed_store.md`](../../docs/healpix_sed_store.md).
+
 **Path:** `seds.zarr/galaxy_seds/sim_{NNN}`
 **Shape per partition:** `(N_sources, N_wavelengths)` — one row per galaxy.
 

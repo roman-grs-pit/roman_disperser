@@ -43,6 +43,11 @@ pixi run -e cuda python scripts/build_dispersed_image.py \
     --mosaic /path/to/pointing_dir
 ```
 
+**Large catalogs on S3:** point `catalog_dir` at a HEALPix-repartitioned copy
+of the catalog. The reader detects the layout automatically, and galaxy-SED
+reads drop from minutes to seconds per SCA. See
+[`healpix_sed_store.md`](healpix_sed_store.md).
+
 ## Output Files
 
 ### Directory Structure (Batch Mode)
@@ -288,7 +293,9 @@ The pipeline reads a unified source catalog from `catalog_dir` containing:
 - **`metadata.parquet`** -- per-source metadata (type, position, morphology, flux scaling).
 - **`seds.zarr/`** -- Zarr v3 store with wavelength grid, star SEDs, and galaxy SEDs.
 
-See `data/catalogs/README.md` for the full format specification.
+See `data/catalogs/README.md` for the full format specification. Galaxy SEDs may
+be stored per sim (`galaxy_seds/sim_NNN`, the default) or per HEALPix pixel
+(`galaxy_seds/hp_<uniq>`); see [`healpix_sed_store.md`](healpix_sed_store.md).
 
 ## Pipeline Architecture
 
