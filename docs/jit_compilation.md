@@ -1,150 +1,109 @@
 # JIT Compilation for the Disperser
 
-This document explains the JIT (Just-In-Time) compilation strategy for the disperser module.
+How the star and galaxy dispersers are compiled, and why the payloads are
+passed as jit **arguments** rather than captured in closures (changed on
+branch `perf/jit-payload-args`, 2026-10; earlier versions used closures —
+see "History" below).
 
-## The Challenge
+## The challenge
 
-The `disperse_2d1d_sca` and `disperse_galaxies_sequential` functions take a `payload` argument that cannot be easily traced by JAX:
+The dispersion functions take two payload dicts:
 
-1. **Non-traceable strings**: The payload contains `payload["wl"]["transform"]` which is a string ("linear" or "log"). JAX can't trace through Python string comparisons.
+- the optical payload (`optical_model_jax.make_sca_payload`)
+- the PSF payload (`psf_model.get_or_make_psf_payload`)
 
-2. **Non-hashable dicts**: The payload contains nested dicts with JAX arrays. This means you can't use `static_argnums` (which requires hashable arguments for caching).
+Neither can be handed to `jax.jit` as-is:
 
-## The Solution: Closure Pattern
+1. **Non-traceable leaves.**
+   - `payload["wl"]["transform"]` is a string (`"linear"` / `"log"`) that
+     selects a Python branch in `trace_beam`.
+   - The polynomial dimensions (`map_i`, `crv_j`, `ids_i`, …) and the PSF
+     `oversample` are ints that set array shapes, e.g. `jnp.arange(map_i)`.
 
-The solution is to capture the payload in a closure, then JIT-compile the wrapper function:
+   A traced value can do neither job.
+2. **Non-hashable dicts.** Dicts of arrays cannot be `static_argnums`.
 
-```python
-import jax
-import roman_disperser.optical_model_jax as omj
-import roman_disperser.disperser as disperser
+## The pattern: split arrays from structure
 
-# Create payload for specific SCA and order
-payload = omj.make_sca_payload(model, sca=5, order="1")
+`roman_disperser.jit_payload` splits each payload into two parts and drops
+the labels:
 
-# Capture payload in closure, then JIT
-@jax.jit
-def disperse_jit(image, x0, y0, dx, dy, spec, lam0, dlam, output):
-    return disperser.disperse_2d1d_sca(
-        payload, image, x0, y0, dx, dy, spec, lam0, dlam, output,
-        wavelength_chunk_size=100
-    )
+| Part | Contents | Passed to jit as |
+|---|---|---|
+| `arrays` | every array leaf (PSF grid, wavelengths, spatial grid, polynomial coefficients, detector constants) | ordinary (traced) argument — a pytree |
+| `static` | a whitelisted tuple of the ints/strings the traced code reads (`PSF_STATIC_KEYS`, `OPTICAL_STATIC_KEYS`) | `static_argnames` (hashable) |
+| labels | `detector`, `order`, `stpsf_filter`, `timing`, `pixel_scale`, … | dropped |
 
-# Use the compiled function
-output = disperse_jit(image, x0, y0, dx, dy, spec, lam0, dlam, output)
-```
-
-**Why this works:** JAX captures the payload at trace time, baking it into the compiled function. The string fields and JAX arrays become constants in the compiled XLA code.
-
-## Single Galaxy Example
-
-From the `single_galaxy_demo.ipynb` notebook (now in `notebooks/archive/` —
-it demos the legacy `disperser.py` module, but the closure pattern shown here
-is unchanged and used throughout the package):
+The traced code calls `jit_payload.merge_payloads(arrays, static)` and then
+indexes the payloads exactly as before.
 
 ```python
-# Create payload for this SCA and order
-payload = omj.make_sca_payload(model, sca=SCA, order=order)
+from roman_disperser import jit_payload, star_disperser
 
-# Create JIT-compiled version with payload captured in closure
-@jax.jit
-def disperse_jit(image, x0, y0, dx, dy, spec, lam0, dlam, output):
-    return disperser.disperse_2d1d_sca(
-        payload, image, x0, y0, dx, dy, spec, lam0, dlam, output,
-        wavelength_chunk_size=WAVELENGTH_CHUNK_SIZE
-    )
-
-# Initialize output detector
-output = jnp.zeros((4088, 4088), dtype=jnp.float32)
-
-# First call includes JIT compilation time
-output = disperse_jit(
-    image=galaxy_image,
-    x0=X0, y0=Y0,
-    dx=dx, dy=dy,
-    spec=spectrum,
-    lam0=lam0, dlam=dlam,
-    output=output,
-)
+arrays, static = jit_payload.split_payloads(psf_payload, optical_payload)
+out = star_disperser.disperse_star_jit(
+    arrays, x, y, wavelengths, flux, out, static=static, chunk_size=2000)
 ```
 
-## Multi-Galaxy Example
+The arrays have the same shapes on every SCA, and `static` is the same for
+every SCA of a dispersing element. **One compiled program therefore serves
+all 18 SCAs and every pointing.** The persistent-cache entries are small,
+because the PSF grid is no longer embedded in them.
 
-For processing multiple galaxies with the same (SCA, order), use the same pattern with `disperse_galaxies_sequential`:
+`static` is a whitelist on purpose. A generic rule ("keep every non-array
+leaf static") would key the cache on `detector` and silently recompile per
+SCA. With the whitelist, a missing key fails loudly at trace time
+(`KeyError`).
 
-```python
-payload = omj.make_sca_payload(model, sca=5, order="1")
+## Public entry points
 
-@jax.jit
-def disperse_batch_jit(images, x0s, y0s, dx, dy, specs, lam0s, dlams):
-    return disperser.disperse_galaxies_sequential(
-        payload, images, x0s, y0s, dx, dy, specs, lam0s, dlams,
-        wavelength_chunk_size=100
-    )
+You normally never call `jit_payload` yourself; the factories do it:
 
-# Process 1000s of galaxies in one JIT'd call
-output = disperse_batch_jit(images, x0s, y0s, dx, dy, specs, lam0s, dlams)
-```
+- `star_disperser.make_star_disperser(psf, opt)` /
+  `galaxy_disperser.make_galaxy_disperser(psf, opt)`
+  - Same signatures as before.
+  - The returned function calls the module-level jitted
+    `disperse_star_jit` / `disperse_galaxy_jit`.
+  - It carries `.payload_args = (arrays, static, chunk_size)`.
+- `pipeline.make_batched_star_fori` / `make_batched_galaxy_fori`
+  - When given a factory-built disperser, they route to
+    `pipeline.run_star_batch` / `run_galaxy_batch`.
+  - Those take the payload arrays, the sensitivity curve, the wavelengths
+    and `dlam` as arguments.
+  - Any other callable (no `.payload_args`) falls back to the closure path:
+    correct, but one compile per SCA.
 
-The `disperse_galaxies_sequential` function uses `jax.lax.fori_loop` internally, which is fully compatible with JIT compilation.
+### Pitfall: wrapping a disperser in your own `jax.jit`
 
-## Performance Notes
+Calling a factory-built disperser **inside your own jitted function** works.
+But the payload arrays it holds are then closed over by *your* function, so
+they become constants of *your* program again: one compile per SCA. For
+loops over many sources, use `pipeline.make_batched_*_fori` (or
+`run_*_batch`) instead of hand-rolling `jax.jit(fori_loop(... disperser
+...))`.
 
-Typical performance on CPU (from notebook benchmarks):
+## Multi-source loops
 
-| Stage | Time |
-|-------|------|
-| First call (includes compilation) | ~0.5s |
-| Cached calls | ~0.3s |
-| Speedup | 1.3-1.6x |
+`run_star_batch` / `run_galaxy_batch` run a `jax.lax.fori_loop` over a
+padded batch. `n_sources` is a traced argument, so one compile also serves
+every batch fill level (see the "Multi-Source fori_loop Pattern" in
+CLAUDE.md).
 
-Key points:
-- Compilation is cached per unique closure (payload baked in)
-- Each (SCA, order) combination requires a separate compiled function
-- For 1000s of galaxies through the same SCA/order, compilation overhead is negligible
+## History: why it used to be closures
 
-## Why Not Other Approaches?
+Until 2026-10 the payloads were captured in a closure before `@jax.jit`.
+That was the simplest way around the two problems above. It turns the
+captured arrays into **compile-time constants**: each (SCA, order) was a
+distinct XLA program.
 
-### `static_argnums`
+This was judged harmless when it was written: the legacy CPU disperser
+compiled in ~0.5 s. By the 2026-10 production runs it cost far more:
 
-Won't work because:
-- The payload dict contains JAX arrays, which are not hashable
-- `static_argnums` requires hashable arguments to cache compilations
+- 6 programs per SCA (3 orders × star/galaxy), at ~30–70 s per SCA on A10G.
+- Each persistent-cache entry was ~111 MB, because it carried its own PSF
+  copy.
+- Array 10117 measured ~74 s/SCA of compile (29% of wall time).
+- The HEALPix A/B (job 12131) measured 601 s per pointing (35% of wall
+  time), once SED reads were fixed.
 
-### Making payload traceable
-
-Converting strings to integers and using `jax.lax.cond` is possible but:
-- Adds code complexity
-- `jax.lax.cond` has overhead (evaluates both branches)
-- No performance benefit over closures
-- The nested dict structure still can't be passed as a static argument
-
-### Factory functions
-
-We considered adding factory functions like `make_jit_disperser(model, sca, order)` but:
-- The closure pattern is simple and explicit
-- Users already need to manage payloads for different (SCA, order) combinations
-- Factory functions add abstraction without clear benefit for typical workflows
-
-## Tips for Efficient Usage
-
-1. **Reuse compiled functions**: Create one closure per (SCA, order) and reuse it for all galaxies in that configuration.
-
-2. **Don't recreate closures unnecessarily**: Each `@jax.jit` decorator creates a new function object, triggering recompilation.
-
-3. **Cache across orders**: If processing multiple orders, create a dict of compiled functions:
-   ```python
-   dispersers = {}
-   for order in ["1", "0", "2"]:
-       payload = omj.make_sca_payload(model, sca=5, order=order)
-       @jax.jit
-       def disperse(image, x0, y0, dx, dy, spec, lam0, dlam, output, _payload=payload):
-           return disperser.disperse_2d1d_sca(
-               _payload, image, x0, y0, dx, dy, spec, lam0, dlam, output,
-               wavelength_chunk_size=100
-           )
-       dispersers[order] = disperse
-   ```
-   Note the `_payload=payload` default argument trick to capture the current loop value.
-
-4. **Block until ready**: JAX operations are asynchronous. Use `output.block_until_ready()` for accurate timing.
+See the research log thread `jit-payload-args`.
