@@ -192,6 +192,15 @@ SLURM_PARTITION=mem-med SLURM_MEM=58G \
      (seed 20261008).
    - On success it records the measured sizes and a `verified_utc` timestamp
      in the attrs.
+   - The same job then runs `scripts/verify_source_catalog.py --skip-f184
+     --skip-provenance` on the new catalog. That covers metadata consistency,
+     every `hp_row` in range, and the F158 round trip for 500 stars and 500
+     galaxies through the HEALPix lookup path.
+   - F184 and provenance are skipped because both need the Galacticus inputs,
+     and provenance fails *by construction* on RA-padded catalogs.
+   - The job fails if either step fails.
+   - On the acceptance store both steps pass (the verifier step was run by
+     hand there, since it was added after the build).
 
 The driver refuses to run if the script has uncommitted changes, so the
 commit it records is the code that ran. It writes
@@ -268,9 +277,9 @@ in `workbench/20261011-sed-store-ab/`, with outputs in
 - A HEALPix store is derived data. If the source catalog changes, rebuild it.
   The provenance is in the `galaxy_seds` attrs (`source`,
   `source_metadata`, `code_commit`).
-- Only `build_dispersed_image.py` reads the new layout. Other readers of
-  `galaxy_seds/sim_NNN` must use the source catalog, or follow
-  `hp_uniq` / `hp_row` as above. In this repo that means
-  `scripts/verify_source_catalog.py`, which is sim-only (use the
-  afterburner's `verify` for HEALPix stores), plus notebooks and ad-hoc
-  scripts.
+- In this repo, `build_dispersed_image.py` and
+  `scripts/verify_source_catalog.py` read both layouts, each dispatching on
+  the `layout` attr with the same table.
+- Other readers of `galaxy_seds/sim_NNN`, such as notebooks, ad-hoc scripts
+  or the tutorials, must use the source catalog or follow `hp_uniq` /
+  `hp_row` as above.

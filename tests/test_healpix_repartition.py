@@ -197,3 +197,19 @@ def test_end_to_end_roundtrip(hr, tmp_path):
     bdi.validate_catalog(m_out, s_new, wl, _E)
     with pytest.raises(ValueError, match="healpix"):
         bdi.validate_catalog(m_src, s_new, wl, _E)
+
+    # verify_source_catalog.py reads both layouts: same SEDs, refs in range,
+    # and an out-of-range hp_row is caught.
+    vsc = _load("verify_source_catalog")
+    assert vsc.galaxy_sed_layout(s_old) == "sim"
+    assert vsc.galaxy_sed_layout(s_new) == "healpix"
+    gal_all = m_out[m_out["type"] == "SER"]
+    assert vsc.check_galaxy_sed_refs(gal_all, s_old, "sim") == []
+    assert vsc.check_galaxy_sed_refs(gal_all, s_new, "healpix") == []
+    for _, row in gal_all.iloc[::7].iterrows():
+        np.testing.assert_array_equal(vsc.galaxy_sed(s_old, row, "sim"),
+                                      vsc.galaxy_sed(s_new, row, "healpix"))
+    bad = gal_all.copy()
+    bad.iloc[0, bad.columns.get_loc("hp_row")] = 10_000
+    assert any("hp_row" in i for i in vsc.check_galaxy_sed_refs(bad, s_new, "healpix"))
+    assert vsc.check_galaxy_sed_refs(gal_all.drop(columns="hp_row"), s_new, "healpix")

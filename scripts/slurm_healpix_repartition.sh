@@ -2,7 +2,12 @@
 #
 # Run the HEALPix SED-store afterburner (scripts/healpix_repartition_seds.py)
 # on SLURM: `plan` inline (seconds; reads metadata + stats shards), then one
-# `fill` task per planned task as an array, then `verify` as a dependent job.
+# `fill` task per planned task as an array, then a dependent verify job that
+# runs (1) the afterburner's `verify` (completeness + bitwise row copy) and
+# (2) scripts/verify_source_catalog.py on the new catalog (metadata/SED-ref
+# consistency and the F158 round trip through the HEALPix lookup path). (2)
+# runs with --skip-f184 --skip-provenance: both need the Galacticus inputs,
+# and provenance fails by construction on RA-padded catalogs.
 #
 # Each fill task streams every source shard whole (~17 GB for the acceptance
 # catalog) and holds its pixels in RAM (<= --task-mem-gb raw, default 40 GB),
@@ -42,8 +47,8 @@ SCRIPT="scripts/healpix_repartition_seds.py"
 mkdir -p "$LOG_DIR"
 
 cd "$REPO_ROOT"
-if [[ -n "$(git status --porcelain -- "$SCRIPT")" ]]; then
-    echo "ERROR: $SCRIPT has uncommitted changes; commit first (provenance)." >&2
+if [[ -n "$(git status --porcelain -- "$SCRIPT" scripts/verify_source_catalog.py)" ]]; then
+    echo "ERROR: $SCRIPT or verify_source_catalog.py has uncommitted changes; commit first (provenance)." >&2
     exit 1
 fi
 GIT_COMMIT="$(git rev-parse --short HEAD)"
@@ -64,7 +69,9 @@ FILL_ID=$(sbatch --parsable -p "$PARTITION" --mem="$MEM" --time="$TIME" \
 VERIFY_ID=$(sbatch --parsable -p "$PARTITION" --mem=32G --time=1:00:00 \
     --dependency=afterok:"$FILL_ID" -J hp-verify \
     -o "$LOG_DIR/%j-verify.out" \
-    --wrap "cd '$REPO_ROOT' && pixi run python $SCRIPT verify --output '$OUTPUT'")
+    --wrap "cd '$REPO_ROOT' && pixi run python $SCRIPT verify --output '$OUTPUT' \
+            && pixi run python scripts/verify_source_catalog.py --catalog-dir '$OUTPUT' \
+                   --skip-f184 --skip-provenance --n-check 500")
 
 mkdir -p "$OUTPUT/slurm-meta"
 cat > "$OUTPUT/slurm-meta/healpix-$FILL_ID.env" <<EOF

@@ -21,8 +21,12 @@ env. Golden references are untouched.
   - Pixels are split adaptively to ~0.5 GB compressed. The output is a new
     sibling catalog whose `metadata.parquet` gains `hp_uniq` / `hp_row`.
   - `verify` checks every pixel and compares random rows bitwise against the
-    source.
+    source. The driver's verify job then also runs `verify_source_catalog.py`
+    on the new catalog.
   - New pixi dependency: `astropy-healpix` (used by the afterburner only).
+- **`verify_source_catalog.py` reads either layout** and gains
+  `--skip-provenance`. RA-padded catalogs such as `catalogs_padded` fail
+  provenance by construction, because the pad shift is not recorded.
 - **`build_dispersed_image.py` reads either layout**, detected by the
   `galaxy_seds` attribute `layout` (absent means `sim`, as before).
   - For a HEALPix store it reads each needed pixel whole.
