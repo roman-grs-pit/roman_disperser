@@ -570,6 +570,14 @@ def disperse_batched_galaxies(fori_fn, spectra, xsca, ysca, images, output,
 # the fori_loop stops at n_actual.
 _SERSIC_PAD = (1.0, 1.0, 1.0, 0.0)  # r_eff_pix, n, ba, theta
 
+# Jitted Sersic generator for one batch. Fusing the kernel means one GPU launch
+# per batch instead of ~10 op-by-op launches, and no full-size intermediates.
+# It changes images at the float32-rounding level relative to the un-jitted
+# vmap (<= ~5e-5 relative per pixel on CPU; each image still sums to 1), so
+# adopting it was a results change, made together with the golden-v3 re-bless.
+# One compile per (batch_size, npix).
+_make_sersic_images_jit = jax.jit(sersic.make_sersic_images, static_argnames="npix")
+
 
 def disperse_batched_sersic_galaxies(fori_fn, spectra, xsca, ysca,
                                      sersic_params, npix, output, batch_size):
@@ -586,11 +594,13 @@ def disperse_batched_sersic_galaxies(fori_fn, spectra, xsca, ysca,
     On an A10G (16.55 GiB JAX limit) that OOMed the densest XMM-LSS SCAs
     (34-37k galaxies) at the final divide (``jit_true_divide``).
 
-    Each batch is generated with the same un-jitted ``make_sersic_images``
-    call, which is elementwise per galaxy, so the images are bit-identical
-    to the all-at-once call (checked on CPU, 3000 galaxies). Jitting the
-    generator would fuse it and change images at the ~1e-5 relative level,
-    so it is deliberately not jitted.
+    Each batch is generated with a jitted ``make_sersic_images``. The
+    un-jitted, per-batch version was bit-identical to the old all-at-once
+    call and was used to verify this function as a pure memory fix on GPU
+    (thread xmm-scale-perf, 2026-10-12: 18-SCA XMM pointing, peak GPU
+    12 -> 4.3 GiB, MODEL within GPU tolerance). Jitting then removed its
+    ~0.1 ms/galaxy/order op-by-op overhead, at the cost of float32-rounding
+    image differences (<= ~5e-5 relative per pixel).
 
     Parameters
     ----------
@@ -632,7 +642,7 @@ def disperse_batched_sersic_galaxies(fori_fn, spectra, xsca, ysca,
             pb = np.full(batch_size, pad, dtype=np.float32)
             pb[:n_actual] = p[start:end]
             p_batch.append(jnp.asarray(pb))
-        img_batch = sersic.make_sersic_images(*p_batch, npix)
+        img_batch = _make_sersic_images_jit(*p_batch, npix=npix)
 
         output = fori_fn(
             n_actual,

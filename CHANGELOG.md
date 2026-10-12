@@ -41,9 +41,12 @@ env. Golden references are untouched.
   (~2.1 GB per array at N = 36.5k). XMM-LSS SCAs with 34–37k galaxies OOMed
   at the final divide (`jit_true_divide`) on a 24 GB card. New
   `pipeline.disperse_batched_sersic_galaxies` generates each dispersion
-  batch's images on the fly, so GPU memory scales with `galaxy_batch_size`.
-  Images are bit-identical (same un-jitted call per batch); the golden
-  renderer now uses the same path. `disperse_batched_galaxies` is unchanged.
+  batch's images on the fly, so GPU memory scales with `galaxy_batch_size`
+  (XMM-LSS 18-SCA pointing on A10G: peak 12 GiB, OOM at SCA 9 → 4.3 GiB,
+  completes). The per-batch generator is jitted: images change at
+  float32-rounding level (golden scenes: max |Δ| ≤ 5e-8 of frame max, sums
+  unchanged), folded into the golden-v3 re-bless. The golden renderer uses
+  the same path. `disperse_batched_galaxies` is unchanged.
 - **String `sim` values in galaxy-SED catalogs.** Newer upstream catalogs
   (e.g. `20260917-xmm_lss`) name each partition by its Galacticus file
   (`sim = "romanUNIT-d601_625_16sqDeg.hdf5"`, array
