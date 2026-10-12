@@ -9,9 +9,11 @@
 #   base = perf/jit-payload-args @ BASE_SHA   (no fix)   SCAs 1-4
 #          SCAs 1-4 did not OOM at v0.15.1 (repro 12200), so they give a
 #          baseline the fix can be compared against bitwise.
-#   fix  = fix/sersic-batching   @ this HEAD  (fix)      SCAs 1-6
-#          SCA 5 OOMed at v0.15.1 (Keith 11334; our repro 12200 if it does);
-#          1-4 compare against base, 5-6 show the dense SCAs now complete.
+#   fix  = fix/sersic-batching   @ this HEAD  (fix)      all 18 SCAs
+#          At v0.15.1 this pointing OOMed at SCA 5 in Keith's env (11334) and
+#          at SCA 9 in ours (repro 12200: fragmentation accumulates across
+#          SCAs, so the failing SCA depends on history, not N alone). The full
+#          pointing is the end-to-end proof; 1-4 also compare against base.
 #
 # Pass criteria on SCAs 1-4 (base vs fix):
 #   - MODEL within GPU run-to-run noise, i.e. the GPU golden tolerance used by
@@ -22,12 +24,12 @@
 #   - ISIM reported, not gated (last-bit MODEL noise flips Poisson draws).
 #   - per-order ms/galaxy unchanged within run-to-run scatter.
 # And on the fix run: GPU peak well below base's and ~flat across SCAs;
-# SCAs 5-6 complete.
+# all 18 SCAs complete.
 #
 # Each version runs from its own worktree's pixi `cuda` env (src differs: the
 # fix touches src/roman_disperser/pipeline.py). Cold per-run JAX caches on /data.
 #
-# Usage: bash submit.sh   (head node; 2 x g5.2xlarge, ~45 + ~70 min, <= ~$3)
+# Usage: bash submit.sh   (head node; 2 x g5.2xlarge, ~45 min + ~3.5 h, <= ~$6)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIX_WT="$(cd "$HERE/../../.." && pwd)"
@@ -38,7 +40,7 @@ CAT=/mnt/roman-science/grs/catalogs/20260917-xmm_lss
 OUT=/mnt/roman-science/grs/20261012_xmm-scale-perf/oomfix
 SLURM_LOG=/data/npadman/tmp/slurm-logs/xmm-scale-perf
 CACHE_ROOT=/data/npadman/tmp/jax-cache-xmm-oomfix
-PART=gpu-med; GRES=gpu:a10g:1; MEM=28G; TIME=03:00:00
+PART=gpu-med; GRES=gpu:a10g:1; MEM=28G
 
 [ -z "$(git -C "$FIX_WT" status --porcelain -- src scripts workbench tests)" ] \
     || { echo "fix worktree dirty; commit first"; exit 1; }
@@ -51,7 +53,8 @@ PART=gpu-med; GRES=gpu:a10g:1; MEM=28G; TIME=03:00:00
 mkdir -p "$OUT/slurm-meta" "$SLURM_LOG"
 
 for V in base fix; do
-    if [[ $V == base ]]; then WT=$BASE_WT; SCAS="[1, 2, 3, 4]"; else WT=$FIX_WT; SCAS="[1, 2, 3, 4, 5, 6]"; fi
+    if [[ $V == base ]]; then WT=$BASE_WT; SCAS="[1, 2, 3, 4]"; TIME=02:00:00
+    else WT=$FIX_WT; SCAS=all; TIME=06:00:00; fi
     D=$OUT/$V; mkdir -p "$D/logs"
     cp "$REPRO/part_03.ecsv" "$D/part_03.ecsv"
     cat > "$D/config.yaml" <<EOT
