@@ -291,7 +291,12 @@ def _peak_rss_gb():
 
 
 def _sim_key(sim):
-    return f"galaxy_seds/sim_{int(sim):03d}"
+    """Source array key: integer sim -> ``sim_NNN``; string sim (upstream
+    catalogs, e.g. 20260917-xmm_lss) -> ``sim_<name>``. Mirrors
+    ``sim_array_key`` in build_dispersed_image.py."""
+    if isinstance(sim, (int, np.integer)):
+        return f"galaxy_seds/sim_{int(sim):03d}"
+    return f"galaxy_seds/sim_{sim}"
 
 
 def _hp_key(uniq):
