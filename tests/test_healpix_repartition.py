@@ -244,3 +244,26 @@ def test_sed_scrub_reports_string_sims(tmp_path, capsys):
     spectra = bdi.load_galaxy_seds(store, gal, np.ones_like(wl, dtype=bool))
     assert np.all(np.isfinite(spectra)) and spectra.max() < 1e-12
     assert "sim_romanUNIT-d1_25_16sqDeg.hdf5/sed[5]" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("string_sims", [False, True], ids=["int-sims", "string-sims"])
+def test_verify_metadata_consistency_sim_naming(tmp_path, string_sims):
+    """verify_source_catalog's metadata checks accept both sim namings
+    (stars sim=0 / galaxies sim>=1, or stars "PSF" / galaxies file names)."""
+    rng = np.random.default_rng(5)
+    src = tmp_path / "cat"
+    _make_sim_catalog(src, rng, string_sims=string_sims)
+    meta = pq.read_table(src / "metadata.parquet").to_pandas()
+    # Make the fixture satisfy the non-sim checks (star flux_scale == F158,
+    # stars point-like, galaxies flux_scale == 1).
+    star = meta["type"] == "PSF"
+    meta["F158"] = np.where(star, meta["flux_scale"], 1e-9)
+    meta.loc[~star, "flux_scale"] = 1.0
+    meta.loc[star, ["n", "half_light_radius"]] = 0.0
+    meta["src_index"] = np.arange(len(meta), dtype=np.int32)
+    store = zarr.open(str(src / "seds.zarr"), mode="r")
+    vsc = _load("verify_source_catalog")
+    assert vsc.check_metadata_consistency(meta, store)
+    bad = meta.copy()
+    bad.loc[bad.index[star.to_numpy()][0], "sim"] = 7 if not string_sims else "romanUNIT-x.hdf5"
+    assert not vsc.check_metadata_consistency(bad, store)
