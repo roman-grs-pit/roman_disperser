@@ -153,6 +153,112 @@ def load_catalog(catalog_dir):
     return meta, store, wavelengths
 
 
+# Source cuts: declarative row selection applied right after the catalog is
+# loaded (config key ``source_cuts``). One HEALPix/sim store then serves every
+# depth or quality selection, instead of a filtered copy of metadata.parquet
+# per selection. Each rule is a dict:
+#
+#   {column: <metadata column>, op: <name in _CUT_OPS>, value: <...>,
+#    types: [PSF|SER, ...]}          # types optional; default = all types
+#
+# A row survives a rule if the rule does not apply to its type, or if
+# ``op(row[column], value)`` is True. Rules are ANDed. NaN fails every
+# comparison, so a NaN in a cut column removes the row (for the types the
+# rule applies to). The op table is deliberately small and explicit: adding
+# an operation is a one-line, reviewable change, and no code is evaluated
+# from the config.
+#
+# Magnitude ops: catalog fluxes (F158, F106, F129) are in maggies,
+# mag = -2.5 log10(F), so  mag <= m  <=>  F >= 10**(-0.4 m)  (and F <= 0,
+# i.e. no flux, fails mag_le and passes mag_ge).
+_CUT_OPS = {
+    "lt": lambda x, v: x < v,
+    "le": lambda x, v: x <= v,
+    "gt": lambda x, v: x > v,
+    "ge": lambda x, v: x >= v,
+    "between": lambda x, v: (x >= v[0]) & (x <= v[1]),
+    "isin": lambda x, v: np.isin(x, v),
+    # float64 so the threshold is not rounded to the column's float32 (which
+    # would move the boundary by an ulp, ~6 rows of the XMM catalog at H=27).
+    "mag_le": lambda x, v: np.asarray(x, np.float64) >= 10.0 ** (-0.4 * v),
+    "mag_ge": lambda x, v: np.asarray(x, np.float64) <= 10.0 ** (-0.4 * v),
+}
+
+
+def validate_source_cuts(cuts, columns=None):
+    """Check a ``source_cuts`` list; raise ValueError on the first bad rule.
+
+    ``columns`` (optional) is the set of metadata columns; when given, an
+    unknown column is an error too.
+    """
+    if cuts is None:
+        return
+    if not isinstance(cuts, list):
+        raise ValueError(f"source_cuts must be a list of rules, got {type(cuts).__name__}")
+    for rule in cuts:
+        if not isinstance(rule, dict) or not {"column", "op", "value"} <= set(rule):
+            raise ValueError(f"source cut needs column/op/value: {rule!r}")
+        extra = set(rule) - {"column", "op", "value", "types"}
+        if extra:
+            raise ValueError(f"source cut has unknown keys {sorted(extra)}: {rule!r}")
+        if rule["op"] not in _CUT_OPS:
+            raise ValueError(f"source cut op {rule['op']!r} not in {sorted(_CUT_OPS)}")
+        if rule["op"] == "between" and len(rule["value"]) != 2:
+            raise ValueError(f"'between' needs [lo, hi]: {rule!r}")
+        if columns is not None and rule["column"] not in columns:
+            raise ValueError(f"source cut column {rule['column']!r} not in catalog")
+
+
+def describe_source_cut(rule):
+    """Short human-readable form of one rule, e.g. 'F158 mag_le 27.0 [SER]'."""
+    types = f" [{','.join(rule['types'])}]" if rule.get("types") else ""
+    return f"{rule['column']} {rule['op']} {rule['value']}{types}"
+
+
+def apply_source_cuts(meta, cuts, log=print):
+    """Apply ``source_cuts`` rules to catalog metadata.
+
+    Parameters
+    ----------
+    meta : pandas.DataFrame
+        Full catalog metadata (needs ``type`` and every cut column).
+    cuts : list of dict or None
+        Rules as documented at ``_CUT_OPS``. None or [] keeps everything.
+    log : callable
+
+    Returns
+    -------
+    meta_cut : pandas.DataFrame
+        Surviving rows, **original index kept** (the index is the catalog
+        row number reported as ``catalog_index`` in the source manifest).
+    summary : list of dict
+        Per rule: the rule plus ``removed`` (rows removed by this rule that
+        no earlier rule had removed). For provenance.
+    """
+    if not cuts:
+        return meta, []
+    validate_source_cuts(cuts, columns=set(meta.columns))
+    keep = np.ones(len(meta), dtype=bool)
+    types = meta["type"].to_numpy()
+    summary = []
+    for rule in cuts:
+        applies = (np.isin(types, rule["types"]) if rule.get("types")
+                   else np.ones(len(meta), dtype=bool))
+        with np.errstate(invalid="ignore"):
+            passed = np.asarray(_CUT_OPS[rule["op"]](meta[rule["column"]].to_numpy(),
+                                                     rule["value"]), dtype=bool)
+        rule_keep = ~applies | passed
+        removed = int((keep & ~rule_keep).sum())
+        keep &= rule_keep
+        summary.append({**rule, "removed": removed})
+        log(f"  cut {describe_source_cut(rule)}: removes {removed}")
+    meta_cut = meta[keep]
+    log(f"  source cuts keep {len(meta_cut)} of {len(meta)} rows "
+        f"({int((meta_cut['type'] == 'PSF').sum())} stars, "
+        f"{int((meta_cut['type'] == 'SER').sum())} galaxies)")
+    return meta_cut, summary
+
+
 def validate_catalog(meta, store, wavelengths, element):
     """Validate catalog consistency.
 
@@ -467,6 +573,7 @@ def setup_pipeline(
     star_batch_size=1000,
     galaxy_batch_size=100,
     galaxy_npix=30,
+    source_cuts=None,
     verbose=True,
 ):
     """One-time setup: load model, catalog, optical payloads, sensitivities.
@@ -494,6 +601,9 @@ def setup_pipeline(
     galaxy_npix : int
         Sersic image size in native pixels (default: 30).
         Oversampled size is ``galaxy_npix * oversample``.
+    source_cuts : list of dict, optional
+        Declarative row selection applied right after loading the catalog
+        (see ``_CUT_OPS``). None keeps every row.
     verbose : bool
         Print progress information.
 
@@ -528,6 +638,10 @@ def setup_pipeline(
     n_galaxies = int((meta["type"] == "SER").sum())
     log(f"  {len(meta)} sources ({n_stars} stars, {n_galaxies} galaxies) "
         f"in {timings['load_catalog']:.2f}s")
+    n_catalog_rows = len(meta)
+    if source_cuts:
+        log("Applying source cuts...")
+    meta, source_cuts_summary = apply_source_cuts(meta, source_cuts, log=log)
 
     log("Validating catalog...")
     validate_catalog(meta, store, wavelengths_full, element)
@@ -619,6 +733,8 @@ def setup_pipeline(
         "galaxy_npix": galaxy_npix,
         "galaxy_npix_os": galaxy_npix_os,
         "oversample": oversample,
+        "n_catalog_rows": n_catalog_rows,
+        "source_cuts": source_cuts_summary,
         "timings": timings,
     }
 
@@ -699,6 +815,10 @@ def process_pointing(
         "OPTELEM": (element.name, "Dispersing element"),
         "OPTMODEL": (pipeline["optical_model_file"],
                      "Optical-model delivery file"),
+        "SRCCUTN": (len(pipeline["source_cuts"]),
+                    "Number of source_cuts rules applied"),
+        **{f"SRCCUT{i + 1}": (describe_source_cut(r)[:68], "source_cuts rule")
+           for i, r in enumerate(pipeline["source_cuts"])},
         **(extra_headers or {}),
     }
     galaxy_batch_size = pipeline["galaxy_batch_size"]
@@ -1174,6 +1294,8 @@ def process_pointing(
         "galaxy_batch_size": pipeline["galaxy_batch_size"],
         "galaxy_npix": pipeline["galaxy_npix"],
         "oversample": pipeline["oversample"],
+        "catalog_rows": pipeline["n_catalog_rows"],
+        "source_cuts": pipeline["source_cuts"],
         "source_counts": {
             f"SCA{sca_num}": counts
             for sca_num, counts in sorted(source_counts.items())
@@ -1213,6 +1335,7 @@ def build_dispersed_image(
     star_batch_size=1000,
     galaxy_batch_size=100,
     galaxy_npix=30,
+    source_cuts=None,
     verbose=True,
     force=False,
 ):
@@ -1244,6 +1367,8 @@ def build_dispersed_image(
         Galaxies per JIT batch (default: 100).
     galaxy_npix : int
         Sersic image size in native pixels (default: 30).
+    source_cuts : list of dict, optional
+        Declarative row selection (see ``_CUT_OPS``); None keeps every row.
     verbose : bool
         Print progress information (default: True).
     force : bool
@@ -1271,6 +1396,7 @@ def build_dispersed_image(
         star_batch_size=star_batch_size,
         galaxy_batch_size=galaxy_batch_size,
         galaxy_npix=galaxy_npix,
+        source_cuts=source_cuts,
         verbose=verbose,
     )
 
@@ -1375,6 +1501,17 @@ galaxy_batch_size: 100
 # Sersic image size in native pixels.  Oversampled size = galaxy_npix * oversample.
 # 30 native pixels = 120 oversampled pixels at 4x oversampling.
 galaxy_npix: 30
+
+# -- Source cuts (optional) ----------------------------------------------------
+# Declarative row selection applied right after loading the catalog, so one
+# catalog store serves any depth. Rules are ANDed; `types` (optional) limits a
+# rule to PSF (stars) and/or SER (galaxies). Ops: lt le gt ge between isin,
+# and mag_le / mag_ge for flux columns in maggies (mag = -2.5 log10 F).
+# Rows with NaN in a cut column are removed. The rules and per-rule removed
+# counts are recorded in each product's FITS header and meta YAML.
+# source_cuts:
+#   - {column: F158, op: mag_le, value: 27.0}
+#   - {column: half_light_radius, op: gt, value: 0.0, types: [SER]}
 
 # -- JAX compilation cache (optional) ----------------------------------------
 # Directory for JAX's persistent compilation cache.  Defaults to
@@ -1706,6 +1843,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         star_batch_size=cfg.get("star_batch_size", 1000),
         galaxy_batch_size=cfg.get("galaxy_batch_size", 100),
         galaxy_npix=cfg.get("galaxy_npix", 30),
+        source_cuts=cfg.get("source_cuts"),
         verbose=verbose,
     )
 
