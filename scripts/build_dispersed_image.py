@@ -233,9 +233,9 @@ def validate_catalog(meta, store, wavelengths, element):
                 raise ValueError(
                     f"galaxy_seds layout is 'healpix' but metadata lacks "
                     f"{missing}; use the metadata.parquet written with the store")
-        group_col, key_fmt, _ = _GALAXY_SED_LAYOUTS[layout]
+        group_col, array_key, _ = _GALAXY_SED_LAYOUTS[layout]
         for val in galaxies[group_col].unique():
-            key = key_fmt.format(int(val))
+            key = array_key(val)
             if key not in store:
                 raise ValueError(f"Missing Zarr array for partition: {key}")
             if store[key].shape[1] != n_wl:
@@ -290,17 +290,36 @@ def trim_wavelength_grid(wavelengths, element):
 _GALAXY_SED_VALUE_LIMIT = 1e-12
 
 
-# Galaxy SED store layouts: metadata column that names the array, array-key
-# format, and metadata column giving the row inside that array.
+def sim_array_key(sim):
+    """Zarr key of the galaxy-SED array for one ``sim`` metadata value.
+
+    Two naming schemes exist in the wild:
+
+    - integer ``sim`` (catalogs from ``build_source_catalog.py``, e.g.
+      ``catalogs_padded``): ``galaxy_seds/sim_NNN``, zero-padded to 3 digits;
+    - string ``sim`` (newer upstream catalogs, e.g. ``20260917-xmm_lss``,
+      where ``sim`` is a Galacticus file name such as
+      ``romanUNIT-d601_625_16sqDeg.hdf5``): ``galaxy_seds/sim_<name>``
+      verbatim.
+    """
+    if isinstance(sim, (int, np.integer)):
+        return f"galaxy_seds/sim_{int(sim):03d}"
+    return f"galaxy_seds/sim_{sim}"
+
+
+# Galaxy SED store layouts: metadata column that names the array, function
+# from that column's value to the array key, and metadata column giving the
+# row inside that array.
 #   "sim"     -- build_source_catalog.py: galaxy_seds/sim_NNN, one per
-#                Galacticus sim; every array spans the whole field.
+#                Galacticus sim; every array spans the whole field. Upstream
+#                catalogs name them by string instead (see sim_array_key).
 #   "healpix" -- scripts/healpix_repartition_seds.py: galaxy_seds/hp_<uniq>,
 #                one per NESTED HEALPix pixel (MOC UNIQ key), so a cone
 #                touches only a few arrays. Declared by the galaxy_seds
 #                group attribute layout="healpix"; absent means "sim".
 _GALAXY_SED_LAYOUTS = {
-    "sim": ("sim", "galaxy_seds/sim_{:03d}", "sed_index"),
-    "healpix": ("hp_uniq", "galaxy_seds/hp_{}", "hp_row"),
+    "sim": ("sim", sim_array_key, "sed_index"),
+    "healpix": ("hp_uniq", lambda uniq: f"galaxy_seds/hp_{int(uniq)}", "hp_row"),
 }
 
 
@@ -347,13 +366,13 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
     spectra = np.zeros((n_galaxies, n_wl), dtype=np.float32)
 
     layout = galaxy_sed_layout(store)
-    group_col, key_fmt, row_col = _GALAXY_SED_LAYOUTS[layout]
+    group_col, array_key, row_col = _GALAXY_SED_LAYOUTS[layout]
 
     bad_total = 0
     bad_galaxies = []  # (sim, sed_index, n_bins, max_val)
 
     for key_val, group in galaxy_meta.groupby(group_col):
-        arr = store[key_fmt.format(int(key_val))]
+        arr = store[array_key(key_val)]
         indices = group[row_col].values
         scales = group["flux_scale"].values.astype(np.float32)
 
@@ -377,7 +396,7 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
                 row_bad = bad_mask[j]
                 if row_bad.any():
                     bad_galaxies.append((
-                        int(sims[j]), int(sed_idx[j]), int(row_bad.sum()),
+                        sims[j], int(sed_idx[j]), int(row_bad.sum()),
                         float(np.abs(seds_trimmed[j, row_bad]).max()),
                     ))
                     bad_total += int(row_bad.sum())
@@ -395,7 +414,7 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
         print(f"  WARNING: scrubbed {bad_total} pathological SED bins in "
               f"{len(unique)} unique catalog SED template(s):")
         for s, i, n, m in sorted(unique.values()):
-            print(f"    sim_{s:03d}/sed[{i}]: {n} bin(s) zeroed, "
+            print(f"    {sim_array_key(s).removeprefix('galaxy_seds/')}/sed[{i}]: {n} bin(s) zeroed, "
                   f"max abs value was {m:.3e}")
 
     return spectra

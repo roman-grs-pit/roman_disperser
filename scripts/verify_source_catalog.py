@@ -76,11 +76,20 @@ def precompute_bandpass(band, wavelengths):
 # Galaxy SED lookup (both store layouts)
 # ---------------------------------------------------------------------------
 
-# layout -> (metadata column naming the array, array-key format, row column).
+def sim_array_key(sim):
+    """Zarr key for one ``sim`` value: integer -> ``sim_NNN`` (zero-padded),
+    string (upstream catalogs, e.g. 20260917-xmm_lss) -> ``sim_<name>``.
+    Mirrors ``sim_array_key`` in build_dispersed_image.py."""
+    if isinstance(sim, (int, np.integer)):
+        return f"galaxy_seds/sim_{int(sim):03d}"
+    return f"galaxy_seds/sim_{sim}"
+
+
+# layout -> (metadata column naming the array, value -> array key, row column).
 # Mirrors _GALAXY_SED_LAYOUTS in build_dispersed_image.py.
 GALAXY_SED_LAYOUTS = {
-    "sim": ("sim", "galaxy_seds/sim_{:03d}", "sed_index"),
-    "healpix": ("hp_uniq", "galaxy_seds/hp_{}", "hp_row"),
+    "sim": ("sim", sim_array_key, "sed_index"),
+    "healpix": ("hp_uniq", lambda uniq: f"galaxy_seds/hp_{int(uniq)}", "hp_row"),
 }
 
 
@@ -94,8 +103,8 @@ def galaxy_sed_layout(store):
 
 def galaxy_sed(store, row, layout):
     """Stored (unscaled) SED of one galaxy metadata row, in either layout."""
-    group_col, key_fmt, row_col = GALAXY_SED_LAYOUTS[layout]
-    return np.array(store[key_fmt.format(int(row[group_col]))][int(row[row_col])])
+    group_col, array_key, row_col = GALAXY_SED_LAYOUTS[layout]
+    return np.array(store[array_key(row[group_col])][int(row[row_col])])
 
 
 def check_galaxy_sed_refs(galaxies, store, layout):
@@ -104,7 +113,7 @@ def check_galaxy_sed_refs(galaxies, store, layout):
     Returns a list of issue strings (empty = OK). Prints one line per array
     for the sim layout only; a HEALPix store has hundreds of pixels.
     """
-    group_col, key_fmt, row_col = GALAXY_SED_LAYOUTS[layout]
+    group_col, array_key, row_col = GALAXY_SED_LAYOUTS[layout]
     missing = [c for c in (group_col, row_col) if c not in galaxies.columns]
     if missing:
         return [f"layout {layout!r} but metadata lacks columns {missing}"]
@@ -113,7 +122,7 @@ def check_galaxy_sed_refs(galaxies, store, layout):
         issues.append(f"Some galaxies have {row_col} < 0")
     n_ok = 0
     for val, group in galaxies.groupby(group_col):
-        key = key_fmt.format(int(val))
+        key = array_key(val)
         if key not in store:
             issues.append(f"Missing Zarr array: {key}")
             continue

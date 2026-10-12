@@ -34,6 +34,15 @@ env. Golden references are untouched.
     from 2493 s to 44 s per pointing, and the pointing from 70 to 29 min.
   - `MODEL` is unchanged within the GPU golden tolerance.
 
+### Fixed
+- **String `sim` values in galaxy-SED catalogs.** Newer upstream catalogs
+  (e.g. `20260917-xmm_lss`) name each partition by its Galacticus file
+  (`sim = "romanUNIT-d601_625_16sqDeg.hdf5"`, array
+  `galaxy_seds/sim_<name>`). The driver, `verify_source_catalog.py` and the
+  HEALPix afterburner formatted keys as `sim_{int:03d}` and raised on these.
+  Integer sims still map to zero-padded `sim_NNN`, so existing catalogs
+  read exactly as before.
+
 ### Changed (`romanisim` env only)
 
 Confined to the `romanisim` pixi env, which wraps disperser output to L2.
