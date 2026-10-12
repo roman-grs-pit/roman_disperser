@@ -83,7 +83,7 @@ from roman_disperser.pipeline import (
     resolve_paths, cone_search, select_sources_per_order,
     load_sensitivities,
     make_batched_star_fori, disperse_batched_stars,
-    make_batched_galaxy_fori, disperse_batched_galaxies,
+    make_batched_galaxy_fori, disperse_batched_sersic_galaxies,
     write_fits, write_png, write_mosaic_png, write_mosaic_from_directory,
     get_code_version, get_git_sha, make_sca_keys,
 )
@@ -906,7 +906,8 @@ def process_pointing(
             #          ↓                   ↓
             #   star_spectra_all    xsca_all / ysca_all
             #                       galaxy_spectra_sel (loaded per SCA)
-            #                       galaxy_images      (generated per SCA)
+            #                       galaxy_sersic      (Sersic params per SCA;
+            #                                           images made per batch)
             #
             # star_spectra_all is a dense [n_stars_cone, N_wl] array indexed
             # by rank among stars in the cone.  To look up star spectra for
@@ -919,7 +920,7 @@ def process_pointing(
             # searchsorted(star_cone_indices, cone_pos) gives the rank within
             # the star-only array.
             #
-            # Galaxy spectra and images are both loaded/generated per SCA
+            # Galaxy spectra and Sersic params are both built per SCA
             # from is_galaxy_sel, so they share the same indexing: rank
             # among selected galaxies on this SCA.
 
@@ -938,7 +939,7 @@ def process_pointing(
             }
 
             # --- Load galaxy SEDs and generate images per SCA ---
-            galaxy_images = None
+            galaxy_sersic = None
             galaxy_spectra_sel = None
             if n_galaxies_sel > 0:
                 t0 = time.time()
@@ -951,29 +952,27 @@ def process_pointing(
                 log(f"    Galaxy SEDs: {n_galaxies_sel} spectra "
                     f"({galaxy_spectra_sel.nbytes / 1e6:.1f} MB) "
                     f"in {time.time() - t0:.2f}s")
-                t0 = time.time()
-                r_eff_pix = sersic.catalog_r_eff_to_pixels(
+                # Per-galaxy Sersic parameters only. The images themselves
+                # are generated per dispersion batch inside
+                # disperse_batched_sersic_galaxies, so GPU memory does not
+                # scale with the galaxy count (a full [N, npix, npix] cube
+                # OOMed the densest XMM-LSS SCAs on A10G).
+                r_eff_pix = np.asarray(sersic.catalog_r_eff_to_pixels(
                     jnp.array(gal_sel_meta["half_light_radius"].values,
                               dtype=jnp.float32),
                     oversample=oversample,
+                ))
+                n_sersic = np.asarray(
+                    gal_sel_meta["n"].values, dtype=np.float32
                 )
-                n_sersic = jnp.array(
-                    gal_sel_meta["n"].values, dtype=jnp.float32
+                ba = np.asarray(
+                    gal_sel_meta["ba"].values, dtype=np.float32
                 )
-                ba = jnp.array(
-                    gal_sel_meta["ba"].values, dtype=jnp.float32
-                )
-                theta = sersic.sky_pa_to_sca_theta(
+                theta = np.asarray(sersic.sky_pa_to_sca_theta(
                     jnp.array(gal_sel_meta["pa"].values, dtype=jnp.float32),
                     pointing_pa,
-                )
-                galaxy_images = sersic.make_sersic_images(
-                    r_eff_pix, n_sersic, ba, theta, galaxy_npix_os,
-                )
-                galaxy_images.block_until_ready()
-                log(f"    Sersic images: {n_galaxies_sel} galaxies "
-                    f"({galaxy_images.nbytes / 1e6:.1f} MB) "
-                    f"in {time.time() - t0:.2f}s")
+                ))
+                galaxy_sersic = (r_eff_pix, n_sersic, ba, theta)
 
             # --- Disperse per order ---
             for order in element.orders:
@@ -1022,12 +1021,12 @@ def process_pointing(
                     x_gal = xsca_all_np[gal_omask]
                     y_gal = ysca_all_np[gal_omask]
                     spec_gal = galaxy_spectra_sel[gal_rank_in_sel]
-                    imgs_gal = galaxy_images[gal_rank_in_sel]
+                    sersic_gal = tuple(p[gal_rank_in_sel] for p in galaxy_sersic)
 
                     t_order = time.time()
-                    output = disperse_batched_galaxies(
+                    output = disperse_batched_sersic_galaxies(
                         galaxy_fori_fns[order],
-                        spec_gal, x_gal, y_gal, imgs_gal,
+                        spec_gal, x_gal, y_gal, sersic_gal, galaxy_npix_os,
                         output, galaxy_batch_size,
                     )
                     elapsed = time.time() - t_order

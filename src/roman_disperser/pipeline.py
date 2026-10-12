@@ -31,6 +31,7 @@ from PIL import Image
 from roman_disperser import catalog
 from roman_disperser import elements
 from roman_disperser import paths
+from roman_disperser import sersic
 from roman_disperser.optical_model import RomanOpticalModel
 import roman_disperser.optical_model_jax as omj
 from roman_disperser import galaxy_disperser
@@ -550,6 +551,88 @@ def disperse_batched_galaxies(fori_fn, spectra, xsca, ysca, images, output,
         # Pad images (already on GPU, slice + pad)
         img_batch = jnp.zeros((batch_size, npix, npix), dtype=jnp.float32)
         img_batch = img_batch.at[:n_actual].set(images[start:end])
+
+        output = fori_fn(
+            n_actual,
+            jnp.array(spec_batch),
+            jnp.array(x_batch),
+            jnp.array(y_batch),
+            img_batch,
+            output,
+        )
+
+    output.block_until_ready()
+    return output
+
+
+# Padding values for unused rows of a partial Sersic batch: a benign round
+# profile, so the padded images are finite. They are never deposited, because
+# the fori_loop stops at n_actual.
+_SERSIC_PAD = (1.0, 1.0, 1.0, 0.0)  # r_eff_pix, n, ba, theta
+
+
+def disperse_batched_sersic_galaxies(fori_fn, spectra, xsca, ysca,
+                                     sersic_params, npix, output, batch_size):
+    """Disperse galaxies in batches, generating each batch's Sersic images.
+
+    Same result as building all images with ``sersic.make_sersic_images``
+    and calling :func:`disperse_batched_galaxies`, but GPU memory scales
+    with ``batch_size`` instead of the number of galaxies.
+
+    Why: ``make_sersic_images`` is an un-jitted ``vmap``, so it runs op by
+    op and materializes every intermediate (rotated coordinates, radius,
+    profile, sum, quotient) at the full ``[N, npix, npix]`` size -- ~2.1 GB
+    each for N = 36.5k galaxies at npix = 120 (float32), ~5 alive at once.
+    On an A10G (16.55 GiB JAX limit) that OOMed the densest XMM-LSS SCAs
+    (34-37k galaxies) at the final divide (``jit_true_divide``).
+
+    Each batch is generated with the same un-jitted ``make_sersic_images``
+    call, which is elementwise per galaxy, so the images are bit-identical
+    to the all-at-once call (checked on CPU, 3000 galaxies). Jitting the
+    generator would fuse it and change images at the ~1e-5 relative level,
+    so it is deliberately not jitted.
+
+    Parameters
+    ----------
+    fori_fn : compiled fori_loop from make_batched_galaxy_fori
+    spectra : ndarray [N, N_wl]
+    xsca, ysca : ndarray [N]
+    sersic_params : tuple of 4 array-likes [N]
+        ``(r_eff_pix, n, ba, theta)`` as taken by
+        ``sersic.make_sersic_images``: half-light radius in oversampled
+        pixels, Sersic index, axis ratio, SCA-frame angle in radians.
+    npix : int
+        Oversampled image size (``galaxy_npix * oversample``).
+    output : jnp.ndarray [4088, 4088]
+    batch_size : int
+
+    Returns
+    -------
+    output : jnp.ndarray [4088, 4088]
+    """
+    n_sources = len(xsca)
+    n_wl = spectra.shape[1]
+    params = [np.asarray(p, dtype=np.float32) for p in sersic_params]
+    n_batches = (n_sources + batch_size - 1) // batch_size
+
+    for b in range(n_batches):
+        start = b * batch_size
+        end = min(start + batch_size, n_sources)
+        n_actual = end - start
+
+        spec_batch = np.zeros((batch_size, n_wl), dtype=np.float32)
+        x_batch = np.zeros(batch_size, dtype=np.float32)
+        y_batch = np.zeros(batch_size, dtype=np.float32)
+        spec_batch[:n_actual] = spectra[start:end]
+        x_batch[:n_actual] = xsca[start:end]
+        y_batch[:n_actual] = ysca[start:end]
+
+        p_batch = []
+        for p, pad in zip(params, _SERSIC_PAD):
+            pb = np.full(batch_size, pad, dtype=np.float32)
+            pb[:n_actual] = p[start:end]
+            p_batch.append(jnp.asarray(pb))
+        img_batch = sersic.make_sersic_images(*p_batch, npix)
 
         output = fori_fn(
             n_actual,

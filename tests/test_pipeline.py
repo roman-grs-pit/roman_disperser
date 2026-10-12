@@ -111,3 +111,45 @@ class TestWriteFitsHeaders:
 
     def test_extra_headers_still_applied(self, written):
         assert written["MA_TABLE"] == 1036
+
+
+class TestDisperseBatchedSersicGalaxies:
+    """Per-batch Sersic generation (the A10G OOM fix) changes no inputs."""
+
+    def test_matches_all_at_once(self):
+        import jax.numpy as jnp
+        from roman_disperser import sersic
+        from roman_disperser.pipeline import (
+            disperse_batched_galaxies, disperse_batched_sersic_galaxies)
+
+        rng = np.random.default_rng(7)
+        n, n_wl, npix, batch = 23, 11, 40, 5  # 23 = 4 full batches + 3
+        spectra = rng.random((n, n_wl), dtype=np.float32)
+        x = rng.uniform(0, 4088, n).astype(np.float32)
+        y = rng.uniform(0, 4088, n).astype(np.float32)
+        params = (rng.uniform(0.5, 15, n).astype(np.float32),
+                  rng.uniform(0.3, 4, n).astype(np.float32),
+                  rng.uniform(0.1, 1, n).astype(np.float32),
+                  rng.uniform(-3, 3, n).astype(np.float32))
+
+        def recorder():
+            # Stand-in fori_fn: record exactly what each batch passes in
+            # for its first n_actual rows; returns output unchanged.
+            seen = []
+            def fori_fn(n_actual, spec, xs, ys, imgs, out):
+                seen.append((np.asarray(spec[:n_actual]), np.asarray(xs[:n_actual]),
+                             np.asarray(ys[:n_actual]), np.asarray(imgs[:n_actual])))
+                return out
+            return fori_fn, seen
+
+        out0 = jnp.zeros((4, 4), dtype=jnp.float32)
+        f_old, seen_old = recorder()
+        images = sersic.make_sersic_images(*(jnp.asarray(p) for p in params), npix)
+        disperse_batched_galaxies(f_old, spectra, x, y, images, out0, batch)
+        f_new, seen_new = recorder()
+        disperse_batched_sersic_galaxies(f_new, spectra, x, y, params, npix, out0, batch)
+
+        assert len(seen_old) == len(seen_new) == 5
+        for a, b in zip(seen_old, seen_new):
+            for u, v in zip(a, b):
+                np.testing.assert_array_equal(u, v)  # bitwise, images included

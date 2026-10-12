@@ -35,6 +35,15 @@ env. Golden references are untouched.
   - `MODEL` is unchanged within the GPU golden tolerance.
 
 ### Fixed
+- **GPU OOM on dense SCAs (A10G).** The driver built every galaxy's Sersic
+  image for an SCA at once with `sersic.make_sersic_images`, an un-jitted
+  `vmap` that materializes each intermediate at full `[N, 120, 120]` size
+  (~2.1 GB per array at N = 36.5k). XMM-LSS SCAs with 34–37k galaxies OOMed
+  at the final divide (`jit_true_divide`) on a 24 GB card. New
+  `pipeline.disperse_batched_sersic_galaxies` generates each dispersion
+  batch's images on the fly, so GPU memory scales with `galaxy_batch_size`.
+  Images are bit-identical (same un-jitted call per batch); the golden
+  renderer now uses the same path. `disperse_batched_galaxies` is unchanged.
 - **String `sim` values in galaxy-SED catalogs.** Newer upstream catalogs
   (e.g. `20260917-xmm_lss`) name each partition by its Galacticus file
   (`sim = "romanUNIT-d601_625_16sqDeg.hdf5"`, array
