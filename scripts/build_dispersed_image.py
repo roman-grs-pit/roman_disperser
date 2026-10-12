@@ -253,6 +253,37 @@ def validate_catalog(meta, store, wavelengths, element):
             print(f"  WARNING: {n_large} galaxies have half_light_radius > 1 arcsec")
 
 
+def memory_report():
+    """One-line device + host memory summary, logged after each SCA.
+
+    GPU: JAX allocator stats for device 0 in GiB -- ``in_use`` now,
+    ``peak`` since process start (so it is a running max across SCAs),
+    ``limit`` = the allocator's cap (by default 75% of card memory, with or
+    without preallocation), ``largest_free`` = largest contiguous free block
+    (fragmentation indicator; 0 when the allocator does not report it).
+    Absent on CPU backends. Host: ``VmHWM`` (peak RSS) from /proc, in GiB.
+    Ported from Keith Buckholz's XMM fork, which used it to diagnose OOMs.
+    """
+    parts = []
+    try:
+        s = jax.devices()[0].memory_stats() or {}
+    except Exception:  # backend without memory_stats
+        s = {}
+    if "bytes_in_use" in s:
+        g = 2**30
+        parts.append(f"GPU: in_use={s['bytes_in_use'] / g:.2f} "
+                     f"peak={s.get('peak_bytes_in_use', 0) / g:.2f} "
+                     f"limit={s.get('bytes_limit', 0) / g:.2f} "
+                     f"largest_free={s.get('largest_free_block_bytes', 0) / g:.2f} GiB")
+    try:
+        with open("/proc/self/status") as f:
+            hwm = next(int(l.split()[1]) for l in f if l.startswith("VmHWM:"))
+        parts.append(f"host VmHWM={hwm / 2**20:.2f} GiB")
+    except (OSError, StopIteration):
+        pass
+    return "; ".join(parts)
+
+
 def trim_wavelength_grid(wavelengths, element):
     """Trim the catalog wavelength grid to the element's band.
 
@@ -1088,6 +1119,7 @@ def process_pointing(
             f"FITS {t_fits:.2f}s, PNG {t_png:.2f}s")
         log(f"    Total: {elapsed_sca:.2f}s, flux={output_np.sum():.4e}, "
             f"peak={output_np.max():.4e}")
+        log(f"    Memory: {memory_report()}")
 
     # -- Mosaic PNG ----------------------------------------------------------
     if len(sca_list) > 1:
