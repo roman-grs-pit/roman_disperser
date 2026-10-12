@@ -28,6 +28,8 @@ jupyterlab = "*"
 [environments]
 default = ["cpu"]
 cuda = ["cuda"]
+cuda-cf010 = ["jaxcf010"]
+cuda-pypi011 = ["jaxpypi011"]
 romanisim = { features = ["romanisim"], no-default-feature = true }
 
 # --- FEATURES ---
@@ -85,3 +87,22 @@ romanisim = "==0.15.0"
 
 [feature.romanisim.tasks]
 hydrate-romanisim = "python scripts/hydrate_romanisim.py"
+
+# --- jax-version exploration (branch explore/jax-versions; thread xmm-scale-perf step 7) ---
+# Not for merge: two extra CUDA envs to time newer jax against the locked 0.7.2.
+#   cuda-cf010  : conda-forge jax/jaxlib 0.10.2, CUDA 12 build (same packaging as `cuda`)
+#   cuda-pypi011: PyPI jax[cuda12]==0.11.2 (wheels + nvidia-* pip libs), no conda jax
+[feature.jaxcf010]
+platforms = ["linux-64"]
+system-requirements = { cuda = "12" }
+
+[feature.jaxcf010.dependencies]
+jax = "==0.10.2"
+jaxlib = { version = "==0.10.2", build = "cuda12*" }
+
+[feature.jaxpypi011]
+platforms = ["linux-64"]
+system-requirements = { cuda = "12" }
+
+[feature.jaxpypi011.pypi-dependencies]
+jax = { version = "==0.11.2", extras = ["cuda12"] }
