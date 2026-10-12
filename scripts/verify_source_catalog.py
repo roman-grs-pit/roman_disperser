@@ -38,6 +38,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pyarrow.parquet as pq
 import zarr
 
@@ -155,11 +156,18 @@ def check_metadata_consistency(df, store):
     else:
         print(f"  Types: OK ({dict(df['type'].value_counts())})")
 
+    # `sim` naming: integer catalogs (build_source_catalog.py) give stars
+    # sim = 0 and galaxies sim >= 1; string catalogs (upstream, e.g.
+    # 20260917-xmm_lss) give stars sim = "PSF" and galaxies a Galacticus
+    # file name. See sim_array_key.
+    int_sims = pd.api.types.is_integer_dtype(df["sim"])
+    star_sim = 0 if int_sims else "PSF"
+
     # Stars
     stars = df[df["type"] == "PSF"]
     if len(stars) > 0:
-        if not (stars["sim"] == 0).all():
-            issues.append("Some stars have sim != 0")
+        if not (stars["sim"] == star_sim).all():
+            issues.append(f"Some stars have sim != {star_sim!r}")
         # For stars, flux_scale equals F158 (maggies): the template is normalized
         # to 0 ABmag F158 (= 1 maggie), so the per-source flux scale is the F158
         # flux in maggies.
@@ -186,8 +194,10 @@ def check_metadata_consistency(df, store):
             issues.append("Some galaxies have flux_scale != 1.0")
         else:
             print("  Galaxy flux_scale: OK (all 1.0)")
-        if (galaxies["sim"] <= 0).any():
+        if int_sims and (galaxies["sim"] <= 0).any():
             issues.append("Some galaxies have sim <= 0")
+        if not int_sims and galaxies["sim"].isin(["", "PSF"]).any():
+            issues.append("Some galaxies have an empty or 'PSF' sim")
 
         layout = galaxy_sed_layout(store)
         print(f"  Galaxy SED layout: {layout}")
