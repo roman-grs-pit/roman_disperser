@@ -119,7 +119,7 @@ from roman_disperser import elements, galaxy_disperser, paths, psf_model, sersic
 from roman_disperser.optical_model import RomanOpticalModel
 from roman_disperser.pipeline import (
     DETECTOR_SIZE,
-    disperse_batched_galaxies,
+    disperse_batched_sersic_galaxies,
     disperse_batched_stars,
     load_sensitivities,
     make_batched_galaxy_fori,
@@ -234,10 +234,9 @@ def render_frame(element_name, order, dlam_A):
     names, xs, ys, r_effs, n_sers, bas, thetas = zip(*GALAXIES)
     r_eff_pix = sersic.catalog_r_eff_to_pixels(
         jnp.array(r_effs, dtype=jnp.float32), oversample=oversample)
-    images = sersic.make_sersic_images(
-        r_eff_pix, jnp.array(n_sers, dtype=jnp.float32),
-        jnp.array(bas, dtype=jnp.float32), jnp.array(thetas, dtype=jnp.float32),
-        npix_os)
+    sersic_params = (r_eff_pix, np.array(n_sers, dtype=np.float32),
+                     np.array(bas, dtype=np.float32),
+                     np.array(thetas, dtype=np.float32))
 
     lam_c_um = 0.5 * (element.lam_min + element.lam_max)
     gal_spectra = np.stack([
@@ -248,10 +247,11 @@ def render_frame(element_name, order, dlam_A):
     gal_fori = make_batched_galaxy_fori(gd_fn, sens, wl_jax, dlam_A)
 
     output = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32)
-    output = disperse_batched_galaxies(
+    # Same per-batch Sersic path as the production driver.
+    output = disperse_batched_sersic_galaxies(
         gal_fori, gal_spectra,
         np.array(xs, dtype=np.float32), np.array(ys, dtype=np.float32),
-        images, output, batch_size=len(GALAXIES))
+        sersic_params, npix_os, output, batch_size=len(GALAXIES))
 
     # --- stars ---
     s_names, s_xs, s_ys = zip(*STARS)
