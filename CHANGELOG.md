@@ -7,11 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Environment-only change, confined to the `romanisim` pixi env, which wraps
-disperser output to L2. The disperser code, the `default`/`cuda` envs and
-the golden references are all untouched.
+Two changes. A HEALPix galaxy-SED store layout with its afterburner and
+reader support: no results change, and catalogs in the existing layout read
+exactly as before. And an environment-only change to the `romanisim` pixi
+env. Golden references are untouched.
 
-### Changed
+### Added
+- **HEALPix galaxy-SED store** ([`docs/healpix_sed_store.md`](docs/healpix_sed_store.md)).
+  - `scripts/healpix_repartition_seds.py` (`plan` / `fill` / `verify`) and
+    the SLURM driver `scripts/slurm_healpix_repartition.sh` rewrite a
+    catalog's galaxy SEDs into one single-shard array per NESTED HEALPix
+    pixel (`galaxy_seds/hp_<uniq>`).
+  - Pixels are split adaptively to ~0.5 GB compressed. The output is a new
+    sibling catalog whose `metadata.parquet` gains `hp_uniq` / `hp_row`.
+  - `verify` checks every pixel and compares random rows bitwise against the
+    source. The driver's verify job then also runs `verify_source_catalog.py`
+    on the new catalog.
+  - New pixi dependency: `astropy-healpix` (used by the afterburner only).
+- **`verify_source_catalog.py` reads either layout** and gains
+  `--skip-provenance`. RA-padded catalogs such as `catalogs_padded` fail
+  provenance by construction, because the pad shift is not recorded.
+- **`build_dispersed_image.py` reads either layout**, detected by the
+  `galaxy_seds` attribute `layout` (absent means `sim`, as before).
+  - For a HEALPix store it reads each needed pixel whole.
+  - On the acceptance catalog (4-roll VISIT 1, A10G) galaxy-SED reads fell
+    from 2493 s to 44 s per pointing, and the pointing from 70 to 29 min.
+  - `MODEL` is unchanged within the GPU golden tolerance.
+
+### Fixed
+- **String `sim` values in galaxy-SED catalogs.** Newer upstream catalogs
+  (e.g. `20260917-xmm_lss`) name each partition by its Galacticus file
+  (`sim = "romanUNIT-d601_625_16sqDeg.hdf5"`, array
+  `galaxy_seds/sim_<name>`). The driver, `verify_source_catalog.py` and the
+  HEALPix afterburner formatted keys as `sim_{int:03d}` and raised on these.
+  Integer sims still map to zero-padded `sim_NNN`, so existing catalogs
+  read exactly as before.
+
+### Changed (`romanisim` env only)
+
+Confined to the `romanisim` pixi env, which wraps disperser output to L2.
+The disperser code and the `default`/`cuda` envs are untouched.
+
 - **`romanisim` env: upstream romanisim 0.15.0 replaces the
   `roman-grs-pit/romanisim@extra_counts` fork.** The fork's patches are
   upstream as of romanisim 0.15.0: named-HDU `--extra-counts` and

@@ -143,6 +143,7 @@ pytest -v tests/test_psf_model.py           # PSF model tests
 - [JIT Compilation Strategy](docs/jit_compilation.md) — Closure pattern for non-traceable payloads
 - [STPSF Quick Reference](docs/stpsf.md) — Roman WFI PSF generation
 - [Catalog Format](data/catalogs/README.md) — Unified source catalog format specification
+- [HEALPix SED Store](docs/healpix_sed_store.md) — Sky-ordered galaxy-SED layout (afterburner + reader); ~2.4× faster pointings on S3
 
 **Design notes** (historical implementation plans, kept as the record of how
 the modules were built — phase markers and open questions reflect the state

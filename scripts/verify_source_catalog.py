@@ -9,11 +9,28 @@ Checks:
 2. Round-trip F158 magnitude (integrate SED through F158 bandpass, compare to catalog mag)
 3. F184 color diagnostic (integrate through F184, compare to Galacticus FITS index)
 4. Star SED shape sanity
+5. Source provenance (RA, Dec, F158 vs the Galacticus / star inputs)
+6. Synphot integration (per-source normalisation vs the catalog SED)
+
+Both galaxy-SED store layouts are supported: ``sim`` (``galaxy_seds/sim_NNN``
+indexed by ``sed_index``, as written by build_source_catalog.py) and
+``healpix`` (``galaxy_seds/hp_<uniq>`` indexed by ``hp_row``, as written by
+healpix_repartition_seds.py; see docs/healpix_sed_store.md). The layout is
+read from the ``galaxy_seds`` group attribute ``layout`` (absent = ``sim``).
+Checks that use only metadata (provenance groups by ``sim``) are
+layout-independent, because a HEALPix catalog keeps ``sim``/``sed_index``.
+
+Provenance compares RA/Dec with the original inputs, so an RA-padded catalog
+(pad_catalog.py, e.g. the acceptance ``catalogs_padded``) fails it *by
+construction* (max |dRA| = the pad shift). Use ``--skip-provenance`` there;
+the shift is not recorded in the catalog, so it cannot be undone here.
 
 Usage
 -----
 pixi run python scripts/verify_source_catalog.py --catalog-dir /tmp/test_catalog
 pixi run python scripts/verify_source_catalog.py --catalog-dir /tmp/test_catalog --skip-f184
+pixi run python scripts/verify_source_catalog.py --catalog-dir <padded or *_hp catalog> \\
+    --skip-f184 --skip-provenance
 """
 
 import argparse
@@ -21,6 +38,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pyarrow.parquet as pq
 import zarr
 
@@ -56,6 +74,72 @@ def precompute_bandpass(band, wavelengths):
 
 
 # ---------------------------------------------------------------------------
+# Galaxy SED lookup (both store layouts)
+# ---------------------------------------------------------------------------
+
+def sim_array_key(sim):
+    """Zarr key for one ``sim`` value: integer -> ``sim_NNN`` (zero-padded),
+    string (upstream catalogs, e.g. 20260917-xmm_lss) -> ``sim_<name>``.
+    Mirrors ``sim_array_key`` in build_dispersed_image.py."""
+    if isinstance(sim, (int, np.integer)):
+        return f"galaxy_seds/sim_{int(sim):03d}"
+    return f"galaxy_seds/sim_{sim}"
+
+
+# layout -> (metadata column naming the array, value -> array key, row column).
+# Mirrors _GALAXY_SED_LAYOUTS in build_dispersed_image.py.
+GALAXY_SED_LAYOUTS = {
+    "sim": ("sim", sim_array_key, "sed_index"),
+    "healpix": ("hp_uniq", lambda uniq: f"galaxy_seds/hp_{int(uniq)}", "hp_row"),
+}
+
+
+def galaxy_sed_layout(store):
+    """Galaxy-SED layout of an opened store: "sim" (default) or "healpix"."""
+    layout = store["galaxy_seds"].attrs.get("layout", "sim")
+    if layout not in GALAXY_SED_LAYOUTS:
+        raise ValueError(f"Unknown galaxy_seds layout {layout!r}")
+    return layout
+
+
+def galaxy_sed(store, row, layout):
+    """Stored (unscaled) SED of one galaxy metadata row, in either layout."""
+    group_col, array_key, row_col = GALAXY_SED_LAYOUTS[layout]
+    return np.array(store[array_key(row[group_col])][int(row[row_col])])
+
+
+def check_galaxy_sed_refs(galaxies, store, layout):
+    """Every galaxy's SED array exists and its row index is in [0, n_sources).
+
+    Returns a list of issue strings (empty = OK). Prints one line per array
+    for the sim layout only; a HEALPix store has hundreds of pixels.
+    """
+    group_col, array_key, row_col = GALAXY_SED_LAYOUTS[layout]
+    missing = [c for c in (group_col, row_col) if c not in galaxies.columns]
+    if missing:
+        return [f"layout {layout!r} but metadata lacks columns {missing}"]
+    issues = []
+    if (galaxies[row_col] < 0).any():
+        issues.append(f"Some galaxies have {row_col} < 0")
+    n_ok = 0
+    for val, group in galaxies.groupby(group_col):
+        key = array_key(val)
+        if key not in store:
+            issues.append(f"Missing Zarr array: {key}")
+            continue
+        n_sources_attr = store[key].attrs.get("n_sources", store[key].shape[0])
+        if group[row_col].max() >= n_sources_attr:
+            issues.append(f"{key}: {row_col} {group[row_col].max()} >= n_sources {n_sources_attr}")
+        else:
+            n_ok += 1
+            if layout == "sim":
+                print(f"  sim {val}: sed_index range OK (0-{group[row_col].max()} / {n_sources_attr})")
+    if layout != "sim":
+        print(f"  {layout}: {n_ok} arrays with {row_col} in range")
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # Check 1: Metadata consistency
 # ---------------------------------------------------------------------------
 
@@ -72,11 +156,18 @@ def check_metadata_consistency(df, store):
     else:
         print(f"  Types: OK ({dict(df['type'].value_counts())})")
 
+    # `sim` naming: integer catalogs (build_source_catalog.py) give stars
+    # sim = 0 and galaxies sim >= 1; string catalogs (upstream, e.g.
+    # 20260917-xmm_lss) give stars sim = "PSF" and galaxies a Galacticus
+    # file name. See sim_array_key.
+    int_sims = pd.api.types.is_integer_dtype(df["sim"])
+    star_sim = 0 if int_sims else "PSF"
+
     # Stars
     stars = df[df["type"] == "PSF"]
     if len(stars) > 0:
-        if not (stars["sim"] == 0).all():
-            issues.append("Some stars have sim != 0")
+        if not (stars["sim"] == star_sim).all():
+            issues.append(f"Some stars have sim != {star_sim!r}")
         # For stars, flux_scale equals F158 (maggies): the template is normalized
         # to 0 ABmag F158 (= 1 maggie), so the per-source flux scale is the F158
         # flux in maggies.
@@ -103,19 +194,14 @@ def check_metadata_consistency(df, store):
             issues.append("Some galaxies have flux_scale != 1.0")
         else:
             print("  Galaxy flux_scale: OK (all 1.0)")
-        if (galaxies["sim"] <= 0).any():
+        if int_sims and (galaxies["sim"] <= 0).any():
             issues.append("Some galaxies have sim <= 0")
+        if not int_sims and galaxies["sim"].isin(["", "PSF"]).any():
+            issues.append("Some galaxies have an empty or 'PSF' sim")
 
-        for sim_num, group in galaxies.groupby("sim"):
-            key = f"galaxy_seds/sim_{sim_num:03d}"
-            if key not in store:
-                issues.append(f"Missing Zarr array: {key}")
-                continue
-            n_sources_attr = store[key].attrs.get("n_sources", store[key].shape[0])
-            if group["sed_index"].max() >= n_sources_attr:
-                issues.append(f"sim {sim_num}: sed_index {group['sed_index'].max()} >= n_sources {n_sources_attr}")
-            else:
-                print(f"  sim {sim_num}: sed_index range OK (0-{group['sed_index'].max()} / {n_sources_attr})")
+        layout = galaxy_sed_layout(store)
+        print(f"  Galaxy SED layout: {layout}")
+        issues += check_galaxy_sed_refs(galaxies, store, layout)
 
     # src_index
     if "src_index" in df.columns:
@@ -167,11 +253,11 @@ def check_f158_roundtrip(df, store, n_check=500):
     galaxies = df[df["type"] == "SER"]
     n_gal_check = min(n_check, len(galaxies))
     if n_gal_check > 0:
+        layout = galaxy_sed_layout(store)
         gal_sample = galaxies.sample(n=n_gal_check, random_state=42)
         errors = []
         for _, row in gal_sample.iterrows():
-            key = f"galaxy_seds/sim_{row['sim']:03d}"
-            sed = np.array(store[key][row["sed_index"]]) * row["flux_scale"]
+            sed = galaxy_sed(store, row, layout) * row["flux_scale"]
             errors.append(bandpass_mag(sed, w158, n158, mf0_158)
                           - mag_from_maggies(row["F158"]))
         err = np.array(errors)
@@ -223,6 +309,7 @@ def check_f184_color(df, store, galacticus_dir, n_check=500):
     galaxies = df[df["type"] == "SER"]
     n_gal_check = min(n_check, len(galaxies))
     gal_sample = galaxies.sample(n=n_gal_check, random_state=42)
+    layout = galaxy_sed_layout(store)
 
     color_errors = []
     for _, row in gal_sample.iterrows():
@@ -240,8 +327,7 @@ def check_f184_color(df, store, galacticus_dir, n_check=500):
         ref_f184 = fits_mag184[sim_mask][best]
 
         # Compute synthetic F184 from our catalog SED
-        key = f"galaxy_seds/sim_{row['sim']:03d}"
-        sed = np.array(store[key][row["sed_index"]]) * row["flux_scale"]
+        sed = galaxy_sed(store, row, layout) * row["flux_scale"]
         mag184_synth = bandpass_mag(sed, w184, n184, mf0_184)
         if np.isnan(mag184_synth):
             continue
@@ -434,6 +520,7 @@ def check_synphot_integration(df, store, galacticus_dir, n_check=10):
     )
 
     galaxies = df[df["type"] == "SER"]
+    layout = galaxy_sed_layout(store)
     ok = True
 
     for sim_num, group in galaxies.groupby("sim"):
@@ -461,9 +548,7 @@ def check_synphot_integration(df, store, galacticus_dir, n_check=10):
                 synphot_sed = norm_sp(wl_qty, flux_unit=syn.units.FLAM).value
 
                 # Our catalog SED
-                catalog_sed = np.array(
-                    store[f"galaxy_seds/sim_{sim_num:03d}"][row["sed_index"]]
-                )
+                catalog_sed = galaxy_sed(store, row, layout)
 
                 # Compare SED values where signal is significant
                 mask = synphot_sed > synphot_sed.max() * 1e-6
@@ -512,6 +597,9 @@ def main():
                         help="Star catalog directory")
     parser.add_argument("--skip-f184", action="store_true",
                         help="Skip F184 color diagnostic")
+    parser.add_argument("--skip-provenance", action="store_true",
+                        help="Skip the source-provenance check (needed for RA-padded "
+                             "catalogs, which fail it by construction)")
     parser.add_argument("--n-check", type=int, default=500,
                         help="Number of sources to check per test")
     args = parser.parse_args()
@@ -555,7 +643,10 @@ def main():
     all_ok &= check_star_sed_sanity(df, store)
 
     # 5. Source provenance (RA, Dec, mag match originals)
-    all_ok &= check_source_provenance(df, args.galacticus_dir, args.star_dir)
+    if not args.skip_provenance:
+        all_ok &= check_source_provenance(df, args.galacticus_dir, args.star_dir)
+    else:
+        print("\n=== Source Provenance: SKIPPED ===")
 
     # 6. Synphot integration (vectorized vs per-source)
     if not args.skip_f184:  # reuses galacticus_dir

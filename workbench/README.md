@@ -25,6 +25,7 @@ any depth, via `workbench/**/data/`).
 | `20260505-acceptance-testing-aws/` | AWS rerun after catalog SED scrubber fix; SLURM-array on gpu-med a10g |
 | `20260508-romanisim-wrap/` | Romanisim L2 wrap of the spectro acceptance run (mem-lg array + S3 archive) |
 | `20260731-ssc-line-grid/` | SSC line-grid campaign, v0.13.0 rerun — three waves plus the before/after analysis (see below) |
+| `20261011-sed-store-ab/` | A/B of the HEALPix galaxy-SED store vs the sim store on one 4-roll pointing (A10G): timing + MODEL golden-tolerance check (see `docs/healpix_sed_store.md`) |
 
 ### `20260731-ssc-line-grid/`
 
