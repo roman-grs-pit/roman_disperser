@@ -12,6 +12,7 @@ Key functions:
 - prepare_galaxy_images: Warp + PSF convolve at all PSF grid wavelengths
 - disperse_galaxy: Full galaxy dispersion with wavelength chunking
 - make_galaxy_disperser: Factory for JIT-compiled galaxy dispersion
+- disperse_galaxy_jit: Jitted disperse_galaxy taking payload arrays as arguments
 
 All wavelength parameters are in **microns** (consistent with the optical model).
 
@@ -29,10 +30,13 @@ Approximations and what is exact:
 See docs/galaxy_dispersion_plan.md for the design document.
 """
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import jax.scipy.signal
 
+from . import jit_payload
 from . import optical_model_jax as omj
 from . import psf_model
 from . import star_disperser
@@ -372,7 +376,14 @@ def disperse_galaxy(
 
 
 def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000):
-    """Create a JIT-compiled galaxy disperser with payloads captured in closure.
+    """Create a JIT-compiled galaxy disperser for one (SCA, order).
+
+    The payload *arrays* are passed to :func:`disperse_galaxy_jit` as jit
+    arguments rather than captured as constants, so dispersers built for
+    different SCAs share one compiled program (see ``jit_payload``). The
+    returned function carries ``.payload_args = (arrays, static,
+    chunk_size)``, which ``pipeline.make_batched_galaxy_fori`` uses to keep
+    the payloads as arguments in the batched loop too.
 
     Parameters
     ----------
@@ -406,18 +417,31 @@ def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000):
             f"places the PSF center at the cross-hairs of central pixels."
         )
 
-    @jax.jit
+    arrays, static = jit_payload.split_payloads(psf_payload, optical_payload)
+
     def disperse_fn(image, x0, y0, spectrum, wavelengths, output):
-        return disperse_galaxy(
-            optical_payload,
-            psf_payload,
-            image,
-            x0,
-            y0,
-            spectrum,
-            wavelengths,
-            output,
-            chunk_size,
+        return disperse_galaxy_jit(
+            arrays, image, x0, y0, spectrum, wavelengths, output,
+            static=static, chunk_size=chunk_size,
         )
 
+    disperse_fn.payload_args = (arrays, static, chunk_size)
     return disperse_fn
+
+
+@partial(jax.jit, static_argnames=("static", "chunk_size"))
+def disperse_galaxy_jit(arrays, image, x0, y0, spectrum, wavelengths, output,
+                        *, static, chunk_size=2000):
+    """Jitted :func:`disperse_galaxy` with the payloads as arguments.
+
+    ``arrays, static = jit_payload.split_payloads(psf_payload,
+    optical_payload)`` (note: PSF first, matching the factories, although
+    :func:`disperse_galaxy` takes the optical payload first). One compile
+    serves every SCA with the same shapes and ``static``; see
+    :func:`star_disperser.disperse_star_jit`.
+    """
+    psf_payload, optical_payload = jit_payload.merge_payloads(arrays, static)
+    return disperse_galaxy(
+        optical_payload, psf_payload, image, x0, y0, spectrum, wavelengths,
+        output, chunk_size,
+    )

@@ -10,15 +10,19 @@ Key functions:
 - deposit_psf: Deposit a single PSF onto the detector
 - disperse_star_psf: Disperse a star using wavelength-dependent PSFs
 - make_star_disperser: Factory for JIT-compiled star dispersion
+- disperse_star_jit: Jitted disperse_star_psf taking payload arrays as arguments
 
 All wavelength parameters are in **microns** (consistent with the optical model).
 
 See docs/star_dispersion.md for the design document.
 """
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 
+from . import jit_payload
 from . import optical_model_jax as omj
 from . import psf_model
 
@@ -519,9 +523,15 @@ def make_star_disperser(psf_payload, optical_payload, chunk_size=2000):
 
     Notes
     -----
-    - The PSF and optical payloads are captured in the closure
-    - First call compiles the function (may take a few seconds)
-    - Subsequent calls use the cached compiled function
+    - The payload *arrays* are passed to :func:`disperse_star_jit` as jit
+      arguments (not captured as constants), so dispersers for different
+      SCAs share one compiled program; only shapes and the few static
+      ints/strings in ``jit_payload`` key the compile.
+    - The returned function carries ``.payload_args = (arrays, static,
+      chunk_size)``; ``pipeline.make_batched_star_fori`` uses it to keep the
+      payloads as arguments in the batched loop too.
+    - First call compiles (tens of seconds on GPU); later calls, including
+      dispersers built for other SCAs, reuse the compiled program
     - Memory usage is controlled by chunk_size and is independent of
       total wavelength count, enabling fine wavelength sampling (e.g., 1Å)
     """
@@ -534,7 +544,8 @@ def make_star_disperser(psf_payload, optical_payload, chunk_size=2000):
             f"places the PSF center at the cross-hairs of central pixels."
         )
 
-    @jax.jit
+    arrays, static = jit_payload.split_payloads(psf_payload, optical_payload)
+
     def disperse_star(xsca, ysca, wavelengths, flux, output):
         """
         Disperse a single star.
@@ -555,15 +566,32 @@ def make_star_disperser(psf_payload, optical_payload, chunk_size=2000):
         output : jnp.ndarray
             Updated detector array
         """
-        return disperse_star_psf(
-            psf_payload,
-            optical_payload,
-            xsca,
-            ysca,
-            wavelengths,
-            flux,
-            output,
-            chunk_size=chunk_size,
+        return disperse_star_jit(
+            arrays, xsca, ysca, wavelengths, flux, output,
+            static=static, chunk_size=chunk_size,
         )
 
+    # Exposed so pipeline.make_batched_star_fori can pass the payload arrays
+    # as jit arguments instead of capturing them (see jit_payload).
+    disperse_star.payload_args = (arrays, static, chunk_size)
     return disperse_star
+
+
+@partial(jax.jit, static_argnames=("static", "chunk_size"))
+def disperse_star_jit(arrays, xsca, ysca, wavelengths, flux, output, *,
+                      static, chunk_size=2000):
+    """Jitted :func:`disperse_star_psf` with the payloads as arguments.
+
+    ``arrays, static = jit_payload.split_payloads(psf_payload,
+    optical_payload)``. The compiled program depends only on the array
+    shapes and ``static`` (oversample, polynomial dimensions, wavelength
+    transform), which are the same for every SCA of an element, so one
+    compilation serves all SCAs. Capturing the payloads in a closure instead
+    bakes the PSF grid into the program as a constant: one compile and one
+    ~111 MB cache entry per (SCA, order).
+    """
+    psf_payload, optical_payload = jit_payload.merge_payloads(arrays, static)
+    return disperse_star_psf(
+        psf_payload, optical_payload, xsca, ysca, wavelengths, flux, output,
+        chunk_size=chunk_size,
+    )

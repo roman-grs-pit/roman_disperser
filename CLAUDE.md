@@ -81,13 +81,21 @@ All use `jnp.einsum` for polynomial evaluation.
 
 ### Disperser JIT Pattern
 
-The disperser uses a **closure pattern** for JIT compilation because the payload contains non-traceable types (strings) and non-hashable types (dicts with JAX arrays). Capture the payload in a closure before applying `@jax.jit`:
+The payloads mix arrays with non-traceable ints and strings (the shape-setting
+polynomial dimensions, `oversample`, and `wl.transform`). `jit_payload.split_payloads`
+splits them:
 
-```python
-@jax.jit
-def disperse_jit(image, x0, y0, dx, dy, spec, lam0, dlam, output):
-    return disperser.disperse_2d1d_sca(payload, ...)  # payload captured in closure
-```
+- **arrays** are passed to jit as traced arguments;
+- a **whitelisted static tuple** goes in via `static_argnames`;
+- **labels** (`detector`, `order`, …) are dropped.
+
+One compile therefore serves every SCA. The factories
+(`make_star_disperser`, `make_galaxy_disperser`) and the batch wrappers
+(`pipeline.make_batched_*_fori` → `run_*_batch`) do this for you.
+
+**Don't capture payload arrays in a closure under `jax.jit`.** That bakes
+them in as constants: one compile (~30–70 s on GPU) and one ~111 MB cache
+entry per (SCA, order). This was the pre-2026-10 pattern.
 
 See @docs/jit_compilation.md for full details.
 
@@ -201,7 +209,7 @@ The unified source catalog format is documented in `data/catalogs/README.md`.
 
 ### JIT Disk Cache
 
-The unified pipeline (`build_dispersed_image.py`) sets `JAX_COMPILATION_CACHE_DIR=/tmp/jax-cache-grism` to persist compiled functions across runs. This avoids recompilation (~10s/fn) on subsequent runs (~2.5s/fn from cache). JIT functions are built per-SCA and released after processing to keep memory bounded.
+The unified pipeline (`build_dispersed_image.py`) sets `JAX_COMPILATION_CACHE_DIR=/tmp/jax-cache-grism` to persist compiled functions across runs. Because payloads are jit arguments, one compiled program per (element, order, star/galaxy) serves all SCAs; within a process, SCAs after the first hit the in-memory jit cache.
 
 ## Coding Guidelines
 

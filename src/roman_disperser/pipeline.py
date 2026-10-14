@@ -13,7 +13,7 @@ Not added to ``__init__.py`` — scripts import directly::
 
 import re
 import subprocess
-from functools import lru_cache
+from functools import lru_cache, partial
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -33,6 +33,9 @@ from roman_disperser import elements
 from roman_disperser import paths
 from roman_disperser.optical_model import RomanOpticalModel
 import roman_disperser.optical_model_jax as omj
+from roman_disperser import galaxy_disperser
+from roman_disperser import jit_payload
+from roman_disperser import star_disperser
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -319,7 +322,28 @@ def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
     -------
     run : callable(n_sources, spectra, xsca, ysca, output) -> output
         spectra: [batch_size, N_wl], xsca/ysca: [batch_size]
+
+    Notes
+    -----
+    If ``disperser_fn`` comes from ``make_star_disperser`` (it carries
+    ``.payload_args``), ``run`` calls :func:`run_star_batch`, which takes the
+    payload arrays, ``sens``, the wavelengths and ``dlam`` as jit arguments:
+    one compile then serves every SCA. Any other callable falls back to
+    capturing everything in the closure (correct, but one compile per SCA).
     """
+    payload_args = getattr(disperser_fn, "payload_args", None)
+    if payload_args is not None:
+        arrays, static, chunk_size = payload_args
+        dlam = jnp.float32(dlam_angstroms)
+
+        def run(n_sources, spectra, xsca, ysca, output):
+            return run_star_batch(
+                arrays, sens, wavelengths_jax, dlam,
+                n_sources, spectra, xsca, ysca, output,
+                static=static, chunk_size=chunk_size,
+            )
+        return run
+
     @jax.jit
     def run(n_sources, spectra, xsca, ysca, output):
         def body_fn(i, output):
@@ -329,6 +353,43 @@ def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
         return jax.lax.fori_loop(0, n_sources, body_fn, output)
 
     return run
+
+
+@partial(jax.jit, static_argnames=("static", "chunk_size"))
+def run_star_batch(arrays, sens, wavelengths, dlam_angstroms,
+                   n_sources, spectra, xsca, ysca, output, *,
+                   static, chunk_size=2000):
+    """Disperse the first ``n_sources`` stars of a padded batch (jitted).
+
+    Every per-SCA input is an argument, so the compiled program depends only
+    on shapes and ``static`` and is reused across SCAs and pointings.
+
+    Parameters
+    ----------
+    arrays, static
+        ``jit_payload.split_payloads(psf_payload, optical_payload)``.
+    sens : jnp.ndarray [N_wl]
+        Sensitivity curve on ``wavelengths``.
+    wavelengths : jnp.ndarray [N_wl]
+        Microns.
+    dlam_angstroms : scalar
+        Wavelength step in Å (counts = spectrum * sens * dlam).
+    n_sources : int
+        Number of valid rows (traced; does not trigger recompiles).
+    spectra : [batch_size, N_wl]; xsca, ysca : [batch_size]
+    output : [H, W] detector accumulator
+    static : hashable, chunk_size : int
+        Compile-time constants.
+    """
+    psf_payload, optical_payload = jit_payload.merge_payloads(arrays, static)
+
+    def body_fn(i, output):
+        counts = spectra[i] * sens * dlam_angstroms
+        return star_disperser.disperse_star_psf(
+            psf_payload, optical_payload, xsca[i], ysca[i],
+            wavelengths, counts, output, chunk_size=chunk_size,
+        )
+    return jax.lax.fori_loop(0, n_sources, body_fn, output)
 
 
 def disperse_batched_stars(fori_fn, spectra, xsca, ysca, output, batch_size):
@@ -399,7 +460,26 @@ def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
     run : callable(n_sources, spectra, xsca, ysca, images, output) -> output
         spectra: [batch_size, N_wl], xsca/ysca: [batch_size],
         images: [batch_size, npix, npix]
+
+    Notes
+    -----
+    Like :func:`make_batched_star_fori`: a ``make_galaxy_disperser``
+    function routes to :func:`run_galaxy_batch` (payloads as arguments, one
+    compile for all SCAs); any other callable is captured in a closure.
     """
+    payload_args = getattr(disperser_fn, "payload_args", None)
+    if payload_args is not None:
+        arrays, static, chunk_size = payload_args
+        dlam = jnp.float32(dlam_angstroms)
+
+        def run(n_sources, spectra, xsca, ysca, images, output):
+            return run_galaxy_batch(
+                arrays, sens, wavelengths_jax, dlam,
+                n_sources, spectra, xsca, ysca, images, output,
+                static=static, chunk_size=chunk_size,
+            )
+        return run
+
     @jax.jit
     def run(n_sources, spectra, xsca, ysca, images, output):
         def body_fn(i, output):
@@ -409,6 +489,26 @@ def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
         return jax.lax.fori_loop(0, n_sources, body_fn, output)
 
     return run
+
+
+@partial(jax.jit, static_argnames=("static", "chunk_size"))
+def run_galaxy_batch(arrays, sens, wavelengths, dlam_angstroms,
+                     n_sources, spectra, xsca, ysca, images, output, *,
+                     static, chunk_size=2000):
+    """Disperse the first ``n_sources`` galaxies of a padded batch (jitted).
+
+    Same contract as :func:`run_star_batch`, plus ``images``
+    [batch_size, npix, npix] at the PSF oversampling.
+    """
+    psf_payload, optical_payload = jit_payload.merge_payloads(arrays, static)
+
+    def body_fn(i, output):
+        counts = spectra[i] * sens * dlam_angstroms
+        return galaxy_disperser.disperse_galaxy(
+            optical_payload, psf_payload, images[i], xsca[i], ysca[i],
+            counts, wavelengths, output, chunk_size,
+        )
+    return jax.lax.fori_loop(0, n_sources, body_fn, output)
 
 
 def disperse_batched_galaxies(fori_fn, spectra, xsca, ysca, images, output,
