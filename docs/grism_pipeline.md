@@ -96,6 +96,8 @@ Quick mode writes a single FITS, PNG, source manifest, and metadata YAML at the 
 | SEED       | Top-level RNG seed |
 | OPTELEM    | Dispersing element (`grism` / `prism`) |
 | OPTMODEL   | Optical-model delivery filename resolved for this run |
+| SRCCUTN    | Number of `source_cuts` rules applied (0 = full catalog) |
+| SRCCUT1..n | Each rule, e.g. `F158 mag_le 27.0` (truncated to 68 chars) |
 | RNDSEED0   | JAX RNG key word 0 (per-SCA) |
 | RNDSEED1   | JAX RNG key word 1 (per-SCA) |
 | CODEVER    | roman_disperser package version |
@@ -153,6 +155,8 @@ name — `grism_` / `prism_`). Fields:
 | `galaxy_batch_size` | Galaxies per JIT batch |
 | `galaxy_npix` | Sersic image size in native pixels |
 | `oversample` | PSF oversampling factor |
+| `catalog_rows` | Rows in `metadata.parquet` before `source_cuts` |
+| `source_cuts` | Rules applied, each with `removed` (rows it removed that no earlier rule had) |
 | `source_counts` | Per-SCA dict mapping order -> {stars, galaxies} counts |
 | `codever` | roman_disperser package version |
 | `git_sha` | Git commit SHA of pipeline code (`-dirty` suffix if uncommitted changes) |
@@ -232,6 +236,7 @@ and `scripts/example_prism_config.yaml`; regenerate the template with
 | `galaxy_batch_size` | int | 100 | Galaxies per JIT batch |
 | `galaxy_npix` | int | 30 | Sersic image size in native pixels |
 | `cone_radius` | float | 0.6 | Initial cone search radius [deg] |
+| `source_cuts` | list[dict] | none | Declarative catalog selection; see below |
 | `cache_dir` | str | `/tmp/jax-cache-grism` | JAX compilation cache directory |
 | `catalog_dir` | str | `data/catalogs` | Path to unified catalog directory |
 | `sensitivity_dir` | str | per-element | Path to sensitivity FITS files (`data/sensitivities` grism, `data/sensitivities_prism` prism) |
@@ -240,6 +245,41 @@ and `scripts/example_prism_config.yaml`; regenerate the template with
 | `psf_cache_dir` | str | `data/psf_cache` | Path to PSF cache directory |
 
 **Deprecated:** `batch_size` is accepted as an alias for `star_batch_size` with a warning.
+
+#### `source_cuts`
+
+Selects catalog rows right after `metadata.parquet` is loaded, so one catalog
+store (sim or HEALPix layout) serves any depth or quality selection — no
+filtered copy of the metadata per selection. Each rule is
+`{column, op, value, types}`; `types` is optional (`[PSF]`, `[SER]`, or both;
+default all). A row survives a rule if the rule does not apply to its type or
+the comparison is true; rules are ANDed.
+
+| `op` | keeps rows with | `value` |
+|---|---|---|
+| `lt` `le` `gt` `ge` | `x < v`, `x <= v`, `x > v`, `x >= v` | number |
+| `between` | `lo <= x <= hi` | `[lo, hi]` |
+| `isin` | `x` in the list | list |
+| `mag_le` / `mag_ge` | magnitude `<= m` / `>= m`, for flux columns in maggies (`mag = -2.5 log10 F`; compared in float64 as `F >= 10^(-0.4 m)`) | `m` |
+
+NaN in a cut column fails every comparison, so the row is removed (for the
+types the rule applies to). Unknown columns, ops or keys raise at startup.
+The catalog row index is preserved, so the source manifest's
+`catalog_index` still refers to `metadata.parquet` rows. Rules and per-rule
+removed counts are recorded in the FITS header (`SRCCUTN`, `SRCCUT1..n`) and
+the meta YAML.
+
+Example — the XMM-LSS selection (`H <= 27`, drop galaxies with zero size):
+
+```yaml
+source_cuts:
+  - {column: F158, op: mag_le, value: 27.0}
+  - {column: half_light_radius, op: gt, value: 0.0, types: [SER]}
+```
+
+On `catalogs/20260917-xmm_lss` this keeps 12,831,050 of 15,983,994 rows;
+the hand-made `filtered.metadata.parquet` has 12,831,046 (its 4 missing rows
+sit at H = 27.000000, i.e. a strict-`<` convention at the boundary).
 
 ### General CLI flags
 
@@ -311,7 +351,7 @@ One-time initialization shared across all pointings:
 
 1. Build wavelength grid from `dlam_angstroms` over the element's band
    (`element.lam_min`–`lam_max`: 0.9–2.0 um grism, 0.75–1.85 um prism).
-2. Load unified source catalog (Parquet metadata + Zarr SEDs).
+2. Load unified source catalog (Parquet metadata + Zarr SEDs) and apply `source_cuts`.
 3. Load optical model.
 4. Pre-load star SEDs (all templates, small memory footprint).
 5. Per-SCA optical payloads and sensitivity curves are prepared but PSF loading and JIT compilation are deferred.
