@@ -13,6 +13,14 @@ exactly as before. And an environment-only change to the `romanisim` pixi
 env. Golden references are untouched.
 
 ### Added
+- **Declarative `source_cuts` in the driver config** (`docs/grism_pipeline.md`).
+  Rules `{column, op, value, types}` select catalog rows right after loading
+  (ops `lt le gt ge between isin mag_le mag_ge`; mag ops for flux columns in
+  maggies). One catalog store then serves every depth, replacing hand-made
+  filtered copies of `metadata.parquet`. Recorded in FITS (`SRCCUTN`,
+  `SRCCUT1..n`) and the meta YAML (`catalog_rows`, `source_cuts` with per-rule
+  removed counts). Reproduces the XMM-LSS `filtered.metadata.parquet` to 4
+  boundary rows of 12.8M.
 - **HEALPix galaxy-SED store** ([`docs/healpix_sed_store.md`](docs/healpix_sed_store.md)).
   - `scripts/healpix_repartition_seds.py` (`plan` / `fill` / `verify`) and
     the SLURM driver `scripts/slurm_healpix_repartition.sh` rewrite a

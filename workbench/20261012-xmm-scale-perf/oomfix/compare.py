@@ -4,6 +4,7 @@ Runs (Keith's XMM-LSS part_03 row 0, unfiltered catalog, A10G):
   REPRO = v0.15.1 path, our env (job 12200; SCAs 1-8, OOM at SCA 9)
   BASE  = perf/jit-payload-args, no fix (job 12218; SCAs 1-4)
   FIX   = fix/sersic-batching, per-batch Sersic (job 12219; all 18 SCAs)
+  JITS  = jitted per-batch Sersic (../jitsersic; SCAs 1-4) -- gated vs FIX
 
 Timing: per SCA, JIT, galaxy-SED read, dispersion ms/galaxy per order, SCA
 total, and the GPU running peak / host VmHWM from the "Memory:" line.
@@ -26,7 +27,8 @@ import numpy as np
 from astropy.io import fits
 
 ROOT = Path("/mnt/roman-science/grs/20261012_xmm-scale-perf")
-RUNS = {"REPRO": ROOT / "repro", "BASE": ROOT / "oomfix/base", "FIX": ROOT / "oomfix/fix"}
+RUNS = {"REPRO": ROOT / "repro", "BASE": ROOT / "oomfix/base", "FIX": ROOT / "oomfix/fix",
+        "JITS": ROOT / "jitsersic/run"}
 POINTING = "part_03_001.087.001.001.021.002"
 EXPTIME = 190.22287  # s (MA table 1036)
 RTOL, ATOL_SCALE = 1e-5, 1e-5
@@ -106,13 +108,21 @@ def main():
         n_cmp += 1; n_fail += not ok
         print(f"  SCA{sca:02d}: MODEL {'ok' if ok else 'FAIL'} max|d|={dmax:.2e} dsum={dsum:.1e} | "
               f"ISIM flips {nf} (same-MODEL {nfs}), max {nsig:.2f} sigma")
+    print("\nJITS vs FIX: MODEL gate (jitted vs un-jitted Sersic; ~1e-8 of max expected)")
+    for sca in range(1, 19):
+        if not (fits_path("JITS", sca).exists() and fits_path("FIX", sca).exists()):
+            continue
+        (ok, dmax, dsum), (nf, nfs, nsig) = compare(fits_path("JITS", sca), fits_path("FIX", sca))
+        n_cmp += 1; n_fail += not ok
+        print(f"  SCA{sca:02d}: MODEL {'ok' if ok else 'FAIL'} max|d|={dmax:.2e} dsum={dsum:.1e} | "
+              f"ISIM flips {nf} (same-MODEL {nfs}), max {nsig:.2f} sigma")
     print("\nFIX vs REPRO (context only; jit-branch pixel flips expected)")
     for sca in range(1, 19):
         if fits_path("FIX", sca).exists() and fits_path("REPRO", sca).exists():
             (ok, dmax, dsum), _ = compare(fits_path("FIX", sca), fits_path("REPRO", sca))
             print(f"  SCA{sca:02d}: within-tol={ok} max|d|={dmax:.2e} dsum={dsum:.1e}")
     print(f"\n{'PASS' if n_cmp and n_fail == 0 else 'FAIL' if n_fail else 'NO COMPARISONS'} "
-          f"({n_cmp} FIX-vs-BASE SCA comparisons, {n_fail} failed)")
+          f"({n_cmp} gated SCA comparisons, {n_fail} failed)")
 
 
 if __name__ == "__main__":
