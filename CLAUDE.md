@@ -201,7 +201,10 @@ The `pipeline` module (`src/roman_disperser/pipeline.py`) provides shared utilit
 
 - **Source selection**: `cone_search()`, `select_sources_per_order()` — haversine cone search and per-order trace overlap detection.
 - **Sensitivity**: `load_sensitivities()` — load per-SCA, per-order sensitivity curves.
-- **Batched dispersion**: `make_batched_star_fori()`, `make_batched_galaxy_fori()`, `disperse_batched_stars()`, `disperse_batched_galaxies()` — JIT-compiled fori_loop wrappers for batch processing.
+- **Batched dispersion**: `make_batched_star_fori()`, `make_batched_galaxy_fori()` — JIT-compiled fori_loop wrappers; they require a factory-built disperser (`make_star_disperser` / `make_galaxy_disperser`) and raise `TypeError` otherwise. Feed them with:
+  - `disperse_batched_stars()`;
+  - `disperse_batched_sersic_galaxies()` — **production**: generates each batch's Sérsic images on the fly, so GPU memory scales with `batch_size`;
+  - `disperse_batched_galaxies()` — the generic primitive for arbitrary precomputed images; holds all N images on the device (OOMs an A10G on dense SCAs).
 - **I/O**: `write_fits()`, `write_png()`, `write_mosaic_png()`, `write_mosaic_from_directory()` — output file generation.
 - **Config**: `resolve_paths()` — resolve default data paths.
 

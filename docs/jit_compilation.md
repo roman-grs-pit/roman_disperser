@@ -70,8 +70,12 @@ You normally never call `jit_payload` yourself; the factories do it:
     `pipeline.run_star_batch` / `run_galaxy_batch`.
   - Those take the payload arrays, the sensitivity curve, the wavelengths
     and `dlam` as arguments.
-  - Any other callable (no `.payload_args`) falls back to the closure path:
-    correct, but one compile per SCA.
+  - Any other callable (no `.payload_args`) raises `TypeError`. Until
+    v0.16.0 it silently fell back to the closure path (correct, but one
+    compile per SCA); that was removed so the slow path cannot be hit by
+    accident. To loop a custom disperser, write the `jax.jit(fori_loop)`
+    yourself, as `benchmarks/bench_deposit.py` does for its noscatter
+    reference.
 
 ### Pitfall: wrapping a disperser in your own `jax.jit`
 

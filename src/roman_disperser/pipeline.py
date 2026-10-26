@@ -324,36 +324,43 @@ def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
     run : callable(n_sources, spectra, xsca, ysca, output) -> output
         spectra: [batch_size, N_wl], xsca/ysca: [batch_size]
 
+    Raises
+    ------
+    TypeError
+        If ``disperser_fn`` lacks ``.payload_args``, i.e. was not built by
+        ``star_disperser.make_star_disperser``.
+
     Notes
     -----
-    If ``disperser_fn`` comes from ``make_star_disperser`` (it carries
-    ``.payload_args``), ``run`` calls :func:`run_star_batch`, which takes the
-    payload arrays, ``sens``, the wavelengths and ``dlam`` as jit arguments:
-    one compile then serves every SCA. Any other callable falls back to
-    capturing everything in the closure (correct, but one compile per SCA).
+    ``run`` calls :func:`run_star_batch`, which takes the payload arrays,
+    ``sens``, the wavelengths and ``dlam`` as jit arguments, so one compile
+    serves every SCA. Until v0.16.0 any other callable silently fell back to
+    capturing everything in a closure (one compile per SCA, ~30-70 s each on
+    an A10G); that path was removed so a non-factory disperser fails loudly
+    instead of running slowly. To loop a custom disperser, write the
+    ``jax.jit(fori_loop)`` yourself (``benchmarks/bench_deposit.py`` does).
     """
-    payload_args = getattr(disperser_fn, "payload_args", None)
-    if payload_args is not None:
-        arrays, static, chunk_size = payload_args
-        dlam = jnp.float32(dlam_angstroms)
+    arrays, static, chunk_size = _payload_args(disperser_fn, "make_star_disperser")
+    dlam = jnp.float32(dlam_angstroms)
 
-        def run(n_sources, spectra, xsca, ysca, output):
-            return run_star_batch(
-                arrays, sens, wavelengths_jax, dlam,
-                n_sources, spectra, xsca, ysca, output,
-                static=static, chunk_size=chunk_size,
-            )
-        return run
-
-    @jax.jit
     def run(n_sources, spectra, xsca, ysca, output):
-        def body_fn(i, output):
-            counts = spectra[i] * sens * dlam_angstroms
-            return disperser_fn(xsca[i], ysca[i],
-                                wavelengths_jax, counts, output)
-        return jax.lax.fori_loop(0, n_sources, body_fn, output)
-
+        return run_star_batch(
+            arrays, sens, wavelengths_jax, dlam,
+            n_sources, spectra, xsca, ysca, output,
+            static=static, chunk_size=chunk_size,
+        )
     return run
+
+
+def _payload_args(disperser_fn, factory):
+    """Return ``disperser_fn.payload_args``; TypeError if it has none."""
+    payload_args = getattr(disperser_fn, "payload_args", None)
+    if payload_args is None:
+        raise TypeError(
+            f"disperser_fn has no .payload_args; build it with {factory}() "
+            "(a custom callable would be closure-captured, one compile per SCA)"
+        )
+    return payload_args
 
 
 @partial(jax.jit, static_argnames=("static", "chunk_size"))
@@ -462,33 +469,27 @@ def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
         spectra: [batch_size, N_wl], xsca/ysca: [batch_size],
         images: [batch_size, npix, npix]
 
+    Raises
+    ------
+    TypeError
+        If ``disperser_fn`` lacks ``.payload_args``, i.e. was not built by
+        ``galaxy_disperser.make_galaxy_disperser``.
+
     Notes
     -----
-    Like :func:`make_batched_star_fori`: a ``make_galaxy_disperser``
-    function routes to :func:`run_galaxy_batch` (payloads as arguments, one
-    compile for all SCAs); any other callable is captured in a closure.
+    Like :func:`make_batched_star_fori`: routes to :func:`run_galaxy_batch`
+    (payloads as arguments, one compile for all SCAs). The closure fallback
+    for other callables was removed in v0.16.0.
     """
-    payload_args = getattr(disperser_fn, "payload_args", None)
-    if payload_args is not None:
-        arrays, static, chunk_size = payload_args
-        dlam = jnp.float32(dlam_angstroms)
+    arrays, static, chunk_size = _payload_args(disperser_fn, "make_galaxy_disperser")
+    dlam = jnp.float32(dlam_angstroms)
 
-        def run(n_sources, spectra, xsca, ysca, images, output):
-            return run_galaxy_batch(
-                arrays, sens, wavelengths_jax, dlam,
-                n_sources, spectra, xsca, ysca, images, output,
-                static=static, chunk_size=chunk_size,
-            )
-        return run
-
-    @jax.jit
     def run(n_sources, spectra, xsca, ysca, images, output):
-        def body_fn(i, output):
-            counts = spectra[i] * sens * dlam_angstroms
-            return disperser_fn(images[i], xsca[i], ysca[i],
-                                counts, wavelengths_jax, output)
-        return jax.lax.fori_loop(0, n_sources, body_fn, output)
-
+        return run_galaxy_batch(
+            arrays, sens, wavelengths_jax, dlam,
+            n_sources, spectra, xsca, ysca, images, output,
+            static=static, chunk_size=chunk_size,
+        )
     return run
 
 
@@ -515,6 +516,14 @@ def run_galaxy_batch(arrays, sens, wavelengths, dlam_angstroms,
 def disperse_batched_galaxies(fori_fn, spectra, xsca, ysca, images, output,
                               batch_size):
     """Disperse galaxies in fixed-size batches, reusing compiled code.
+
+    The generic primitive: it takes any precomputed per-galaxy images, so it
+    serves non-Sersic morphologies, tutorials and benchmarks. All ``N``
+    images must already sit on the device ([N, npix, npix] float32, ~2.1 GB
+    for 36.5k galaxies at npix = 120), which is what OOMed the A10G on dense
+    XMM-LSS SCAs. Production (``build_dispersed_image.py``) therefore uses
+    :func:`disperse_batched_sersic_galaxies`, which generates the Sersic
+    images one batch at a time.
 
     Parameters
     ----------

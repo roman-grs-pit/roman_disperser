@@ -70,6 +70,27 @@ from roman_disperser.pipeline import (
 )
 
 
+def make_closure_galaxy_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
+    """Batched fori_loop over a custom galaxy disperser (payloads in a closure).
+
+    ``pipeline.make_batched_galaxy_fori`` only accepts factory-built
+    dispersers (v0.16.0). The noscatter reference is not one, so it gets the
+    closure-capturing loop the pipeline used to fall back to: the same code
+    path the noscatter variant took since v0.15, so its timing, and hence the
+    check_perf ratio baseline, should be unchanged. Same call signature as
+    the pipeline's ``run``.
+    """
+    @jax.jit
+    def run(n_sources, spectra, xsca, ysca, images, output):
+        def body_fn(i, output):
+            counts = spectra[i] * sens * dlam_angstroms
+            return disperser_fn(images[i], xsca[i], ysca[i],
+                                counts, wavelengths_jax, output)
+        return jax.lax.fori_loop(0, n_sources, body_fn, output)
+
+    return run
+
+
 def make_noscatter_disperser(psf_payload, optical_payload, chunk_size):
     """Reference disperser: identical to ``disperse_galaxy`` through the
     16-phase binning, phase selection, wavelength interpolation, and flux
@@ -278,7 +299,10 @@ def main():
                 args.chunk_size),
         }
         for variant, gd_fn in variants.items():
-            fori = make_batched_galaxy_fori(gd_fn, sens[order], wl_jax, args.dlam)
+            if variant == "baseline":
+                fori = make_batched_galaxy_fori(gd_fn, sens[order], wl_jax, args.dlam)
+            else:
+                fori = make_closure_galaxy_fori(gd_fn, sens[order], wl_jax, args.dlam)
 
             warm_out = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), jnp.float32)
             t0 = time.time()
