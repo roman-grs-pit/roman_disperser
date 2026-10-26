@@ -89,6 +89,14 @@ declarative `source_cuts`, and an environment-only change to the
   passes factory dispersers. To loop a custom disperser, write the
   `jax.jit(fori_loop)` yourself, as `benchmarks/bench_deposit.py` now does
   for its noscatter reference.
+- **jax 0.10.x excluded** (jax and jaxlib, `pyproject.toml` and
+  `pixi.toml`), like 0.11.0. conda-forge 0.10.2 ran the galaxy deposit
+  ~2.2x slower on A10G (8.0/5.2/2.7 ms/gal, orders 0/1/2) and segfaulted
+  compiling the CPU golden tests. Not bisected within 0.10.x. The locked
+  version stays 0.7.2.
+- **`check_perf.py` ratio gate tightened from 3.0 to 1.5.** jax 0.10.2's
+  ratio of 1.9–2.8 passed the old gate; only the absolute A10G gate caught
+  it. Healthy GPU runs measure 0.73–0.77.
 
 ### Changed (`romanisim` env only)
 

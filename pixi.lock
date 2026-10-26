@@ -5083,11 +5083,11 @@ packages:
 - pypi: ./
   name: roman-disperser
   version: 0.15.1
-  sha256: ad5ae20c781762abe4105e2e5f90db149331b2cdaae207d73807ee2cb00a2bcf
+  sha256: 34b7a1035077f374753f238c604466d6d4edb1f2bf9c7af9f038aab9b5455708
   requires_dist:
   - numpy>=2.0
-  - jax>=0.7,!=0.11.0
-  - jaxlib!=0.11.0
+  - jax>=0.7,!=0.10.*,!=0.11.0
+  - jaxlib!=0.10.*,!=0.11.0
   - scipy
   - pyyaml
   - matplotlib>=3.10

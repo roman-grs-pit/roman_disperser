@@ -23,11 +23,12 @@ the compute floor.
 
 `check_perf.py` applies two gates (details and rationale in its docstring):
 
-1. **Ratio gate** (hardware-insensitive, always on): baseline/noscatter ≤ 3.
-   Healthy jax measures ~0.73–0.75 on GPU since the native-deposit port
+1. **Ratio gate** (hardware-insensitive, always on): baseline/noscatter ≤ 1.5
+   (3 until v0.16.0, which let conda-forge jax 0.10.2's 1.9–2.8 through).
+   Healthy jax measures ~0.73–0.77 on GPU since the native-deposit port
    (the fused deposit kernel beats noscatter's separate reduction kernel;
    pre-native16 it was ~1.1–1.2). The 0.11.0 regression measured 15–21 on
-   the old deposit and would still blow far past 3 on the new one, since a
+   the old deposit and would still blow far past 1.5 on the new one, since a
    scatter regression inflates only the baseline.
 2. **Absolute gate** (when `baselines/gpu.json` has the GPU): baseline
    ms/gal ≤ 1.5× the recorded reference. Catches uniform slowdowns that the
