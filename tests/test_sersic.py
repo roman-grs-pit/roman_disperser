@@ -238,8 +238,11 @@ class TestBatch:
             single = np.array(
                 make_sersic_image(r_effs[i], ns[i], bas[i], thetas[i], npix)
             )
-            np.testing.assert_array_equal(
-                batch_imgs[i], single,
+            # Bit-exact under jax 0.7.2; from 0.11.2 the vmapped batch rounds
+            # differently in float32 (max rel. diff 2.4e-7, ~2 ulp), so
+            # compare at float32 precision rather than bitwise.
+            np.testing.assert_allclose(
+                batch_imgs[i], single, rtol=1e-6, atol=0,
                 err_msg=f"Mismatch at galaxy {i}",
             )
 
