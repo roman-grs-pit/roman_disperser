@@ -130,7 +130,7 @@ from roman_disperser.pipeline import (
 # The pinned reference version. Bumping this is a *results-changing* act:
 # do it only together with publishing the regenerated frames as a
 # roman_disperser_data release of the same name (see module docstring).
-GOLDEN_VERSION = "golden-frames-v2"
+GOLDEN_VERSION = "golden-frames-v3"
 
 SCA = 1  # matches all perf/benchmark work (bench_deposit.py, the workbench runs)
 
