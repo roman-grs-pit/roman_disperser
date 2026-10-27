@@ -19,6 +19,28 @@ from roman_disperser.pipeline import (
 )
 
 
+def _closure_star_fori(disperser_fn, sens, wl, dlam):
+    """Reference: the pre-0.16 closure-captured batched star loop."""
+    @jax.jit
+    def run(n_sources, spectra, xsca, ysca, output):
+        def body_fn(i, output):
+            counts = spectra[i] * sens * dlam
+            return disperser_fn(xsca[i], ysca[i], wl, counts, output)
+        return jax.lax.fori_loop(0, n_sources, body_fn, output)
+    return run
+
+
+def _closure_galaxy_fori(disperser_fn, sens, wl, dlam):
+    """Reference: the pre-0.16 closure-captured batched galaxy loop."""
+    @jax.jit
+    def run(n_sources, spectra, xsca, ysca, images, output):
+        def body_fn(i, output):
+            counts = spectra[i] * sens * dlam
+            return disperser_fn(images[i], xsca[i], ysca[i], counts, wl, output)
+        return jax.lax.fori_loop(0, n_sources, body_fn, output)
+    return run
+
+
 def _mock_psf(detector, scale):
     """Small mock PSF payload; ``scale`` makes the arrays SCA-specific."""
     n_y, n_x, n_wl, size = 2, 2, 5, 20
@@ -115,8 +137,8 @@ class TestOneCompileAcrossSCAs:
             gd = galaxy_disperser.make_galaxy_disperser(psf, opt)
             return (make_batched_star_fori(sd, sens, self.WL, 5.0),
                     make_batched_galaxy_fori(gd, sens, self.WL, 5.0),
-                    make_batched_star_fori(lambda *a: sd(*a), sens, self.WL, 5.0),
-                    make_batched_galaxy_fori(lambda *a: gd(*a), sens, self.WL, 5.0))
+                    _closure_star_fori(sd, sens, self.WL, 5.0),
+                    _closure_galaxy_fori(gd, sens, self.WL, 5.0))
 
         s1, g1, _, _ = build(*two_scas[0], jnp.ones(40))
         jax.block_until_ready(s1(batch, spec, xs, ys, out))
@@ -135,3 +157,13 @@ class TestOneCompileAcrossSCAs:
             assert float(old.sum()) > 0
             np.testing.assert_allclose(new, old, rtol=1e-5,
                                        atol=1e-7 * float(old.max()))
+
+
+def test_batched_fori_rejects_non_factory_disperser():
+    """A callable without ``.payload_args`` must fail loudly (v0.16.0), not
+    fall back to a closure that recompiles per SCA."""
+    sens, wl = jnp.ones(4), jnp.linspace(1.0, 1.8, 4)
+    with pytest.raises(TypeError, match="make_star_disperser"):
+        make_batched_star_fori(lambda *a: a[-1], sens, wl, 5.0)
+    with pytest.raises(TypeError, match="make_galaxy_disperser"):
+        make_batched_galaxy_fori(lambda *a: a[-1], sens, wl, 5.0)

@@ -23,11 +23,12 @@ the compute floor.
 
 `check_perf.py` applies two gates (details and rationale in its docstring):
 
-1. **Ratio gate** (hardware-insensitive, always on): baseline/noscatter ≤ 3.
-   Healthy jax measures ~0.73–0.75 on GPU since the native-deposit port
+1. **Ratio gate** (hardware-insensitive, always on): baseline/noscatter ≤ 1.5
+   (3 until v0.16.0, which let conda-forge jax 0.10.2's 1.9–2.8 through).
+   Healthy jax measures ~0.73–0.77 on GPU since the native-deposit port
    (the fused deposit kernel beats noscatter's separate reduction kernel;
    pre-native16 it was ~1.1–1.2). The 0.11.0 regression measured 15–21 on
-   the old deposit and would still blow far past 3 on the new one, since a
+   the old deposit and would still blow far past 1.5 on the new one, since a
    scatter regression inflates only the baseline.
 2. **Absolute gate** (when `baselines/gpu.json` has the GPU): baseline
    ms/gal ≤ 1.5× the recorded reference. Catches uniform slowdowns that the
@@ -35,12 +36,14 @@ the compute floor.
 
 ## Golden jax versions
 
-We support `jax>=0.7,!=0.11.0` but cannot perf-test every release, so
+We support `jax>=0.11.2,<0.12` but cannot perf-test every release, so
 `run_golden.sh` sweeps the small fixed set in `golden-jax-versions.txt`
-(currently: the pixi.lock version 0.7.2, the post-exclusion pip-era 0.11.1,
-and PyPI latest) — one throwaway venv per version, each with its own JIT
-compilation cache. The policy for evolving the set is documented in that
-file.
+(currently: the 0.11.2 floor, and `latest`, which resolves to the newest
+release the pyproject cap allows) — one throwaway venv per version, each
+with its own JIT compilation cache. These are pip (PyPI-wheel) installs; the
+conda-forge build in the pixi envs is benched by the one-off command below,
+so a pre-tag check runs both. The policy for evolving the set is documented
+in that file.
 
 ## Running
 

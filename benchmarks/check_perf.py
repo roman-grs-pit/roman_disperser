@@ -4,12 +4,13 @@ Two gates, applied per grism order:
 
 1. **Scatter ratio** (always applied, hardware-insensitive):
    min-over-repeats baseline ms/gal divided by min-over-repeats noscatter
-   ms/gal must be <= --max-ratio (default 3.0). Healthy jax on GPU measures
-   ~0.73-0.75 since the native-deposit port (the fused deposit kernel beats
+   ms/gal must be <= --max-ratio (default 1.5). Healthy jax on GPU measures
+   ~0.73-0.77 since the native-deposit port (the fused deposit kernel beats
    noscatter's separate reduction; pre-native16 it was ~1.1-1.2). The jax
    0.11.0 scatter-add regression (jax-ml/jax#39959) measured 15-21 on the
-   old deposit and a scatter regression inflates only the baseline, so 3.0
-   keeps wide margin on both sides. The threshold was calibrated on GPU;
+   old deposit; conda-forge jax 0.10.2 measured 1.9-2.8 (2026-10-12), which
+   the old default of 3.0 let through -- only the absolute gate caught it.
+   1.5 keeps ~2x headroom over healthy. The threshold was calibrated on GPU;
    CPU runs are reported but ratio behaviour there has not been
    characterised — use --max-ratio to loosen if gating CPU.
 
@@ -25,7 +26,7 @@ Exit status: 0 = all gates pass, 1 = any gate fails, 2 = malformed input.
 
 Usage:
     python benchmarks/check_perf.py result.json [result2.json ...] \
-        [--baselines benchmarks/baselines/gpu.json] [--max-ratio 3.0] \
+        [--baselines benchmarks/baselines/gpu.json] [--max-ratio 1.5] \
         [--max-slowdown 1.5]
 """
 
@@ -84,7 +85,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("results", nargs="+", help="bench_deposit.py JSON output(s)")
     ap.add_argument("--baselines", default=str(DEFAULT_BASELINES))
-    ap.add_argument("--max-ratio", type=float, default=3.0)
+    ap.add_argument("--max-ratio", type=float, default=1.5)
     ap.add_argument("--max-slowdown", type=float, default=1.5)
     args = ap.parse_args()
 

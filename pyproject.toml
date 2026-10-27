@@ -12,13 +12,16 @@ authors = [
 description = "JAX-based optical model and disperser for Roman Space Telescope slitless spectroscopy (G150 grism and P127 prism)"
 dependencies = [
     "numpy>=2.0",
-    # jax 0.11.0 excluded: GPU scatter-add regression makes the deposit step
-    # ~16x slower; measured gone in 0.11.1 (PR #31). jaxlib carries the same
-    # exclusion because the regression could live in either component and
-    # jax's own metadata may allow jaxlib 0.11.0 under a newer jax. No floor
-    # on jaxlib: jax's metadata pins the compatible range.
-    "jax>=0.7,!=0.11.0",
-    "jaxlib!=0.11.0",
+    # jax/jaxlib 0.11.2 is the production version from v0.16.0; the
+    # golden-frames-v3 references are rendered with it. Hard floor so every install matches the reference
+    # products: older jax gives different boundary pixels on dense frames.
+    # Older versions we avoid anyway: 0.11.0 (GPU scatter-add ~16x slower,
+    # PR #31) and 0.10.x (conda-forge 0.10.2 ~2.2x slower on A10G and
+    # segfaults compiling the CPU golden tests; research log, thread
+    # xmm-scale-perf, 2026-10-12). <0.12: 0.12 is untested; lift the cap
+    # only after the golden + perf gates pass on it.
+    "jax>=0.11.2,<0.12",
+    "jaxlib>=0.11.2,<0.12",
     "scipy",
     "pyyaml",
     "matplotlib>=3.10",

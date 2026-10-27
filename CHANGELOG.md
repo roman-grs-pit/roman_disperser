@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Two changes. A HEALPix galaxy-SED store layout with its afterburner and
-reader support: no results change, and catalogs in the existing layout read
-exactly as before. And an environment-only change to the `romanisim` pixi
-env. Golden references are untouched.
+**Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
+golden references move to `golden-frames-v3`. The release brings the HEALPix
+galaxy-SED store (70 → 29 min per pointing from SED reads), payloads as jit
+arguments (29 → 19.5 min from compile time), the A10G dense-SCA OOM fix,
+declarative `source_cuts`, and an environment-only change to the
+`romanisim` pixi env. Catalogs in the existing layout read exactly as before.
 
 ### Added
 - **Declarative `source_cuts` in the driver config** (`docs/grism_pipeline.md`).
@@ -62,6 +64,43 @@ env. Golden references are untouched.
   HEALPix afterburner formatted keys as `sim_{int:03d}` and raised on these.
   Integer sims still map to zero-padded `sim_NNN`, so existing catalogs
   read exactly as before.
+
+### Changed
+- **Payloads are jit arguments: one compile serves every SCA. Pixels differ
+  from earlier runs.** `jit_payload` splits each PSF/optical payload into
+  traced arrays plus a whitelisted static tuple (`docs/jit_compilation.md`).
+  New jitted entry points: `disperse_star_jit`, `disperse_galaxy_jit`,
+  `run_star_batch`, `run_galaxy_batch`. The factory signatures are unchanged.
+  - A10G, acceptance 4-roll VISIT 1, HEALPix store, empty JAX cache: the
+    pointing went from 1741 s to 1173 s, and JIT from ~600 s to ~17 s.
+    `check_perf.py` passed in a single run.
+  - Why pixels move: traced arrays round differently in float32 from baked-in
+    constants. Trace positions shift by ≤ 2.4e-4 px, which flips edge samples
+    between neighbouring pixels. Per-SCA `MODEL` flux agrees to ≤ 6e-7. The
+    per-pixel max difference is 1.3e-3 to 3.8e-2 of peak. The differences
+    are local and zero-sum on golden grism-0; they are not proven to be
+    boundary flips pixel by pixel everywhere. Forcing the old path was
+    bit-exact.
+- **`pipeline.make_batched_star_fori` / `make_batched_galaxy_fori` now
+  require a factory-built disperser** (one carrying `.payload_args`) and
+  raise `TypeError` otherwise. They used to fall back silently to capturing
+  the disperser in a closure, which was correct but cost one compile per SCA
+  (~30–70 s each on an A10G). Every in-repo and tutorial caller already
+  passes factory dispersers. To loop a custom disperser, write the
+  `jax.jit(fori_loop)` yourself, as `benchmarks/bench_deposit.py` now does
+  for its noscatter reference.
+- **jax/jaxlib now `>=0.11.2,<0.12`** (was `>=0.7,!=0.11.0`), and the
+  lock moves from 0.7.2 to conda-forge 0.11.2. This is a hard floor, so
+  every install matches the golden-v3 reference products. On dense
+  production frames, jax 0.7.2 and 0.11.2 differ by boundary-pixel flips.
+  On the coarse golden scenes (CPU) they differ only at float32 rounding
+  (≤ 1.9e-7 of peak). The floor also rules out 0.10.x: conda-forge 0.10.2
+  ran the galaxy deposit ~2.2x slower on A10G (8.0/5.2/2.7 ms/gal, orders
+  0/1/2) and segfaulted compiling the CPU golden tests. 0.12 is capped
+  until it has been tested.
+- **`check_perf.py` ratio gate tightened from 3.0 to 1.5.** jax 0.10.2's
+  ratio of 1.9–2.8 passed the old gate; only the absolute A10G gate caught
+  it. Healthy GPU runs measure 0.73–0.77.
 
 ### Changed (`romanisim` env only)
 
