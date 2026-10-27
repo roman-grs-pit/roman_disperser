@@ -36,12 +36,14 @@ the compute floor.
 
 ## Golden jax versions
 
-We support `jax>=0.7,!=0.11.0` but cannot perf-test every release, so
+We support `jax>=0.11.2,<0.12` but cannot perf-test every release, so
 `run_golden.sh` sweeps the small fixed set in `golden-jax-versions.txt`
-(currently: the pixi.lock version 0.7.2, the post-exclusion pip-era 0.11.1,
-and PyPI latest) — one throwaway venv per version, each with its own JIT
-compilation cache. The policy for evolving the set is documented in that
-file.
+(currently: the 0.11.2 floor, and `latest`, which resolves to the newest
+release the pyproject cap allows) — one throwaway venv per version, each
+with its own JIT compilation cache. These are pip (PyPI-wheel) installs; the
+conda-forge build in the pixi envs is benched by the one-off command below,
+so a pre-tag check runs both. The policy for evolving the set is documented
+in that file.
 
 ## Running
 

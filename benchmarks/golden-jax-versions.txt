@@ -1,21 +1,24 @@
 # Golden jax versions for the performance-regression sweep (run_golden.sh).
 #
-# Policy: we support jax>=0.7,!=0.11.0 but cannot perf-test every release,
-# so we regress a small fixed set spanning how users actually get jax:
+# Policy: we support jax>=0.11.2,<0.12 (pyproject.toml) but cannot perf-test
+# every release, so we regress a small fixed set of pip installs:
 #
-#   0.7.2   - the version pinned in this repo's pixi.lock (conda-forge);
-#             what every project/pixi environment runs.
-#   0.11.1  - first release after the excluded 0.11.0 (GPU scatter-add
-#             regression, jax-ml/jax#39959); representative of current
-#             pip installs.
-#   latest  - resolved to the newest PyPI release at run time; the early
-#             warning for the next 0.11.0-style regression.
+#   0.11.2  - the production floor; the PyPI wheels of the version pinned
+#             (as the conda-forge build) in this repo's pixi.lock.
+#   latest  - unpinned. run_golden.sh installs it in the same pip call as
+#             this package, so it resolves to the newest release ALLOWED by
+#             pyproject.toml (newest 0.11.x while the <0.12 cap holds; on
+#             2026-10-27 that is 0.11.2 itself, PyPI's newest being 0.12.0.1).
+#             It is the early warning for a regression in a new patch
+#             release, not for the next minor version, which needs the cap
+#             lifted first.
 #
-# Revisit this set at each roman_disperser release: when the pixi.lock jax
-# moves, replace 0.7.2; when "latest" ages into what pip users typically
-# have, consider promoting a pinned copy of it in place of 0.11.1.
-# One version per line; "latest" means unpinned. Lines starting with # are
-# comments.
-0.7.2
-0.11.1
+# This sweep tests pip installs only. The conda-forge build that the pixi
+# envs run is benched directly (README "Running": the pixi one-off) — run
+# both before a tag.
+#
+# Revisit this set at each roman_disperser release: when the jax floor
+# moves, replace 0.11.2. One version per line; "latest" means unpinned.
+# Lines starting with # are comments.
+0.11.2
 latest

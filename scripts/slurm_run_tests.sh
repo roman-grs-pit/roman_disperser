@@ -34,6 +34,12 @@
 # script is therefore the whole GPU half of the merge gate: the suite, then
 # the golden full tier. The perf suite (benchmarks/) is separate.
 #
+# The two pytest steps run independently and the job fails if either does.
+# They were once chained with `&&`, so any suite failure -- including the
+# expected coarse golden failures of a PR that is waiting on a GOLDEN_VERSION
+# re-bless -- silently skipped the full tier, the one step that checks
+# production sampling (seen 2026-10-27 on PR #43).
+#
 # Cluster-specific bits (partition, GRES, log dir) are env-overridable:
 #   SLURM_PARTITION, SLURM_GRES, SLURM_LOG_DIR.
 #
@@ -68,8 +74,10 @@ sbatch $WAIT_FLAG \
     --time=00:40:00 \
     --output="$LOG_DIR/gputests-%j.out" \
     --wrap="cd '$REPO_ROOT' && \
-            pixi run -e cuda python -c 'import jax; print(\"devices:\", jax.devices())' && \
-            pixi run -e cuda python -m pytest tests -v -m 'not slow' && \
-            pixi run -e cuda python -m pytest -v -m slow tests/test_golden_frame.py"
+            pixi run -e cuda python -c 'import jax; print(\"devices:\", jax.devices())' || exit 1; \
+            rc=0; \
+            pixi run -e cuda python -m pytest tests -v -m 'not slow' || rc=1; \
+            pixi run -e cuda python -m pytest -v -m slow tests/test_golden_frame.py || rc=1; \
+            exit \$rc"
 
 echo "Submitted. Logs: $LOG_DIR/gputests-<jobid>.out"
