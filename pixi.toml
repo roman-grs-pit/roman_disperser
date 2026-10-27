@@ -33,7 +33,7 @@ romanisim = { features = ["romanisim"], no-default-feature = true }
 # --- FEATURES ---
 
 [feature.cpu.dependencies]
-# 0.10.x and 0.11.0 excluded: GPU slowdowns — see pyproject.toml.
+# Production jax 0.11.2, capped below 0.12 — see pyproject.toml.
 jax = ">=0.11.2,<0.12"
 
 [feature.cuda]
@@ -41,7 +41,7 @@ platforms = ["linux-64"]
 system-requirements = { cuda = "12" }
 
 [feature.cuda.dependencies]
-# 0.10.x and 0.11.0 excluded (jax and jaxlib): GPU slowdowns — see pyproject.toml.
+# Production jax 0.11.2, capped below 0.12 (jax and jaxlib) — see pyproject.toml.
 jax = ">=0.11.2,<0.12"
 jaxlib = { version = ">=0.11.2,<0.12", build = "cuda12*" }
 

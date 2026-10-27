@@ -89,11 +89,15 @@ declarative `source_cuts`, and an environment-only change to the
   passes factory dispersers. To loop a custom disperser, write the
   `jax.jit(fori_loop)` yourself, as `benchmarks/bench_deposit.py` now does
   for its noscatter reference.
-- **jax 0.10.x excluded** (jax and jaxlib, `pyproject.toml` and
-  `pixi.toml`), like 0.11.0. conda-forge 0.10.2 ran the galaxy deposit
-  ~2.2x slower on A10G (8.0/5.2/2.7 ms/gal, orders 0/1/2) and segfaulted
-  compiling the CPU golden tests. Not bisected within 0.10.x. The locked
-  version stays 0.7.2.
+- **jax/jaxlib now `>=0.11.2,<0.12`** (was `>=0.7,!=0.11.0`), and the
+  lock moves from 0.7.2 to conda-forge 0.11.2. This is a hard floor, so
+  every install matches the golden-v3 reference products. On dense
+  production frames, jax 0.7.2 and 0.11.2 differ by boundary-pixel flips.
+  On the coarse golden scenes (CPU) they differ only at float32 rounding
+  (≤ 1.9e-7 of peak). The floor also rules out 0.10.x: conda-forge 0.10.2
+  ran the galaxy deposit ~2.2x slower on A10G (8.0/5.2/2.7 ms/gal, orders
+  0/1/2) and segfaulted compiling the CPU golden tests. 0.12 is capped
+  until it has been tested.
 - **`check_perf.py` ratio gate tightened from 3.0 to 1.5.** jax 0.10.2's
   ratio of 1.9–2.8 passed the old gate; only the absolute A10G gate caught
   it. Healthy GPU runs measure 0.73–0.77.
