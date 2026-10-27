@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
 golden references move to `golden-frames-v3`. The release brings the HEALPix
@@ -101,6 +101,22 @@ declarative `source_cuts`, and an environment-only change to the
 - **`check_perf.py` ratio gate tightened from 3.0 to 1.5.** jax 0.10.2's
   ratio of 1.9–2.8 passed the old gate; only the absolute A10G gate caught
   it. Healthy GPU runs measure 0.73–0.77.
+- **Golden references re-blessed as `golden-frames-v3`** (code 7571abd,
+  conda-forge jax 0.11.2; `roman_disperser_data` release `golden-frames-v3`,
+  manifest updated). Run `pixi run hydrate --update` to fetch them. Compared
+  with v2:
+  - total flux moves by ≤ 2.3e-8 (CPU) and ≤ 3e-9 (a10g);
+  - the per-pixel changes come from the jit-argument change above. They are
+    up to 3.2e-2 of peak (a10g prism coarse), and in every frame the per-row
+    net changes cancel, so flux moves between rows.
+
+  The frames are valid for jax 0.7.2 and 0.11.2. `hydrate.py`'s built-in
+  fallback manifest points at v3.
+- **Gate scripts.** `benchmarks/golden-jax-versions.txt` is now `0.11.2` +
+  `latest`. `latest` resolves inside the `<0.12` cap, and the pip sweep no
+  longer covers the conda-forge pixi build, which is benched directly.
+  `scripts/slurm_run_tests.sh` now runs the suite and the golden full tier
+  independently, and fails if either fails.
 
 ### Changed (`romanisim` env only)
 
