@@ -90,6 +90,18 @@ Version history
   at production 2 Å, against -3.2e-7 and -1.5e-5 for the old deposit.
   Per-pixel differences
   stayed within the tight gate — the 1e-7 flux gate is what caught it.
+* ``golden-frames-v3`` — blessed for v0.16.0 (code 7571abd, jax 0.11.2
+  conda-forge, 2026-10-27). Not a total-flux change: vs v2, total flux
+  moves by <=2.3e-8 (CPU) / <=3e-9 (a10g). The per-pixel changes are
+  boundary flips (mechanism above), up to 2.5e-2 (CPU) / 3.2e-2 (a10g) of
+  peak in prism coarse. In every frame with changed pixels, the per-row net
+  changes cancel to <=1e-3 of their absolute sum, so flux moves between
+  rows and is not lost. Cause: PR #40 passes payloads as jit arguments
+  instead of baked-in constants, which changes f32 rounding of dispersed
+  positions by <=2.4e-4 px. The old constant-payload path reproduces v2
+  exactly. jax 0.7.2 -> 0.11.2 adds only f32 rounding (<=1.9e-7 of peak on
+  CPU), so these frames serve both. Measurements are in the research log,
+  thread v0.16-release.
 
 Regenerating (only for an *intentional* results change) — once per backend,
 on the deterministic CPU and on the production GPU (a10g)::
