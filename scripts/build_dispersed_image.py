@@ -85,7 +85,7 @@ from roman_disperser.pipeline import (
     make_batched_star_fori, disperse_batched_stars,
     make_batched_galaxy_fori, disperse_batched_sersic_galaxies,
     write_fits, write_png, write_mosaic_png, write_mosaic_from_directory,
-    get_code_version, get_git_sha, make_sca_keys,
+    get_code_version, get_git_sha, make_sca_keys, draw_isim,
 )
 import roman_disperser.optical_model_jax as omj
 
@@ -1190,17 +1190,12 @@ def process_pointing(
             log(f"    Order {order}: {c['stars']} stars, "
                 f"{c['galaxies']} galaxies")
 
-        # Poisson sample on GPU
-        sca_key = sca_keys.get(sca_num)
-        if sca_key is not None:
-            expected_counts = output * exptime
-            isim = jax.random.poisson(sca_key, expected_counts).astype(
-                jnp.float32,
-            )
-            key_data = np.array(jax.random.key_data(sca_key))
-        else:
-            isim = output * exptime
-            key_data = np.zeros(2, dtype=np.uint32)
+        # Poisson sample on GPU (negative/NaN rates set to 0, see draw_isim)
+        isim, key_data, n_neg_model, _ = draw_isim(
+            output, exptime, sca_keys.get(sca_num), sca=sca_num)
+        if n_neg_model:
+            log(f"    NOTE: {n_neg_model} MODEL pixels < 0 set to 0 for the "
+                f"Poisson draw (MODEL itself is unchanged)")
 
         # Single GPU->CPU transfer
         t0 = time.time()

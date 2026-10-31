@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **No more -1 counts in ISIM.** `jax.random.poisson` returns -1 for a
+  negative or NaN rate (NumPy raises), and FFT round-off leaves small negative
+  MODEL values along galaxy swaths. The draw now uses a rate of 0 there
+  (new `pipeline.draw_isim`); MODEL is unchanged. The log reports the number
+  of negative MODEL pixels per SCA, and NaN/infinite MODEL pixels or a
+  missing `pointing_key` (noiseless ISIM) give a `RuntimeWarning`. ISIM
+  changes only in those pixels (-1 before, 0 now); the golden frames are
+  unaffected.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
