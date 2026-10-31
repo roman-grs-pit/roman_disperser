@@ -363,7 +363,7 @@ def _payload_args(disperser_fn, factory):
     return payload_args
 
 
-@partial(jax.jit, static_argnames=("static", "chunk_size"))
+@partial(jax.jit, static_argnames=("static", "chunk_size"), donate_argnames=("output",))
 def run_star_batch(arrays, sens, wavelengths, dlam_angstroms,
                    n_sources, spectra, xsca, ysca, output, *,
                    static, chunk_size=2000):
@@ -493,7 +493,7 @@ def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
     return run
 
 
-@partial(jax.jit, static_argnames=("static", "chunk_size"))
+@partial(jax.jit, static_argnames=("static", "chunk_size"), donate_argnames=("output",))
 def run_galaxy_batch(arrays, sens, wavelengths, dlam_angstroms,
                      n_sources, spectra, xsca, ysca, images, output, *,
                      static, chunk_size=2000):
