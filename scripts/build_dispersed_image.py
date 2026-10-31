@@ -205,6 +205,11 @@ def validate_source_cuts(cuts, columns=None):
             raise ValueError(f"source cut op {rule['op']!r} not in {sorted(_CUT_OPS)}")
         if rule["op"] == "between" and len(rule["value"]) != 2:
             raise ValueError(f"'between' needs [lo, hi]: {rule!r}")
+        if "types" in rule:
+            t = rule["types"]
+            if not isinstance(t, list) or not set(t) <= {"PSF", "SER"}:
+                raise ValueError(f"source cut 'types' must be a list drawn "
+                                 f"from ['PSF', 'SER']: {rule!r}")
         if columns is not None and rule["column"] not in columns:
             raise ValueError(f"source cut column {rule['column']!r} not in catalog")
 
