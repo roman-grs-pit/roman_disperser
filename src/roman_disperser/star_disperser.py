@@ -290,8 +290,14 @@ def deposit_stack_native(
     k_y = jnp.arange(n_y)
     k_x = jnp.arange(n_x)
 
-    # Pad to chunk multiples; padded entries carry zero flux.
+    # Pad to chunk multiples; padded entries carry zero flux. The chunk
+    # count comes from chunk_size, but the chunk length is then shrunk to
+    # ceil(n_wl / n_chunks) so at most n_chunks - 1 zero-flux samples are
+    # padded (production n_wl = 5501: 3 x 1834 = 5502, i.e. 1 padded sample
+    # instead of 499 with 3 x 2000).
     n_wl = len(wavelengths)
+    n_chunks_req = max(1, -(-n_wl // chunk_size))
+    chunk_size = -(-n_wl // n_chunks_req)
     n_padded = ((n_wl + chunk_size - 1) // chunk_size) * chunk_size
     pad_size = n_padded - n_wl
     n_chunks = n_padded // chunk_size
