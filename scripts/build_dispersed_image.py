@@ -1791,6 +1791,15 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         log(f"No {element.bandpass} pointings found in pointing table.")
         return
 
+    id_cols = ["PLAN", "PASS", "SEGMENT", "OBSERVATION", "VISIT", "EXPOSURE"]
+    ids = [tuple(int(r[c]) for c in id_cols) for r in ptable]
+    if len(set(ids)) != len(ids):
+        dup = sorted({i for i in ids if ids.count(i) > 1})
+        raise ValueError(
+            f"Pointing table has repeated APT id tuples {dup[:5]}; output "
+            f"directories and RNG keys would collide."
+        )
+
     # Parse SCA list
     scas = cfg.get("scas", "all")
     if scas == "all":
