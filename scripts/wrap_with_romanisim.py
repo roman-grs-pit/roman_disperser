@@ -159,9 +159,10 @@ def wrap_one(fits_path: Path, input_root: Path, output_root: Path,
              cli_element: str | None, level: int,
              dry_run: bool) -> WrapResult:
     out = derive_output_path(fits_path, input_root, output_root)
-    if out.exists():
+    if out.exists() and out.stat().st_mtime >= fits_path.stat().st_mtime:
         return WrapResult(fits_path, out, "skipped", 0.0, None, None,
                           note="output exists")
+    stale = out.exists()
 
     out.parent.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{out.stem}.log"
@@ -185,6 +186,12 @@ def wrap_one(fits_path: Path, input_root: Path, output_root: Path,
     if dry_run:
         return WrapResult(fits_path, out, "skipped", 0.0, None, log_path,
                           note=f"dry-run: {' '.join(cmd)}")
+
+    if stale:
+        # Only now, after the dry-run exit and all header checks, so a dry
+        # run or a header error never deletes the existing L2.
+        print(f"[wrap] {out.name} is older than {fits_path.name}: re-wrapping")
+        out.unlink()
 
     t0 = time.monotonic()
     with open(log_path, "w") as logf:
