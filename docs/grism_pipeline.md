@@ -120,8 +120,8 @@ Per-pointing Parquet file listing every source dispersed onto each SCA. One row 
 | sca            | int    | SCA number (1-18) |
 | order          | str    | Spectral order ("0", "1", "2") |
 | type           | str    | "PSF" (star) or "SER" (galaxy/Sersic) |
-| xsca           | float  | Undispersed SCA x position [pixels, 1-indexed FITS] |
-| ysca           | float  | Undispersed SCA y position [pixels, 1-indexed FITS] |
+| xsca           | float  | Nominal SCA x position from the linear `fpa_to_sca` label map (no distortion). NOT where order-1 light lands (offset ~36-190 px) and not an imaging-mode position [pixels, 1-indexed FITS] |
+| ysca           | float  | Nominal SCA y position; same caveat as `xsca` [pixels, 1-indexed FITS] |
 | ra             | float  | Source RA [deg] |
 | dec            | float  | Source Dec [deg] |
 | flux_scale     | float  | SED multiplier applied at dispersion. Stars: equals `F158` (the SED template is unit-normalized in F158). Galaxies: always 1.0 (per-source SED is already F158-normalized). See `data/catalogs/README.md` for the SED scaling convention. |

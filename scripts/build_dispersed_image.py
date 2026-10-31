@@ -1010,7 +1010,8 @@ def process_pointing(
         )
 
         if n_any > 0:
-            # Get SCA coordinates (order "1" defines the undispersed position)
+            # Nominal SCA coordinates from the linear label map (no
+            # distortion). Not the order-1 landing point of any wavelength.
             xfpa_sel = xfpa[any_mask]
             yfpa_sel = yfpa[any_mask]
             xsca_all, ysca_all = omj.fpa_to_sca(
