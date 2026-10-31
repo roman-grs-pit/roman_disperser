@@ -317,6 +317,16 @@ def validate_catalog(meta, store, wavelengths, element):
         arr = meta[col].values
         if np.any(~np.isfinite(arr.astype(float))):
             raise ValueError(f"NaN or Inf found in column '{col}'")
+    gal = meta[meta["type"] == "SER"]
+    for col in ["n", "half_light_radius", "pa", "ba"]:
+        if np.any(~np.isfinite(gal[col].values.astype(float))):
+            raise ValueError(f"NaN or Inf in galaxy column '{col}'")
+    if len(gal) and (np.any(gal["n"].values <= 0)
+                     or np.any(gal["ba"].values <= 0)
+                     or np.any(gal["half_light_radius"].values < 0)):
+        raise ValueError("Galaxy morphology out of range (n<=0, ba<=0 or r_e<0)")
+    if np.any(meta["sed_index"].values < 0):
+        raise ValueError("Negative sed_index found")
 
     # sed_index bounds for stars
     stars = meta[meta["type"] == "PSF"]
