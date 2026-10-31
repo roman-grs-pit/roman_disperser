@@ -295,7 +295,18 @@ def load_sensitivities(sensitivity_dir, sca, wavelengths, orders):
         with fits.open(sensitivity_dir / fname) as hdul:
             wl_sens = hdul[1].data["WAVELENGTH"] / 1e4  # Angstrom -> micron
             sens_vals = hdul[1].data["SENSITIVITY"]
-            sens_interp = np.interp(wavelengths, wl_sens, sens_vals)
+            if not (np.all(np.isfinite(wl_sens)) and np.all(np.isfinite(sens_vals))):
+                raise ValueError(f"{fname}: non-finite WAVELENGTH/SENSITIVITY")
+            if np.any(np.diff(wl_sens) <= 0):
+                raise ValueError(f"{fname}: WAVELENGTH not strictly increasing")
+            wl_req = np.asarray(wavelengths)
+            if wl_req.min() < wl_sens[0] or wl_req.max() > wl_sens[-1]:
+                raise ValueError(
+                    f"{fname}: table covers {wl_sens[0]:.4f}-{wl_sens[-1]:.4f} um, "
+                    f"requested grid {wl_req.min():.4f}-{wl_req.max():.4f} um"
+                )
+            sens_interp = np.interp(wavelengths, wl_sens, sens_vals,
+                                    left=0.0, right=0.0)
             sensitivities[order] = jnp.array(sens_interp.astype(np.float32))
     return sensitivities
 
