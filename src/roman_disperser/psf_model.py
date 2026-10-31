@@ -869,10 +869,25 @@ def get_or_make_psf_payload(
         try:
             return load_psf_payload(cache_path, verbose=verbose)
         except (ValueError, KeyError) as e:
-            if verbose:
-                print(f"Cache file invalid ({e}), regenerating...")
+            warnings.warn(
+                f"PSF cache {cache_path} is invalid ({e}); regenerating "
+                f"with the locally installed STPSF.",
+                RuntimeWarning, stacklevel=2,
+            )
 
     # Generate fresh payload
+    if not force_regenerate:
+        import os
+        if os.environ.get("ROMAN_DISPERSER_REQUIRE_PSF_CACHE"):
+            raise FileNotFoundError(
+                f"PSF cache {cache_path} missing or invalid and "
+                f"ROMAN_DISPERSER_REQUIRE_PSF_CACHE is set."
+            )
+        warnings.warn(
+            f"PSF cache {cache_path} not usable: generating a new PSF grid "
+            f"with the local STPSF (differs from the vendored caches).",
+            RuntimeWarning, stacklevel=2,
+        )
     if verbose:
         if force_regenerate:
             print("Force regenerate requested, generating PSF grid...")
