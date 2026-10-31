@@ -126,7 +126,8 @@ class TestOneCompileAcrossSCAs:
 
     def test_batched_star_and_galaxy(self, two_scas):
         batch, npix = 2, 16
-        out = jnp.zeros((4088, 4088), jnp.float32)
+        # run_*_batch donate `output`: pass a fresh accumulator per call.
+        out = lambda: jnp.zeros((4088, 4088), jnp.float32)
         spec = jnp.ones((batch, 40), jnp.float32)
         xs = jnp.array([1800.0, 2200.0], jnp.float32)
         ys = jnp.array([2000.0, 2100.0], jnp.float32)
@@ -141,19 +142,19 @@ class TestOneCompileAcrossSCAs:
                     _closure_galaxy_fori(gd, sens, self.WL, 5.0))
 
         s1, g1, _, _ = build(*two_scas[0], jnp.ones(40))
-        jax.block_until_ready(s1(batch, spec, xs, ys, out))
-        jax.block_until_ready(g1(batch, spec, xs, ys, imgs, out))
+        jax.block_until_ready(s1(batch, spec, xs, ys, out()))
+        jax.block_until_ready(g1(batch, spec, xs, ys, imgs, out()))
 
         # SCA 2 (different payload arrays AND sensitivity): no new compile
         s2, g2, s2_old, g2_old = build(*two_scas[1], 0.7 * jnp.ones(40))
         assert _compiles(run_star_batch,
-                         lambda: s2(batch, spec, xs, ys, out)) == 0
+                         lambda: s2(batch, spec, xs, ys, out())) == 0
         assert _compiles(run_galaxy_batch,
-                         lambda: g2(batch, spec, xs, ys, imgs, out)) == 0
+                         lambda: g2(batch, spec, xs, ys, imgs, out())) == 0
 
-        for new, old in [(s2(batch, spec, xs, ys, out), s2_old(batch, spec, xs, ys, out)),
-                         (g2(batch, spec, xs, ys, imgs, out),
-                          g2_old(batch, spec, xs, ys, imgs, out))]:
+        for new, old in [(s2(batch, spec, xs, ys, out()), s2_old(batch, spec, xs, ys, out())),
+                         (g2(batch, spec, xs, ys, imgs, out()),
+                          g2_old(batch, spec, xs, ys, imgs, out()))]:
             assert float(old.sum()) > 0
             np.testing.assert_allclose(new, old, rtol=1e-5,
                                        atol=1e-7 * float(old.max()))
