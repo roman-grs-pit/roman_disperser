@@ -70,6 +70,7 @@ import hashlib
 import yaml
 import jax
 import jax.numpy as jnp
+from jax.experimental.compilation_cache import compilation_cache as _jax_cc
 import numpy as np
 import pyarrow.parquet as pq
 import zarr
@@ -1570,6 +1571,12 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
     # Cache dir from config (CLI already wins via pre-parse)
     if _pre_args.cache_dir is None and "cache_dir" in cfg:
         os.environ["JAX_COMPILATION_CACHE_DIR"] = cfg["cache_dir"]
+        # JAX read the env var at import, and the import-time eager ops have
+        # already initialised the cache at the default path, so the env
+        # assignment alone has no effect: update the live option and reset
+        # the (already initialised) cache so the next compile re-reads it.
+        jax.config.update("jax_compilation_cache_dir", cfg["cache_dir"])
+        _jax_cc.reset_cache()
 
     def log(msg):
         if verbose:
@@ -1755,6 +1762,12 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
     # Cache dir from config (CLI already wins via pre-parse)
     if _pre_args.cache_dir is None and "cache_dir" in cfg:
         os.environ["JAX_COMPILATION_CACHE_DIR"] = cfg["cache_dir"]
+        # JAX read the env var at import, and the import-time eager ops have
+        # already initialised the cache at the default path, so the env
+        # assignment alone has no effect: update the live option and reset
+        # the (already initialised) cache so the next compile re-reads it.
+        jax.config.update("jax_compilation_cache_dir", cfg["cache_dir"])
+        _jax_cc.reset_cache()
 
     # Deprecation: batch_size → star_batch_size
     if "batch_size" in cfg and "star_batch_size" not in cfg:
