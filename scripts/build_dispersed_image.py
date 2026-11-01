@@ -79,6 +79,7 @@ from roman_disperser import (
     elements, galaxy_disperser, psf_model, sersic, star_disperser,
 )
 import roman_disperser.segment_render as segrender
+import roman_disperser.accumulate as accum
 from roman_disperser.optical_model import RomanOpticalModel
 from roman_disperser.pipeline import (
     DETECTOR_SIZE,
@@ -87,7 +88,7 @@ from roman_disperser.pipeline import (
     make_batched_star_fori, disperse_batched_stars,
     make_batched_galaxy_fori, disperse_batched_sersic_galaxies,
     parse_rebin_dlam,
-    sed_rebin_factors,
+    sed_rebin_factors, rebin_counts,
     parse_order_mag_limits, order_mag_limits_by_order,
     apply_order_mag_limits, flux_to_ab_mag,
     write_fits, write_png, write_mosaic_png, write_mosaic_from_directory,
@@ -576,8 +577,17 @@ def make_order_fori_fns(psf_payloads, optical_payloads, sensitivities,
                         deposit=DEFAULT_DEPOSIT, sed_rebin=1,
                         hoist_star_psf=DEFAULT_HOIST_STAR_PSF,
                         psf_geometry=None, detector="",
-                        segment=None, galaxy_npix_os=None):
+                        segment=None, galaxy_npix_os=None,
+                        accumulate=None):
     """Build the batched star and galaxy fori functions for every order.
+
+    ``accumulate`` (opt-in, ``roman_disperser.accumulate``): ``"window"``
+    returns batch functions with the same interface that render per-source
+    windows and add them in a fixed order; ``"tiled"`` returns
+    ``accumulate.TiledDisperser`` objects instead (one per kind and order;
+    driven by :func:`disperse_order_sources`). Both combine with
+    ``segment`` (segment renderer) or the deposit; ``galaxy_npix_os`` is
+    required.
 
     ``segment`` (from :func:`resolve_segment_render`) switches the orders
     it lists to the trace-aligned segment render
@@ -604,6 +614,15 @@ def make_order_fori_fns(psf_payloads, optical_payloads, sensitivities,
     for order in orders:
         rebin = sed_rebin[order] if isinstance(sed_rebin, dict) else sed_rebin
         n_nodes = None if segment is None else segment["nodes"].get(str(order))
+        if accumulate is not None:
+            star_fori_fns[order], galaxy_fori_fns[order] = _accumulate_fns(
+                accumulate, psf_payloads[order], optical_payloads[order],
+                sensitivities[order], wavelengths_jax, dlam_angstroms, rebin,
+                deposit=deposit, hoist_star_psf=hoist_star_psf,
+                n_nodes=n_nodes,
+                psf_at=None if segment is None else segment["psf_at"],
+                galaxy_npix_os=galaxy_npix_os)
+            continue
         if n_nodes is not None:
             wl_np = np.asarray(wavelengths_jax)
             plans = {
@@ -639,6 +658,63 @@ def make_order_fori_fns(psf_payloads, optical_payloads, sensitivities,
             wavelengths_jax, dlam_angstroms, sed_rebin=rebin,
         )
     return star_fori_fns, galaxy_fori_fns
+
+
+def _accumulate_fns(mode, psf_payload, optical_payload, sens, wavelengths_jax,
+                    dlam_angstroms, rebin, *, deposit, hoist_star_psf,
+                    n_nodes, psf_at, galaxy_npix_os):
+    """Star and galaxy dispersers of one order for ``--accumulate``."""
+    if mode not in accum.ACCUMULATE_MODES:
+        raise ValueError(f"accumulate must be one of {accum.ACCUMULATE_MODES}"
+                         f", got {mode!r}")
+    wl_dep = np.asarray(rebin_counts(wavelengths_jax, wavelengths_jax,
+                                     rebin)[1])
+    fns = []
+    for kind in ("star", "galaxy"):
+        plan = accum.make_window_plan(
+            psf_payload, optical_payload, kind, wl_dep,
+            renderer="deposit" if n_nodes is None else "segment",
+            deposit=deposit, n_nodes=n_nodes, galaxy_npix=galaxy_npix_os,
+            psf_at=psf_at or "source")
+        if mode == "tiled":
+            fns.append(accum.TiledDisperser(
+                psf_payload, optical_payload, sens, wavelengths_jax,
+                dlam_angstroms, plan, sed_rebin=rebin,
+                hoist_psf=hoist_star_psf))
+        elif kind == "star":
+            fns.append(accum.make_batched_star_window(
+                psf_payload, optical_payload, sens, wavelengths_jax,
+                dlam_angstroms, plan, sed_rebin=rebin,
+                hoist_psf=hoist_star_psf))
+        else:
+            fns.append(accum.make_batched_galaxy_window(
+                psf_payload, optical_payload, sens, wavelengths_jax,
+                dlam_angstroms, plan, sed_rebin=rebin))
+    return tuple(fns)
+
+
+def disperse_order_sources(fn, kind, spectra, xsca, ysca, output, batch_size,
+                           sersic_params=None, npix=None, accumulate=None):
+    """Add one order's stars or galaxies to ``output`` with ``fn`` from
+    :func:`make_order_fori_fns`. With ``accumulate`` set the sources are
+    first sorted by :func:`roman_disperser.accumulate.canonical_order`, so
+    the frame does not depend on the catalogue order."""
+    if isinstance(fn, accum.TiledDisperser):
+        if kind == "star":
+            return fn.stars(spectra, xsca, ysca, output)
+        return fn.galaxies(spectra, xsca, ysca, sersic_params, npix, output)
+    if accumulate is not None:
+        c = accum.canonical_order(xsca, ysca, spectra,
+                                  sersic_params if kind == "galaxy" else ())
+        spectra, xsca, ysca = spectra[c], xsca[c], ysca[c]
+        if sersic_params is not None:
+            sersic_params = tuple(np.asarray(p)[c] for p in sersic_params)
+    if kind == "star":
+        return disperse_batched_stars(fn, spectra, xsca, ysca, output,
+                                      batch_size)
+    return disperse_batched_sersic_galaxies(fn, spectra, xsca, ysca,
+                                            sersic_params, npix, output,
+                                            batch_size)
 
 
 def sim_array_key(sim):
@@ -794,6 +870,7 @@ def setup_pipeline(
     order_mag_limits=None,
     segment_render=None,
     segment_psf_at="source",
+    accumulate=None,
     verbose=True,
 ):
     """One-time setup: load model, catalog, optical payloads, sensitivities.
@@ -864,6 +941,10 @@ def setup_pipeline(
         (orders left out or None keep the deposit). None (default) = the
         production deposit everywhere. Recorded as ``SEGNODE<o>`` /
         ``SEGPSFAT`` header cards and ``segment_render`` in the meta YAML.
+    accumulate : {None, "window", "tiled"}
+        Opt-in per-source windows with a deterministic frame sum
+        (``roman_disperser.accumulate``); None (default) = the production
+        loop. Header card ``ACCUM``, meta ``accumulate``.
     segment_psf_at : {"source", "landing"}
         PSF lookup position of the segment render (default "source", as
         the deposit; "landing" = each node's trace position).
@@ -938,6 +1019,12 @@ def setup_pipeline(
             + ", ".join(f"order {o}: {m if m is not None else 'off'}"
                         for o, m in segment["nodes"].items())
             + f", PSF at {segment['psf_at']}")
+    if accumulate is not None:
+        if accumulate not in accum.ACCUMULATE_MODES:
+            raise ValueError(f"accumulate must be one of "
+                             f"{accum.ACCUMULATE_MODES}, got {accumulate!r}")
+        log(f"Accumulation: per-source windows, {accumulate} mode "
+            "(deterministic frame sum)")
     order_mag_limits = order_mag_limits_by_order(order_mag_limits,
                                                  element.orders)
     if order_mag_limits:
@@ -1027,6 +1114,7 @@ def setup_pipeline(
         "hoist_star_psf": bool(hoist_star_psf),
         "order_mag_limits": order_mag_limits,
         "segment_render": segment,
+        "accumulate": accumulate,
         "oversample": oversample,
         "psf_geometry": psf_geometry,
         "n_catalog_rows": n_catalog_rows,
@@ -1134,6 +1222,9 @@ def process_pointing(
         **({"SEGPSFAT": (pipeline["segment_render"]["psf_at"],
                          "Segment render PSF lookup position")}
            if pipeline.get("segment_render") else {}),
+        **({"ACCUM": (pipeline["accumulate"],
+                      "Per-source windows, deterministic sum mode")}
+           if pipeline.get("accumulate") else {}),
         **{f"SRCCUT{i + 1}": (describe_source_cut(r)[:68], "source_cuts rule")
            for i, r in enumerate(pipeline["source_cuts"])},
         **(extra_headers or {}),
@@ -1281,6 +1372,7 @@ def process_pointing(
             detector=detector_name,
             segment=pipeline.get("segment_render"),
             galaxy_npix_os=pipeline["galaxy_npix_os"],
+            accumulate=pipeline.get("accumulate"),
         )
 
         # JIT warmup (hits disk cache after first run)
@@ -1302,6 +1394,8 @@ def process_pointing(
             dtype=jnp.float32,
         )
         for order in element.orders:
+            if isinstance(star_fori_fns[order], accum.TiledDisperser):
+                continue  # tiled programs compile on first use
             # run_*_batch donate `output`: rebind the accumulator.
             warmup_output = star_fori_fns[order](
                 1, warmup_spec, warmup_x, warmup_y, warmup_output,
@@ -1456,10 +1550,11 @@ def process_pointing(
                     spec_star = star_spectra_all[star_rank]
 
                     t_order = time.time()
-                    output = disperse_batched_stars(
-                        star_fori_fns[order],
+                    output = disperse_order_sources(
+                        star_fori_fns[order], "star",
                         spec_star, x_star, y_star,
                         output, star_batch_size,
+                        accumulate=pipeline.get("accumulate"),
                     )
                     elapsed = time.time() - t_order
                     ms_per = elapsed / n_star_order * 1e3
@@ -1484,10 +1579,11 @@ def process_pointing(
                     sersic_gal = tuple(p[gal_rank_in_sel] for p in galaxy_sersic)
 
                     t_order = time.time()
-                    output = disperse_batched_sersic_galaxies(
-                        galaxy_fori_fns[order],
-                        spec_gal, x_gal, y_gal, sersic_gal, galaxy_npix_os,
-                        output, galaxy_batch_size,
+                    output = disperse_order_sources(
+                        galaxy_fori_fns[order], "galaxy",
+                        spec_gal, x_gal, y_gal, output, galaxy_batch_size,
+                        sersic_params=sersic_gal, npix=galaxy_npix_os,
+                        accumulate=pipeline.get("accumulate"),
                     )
                     elapsed = time.time() - t_order
                     ms_per = elapsed / n_gal_order * 1e3
@@ -1659,6 +1755,7 @@ def process_pointing(
         "hoist_star_psf": pipeline["hoist_star_psf"],
         "order_mag_limits": dict(pipeline.get("order_mag_limits") or {}),
         "segment_render": pipeline.get("segment_render"),
+        "accumulate": pipeline.get("accumulate"),
         "oversample": pipeline["oversample"],
         "catalog_rows": pipeline["n_catalog_rows"],
         "source_cuts": pipeline["source_cuts"],
@@ -1708,6 +1805,7 @@ def build_dispersed_image(
     order_mag_limits=None,
     segment_render=None,
     segment_psf_at="source",
+    accumulate=None,
     verbose=True,
     force=False,
 ):
@@ -1747,6 +1845,8 @@ def build_dispersed_image(
         Per-order F158 brightness cut, see ``setup_pipeline``.
     segment_render, segment_psf_at : optional
         Opt-in segment render, see ``setup_pipeline``.
+    accumulate : {None, "window", "tiled"}
+        Opt-in deterministic accumulation, see ``setup_pipeline``.
     verbose : bool
         Print progress information (default: True).
     force : bool
@@ -1781,6 +1881,7 @@ def build_dispersed_image(
         order_mag_limits=order_mag_limits,
         segment_render=segment_render,
         segment_psf_at=segment_psf_at,
+        accumulate=accumulate,
         verbose=verbose,
     )
 
@@ -2477,6 +2578,14 @@ def main():
                         help="PSF lookup position of the segment render: "
                              "the direct-image position (default) or each "
                              "node's landing position on the trace")
+    parser.add_argument("--accumulate", choices=accum.ACCUMULATE_MODES,
+                        default=None,
+                        help="Opt-in (prototype): render each source into "
+                             "its own window and add the windows in a fixed "
+                             "order ('window': batches, vmapped; 'tiled': "
+                             "8x8 detector tiles), deterministic on GPU "
+                             "(quick mode; default: off = sequential "
+                             "scatter-add)")
     parser.add_argument("--seed", type=int, default=None,
                         help="RNG seed (required for quick mode)")
     parser.add_argument("--exptime", type=float, default=190.22,
@@ -2591,6 +2700,7 @@ def main():
         order_mag_limits=args.order_mag_limits,
         segment_render=args.segment_render,
         segment_psf_at=args.segment_psf_at,
+        accumulate=args.accumulate,
         verbose=not args.quiet,
         force=args.force,
     )
