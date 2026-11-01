@@ -95,6 +95,15 @@ before the references can guard the default path.
   `"interp"` too; the low-level functions keep `sed_rebin=1` and
   `hoist_psf=False` (rebinning and the hoist are per-run choices of the
   driver). The per-order brightness cut stays off by default.
+- **Memory across SCAs** (`build_dispersed_image.process_pointing`): the
+  per-SCA MODEL is returned as a host (NumPy) array, the same object the
+  mosaic uses, instead of a device array kept per SCA, and batch mode
+  (`return_outputs=False`, new) keeps none. Each SCA's PSF payloads and its
+  MODEL / ISIM / Poisson device buffers are released before the next SCA
+  loads its PSFs. Measured on CPU (3 SCAs, `jax.live_arrays()` after each):
+  503 / 566 / 630 MiB before (+64 MiB per SCA), 0.3 MiB after; outputs bit
+  for bit unchanged. Quick mode's `build_dispersed_image()` now returns the
+  MODEL as a NumPy array.
 - Deposit chunk length is derived from the number of wavelengths
   (`ceil(N / ceil(N / chunk_size))`), so zero-flux padding is < 1 chunk
   count instead of up to a whole chunk (5501 -> 3 x 1834; the 4 Å rebinned
