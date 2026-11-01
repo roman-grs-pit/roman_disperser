@@ -1961,6 +1961,20 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         )
         cfg.pop("batch_size")
 
+    known_keys = {
+        "output_dir", "seed", "element", "scas", "catalog_dir",
+        "sensitivity_dir", "optical_model", "optical_model_version",
+        "psf_cache_dir", "cone_radius", "star_batch_size",
+        "galaxy_batch_size", "galaxy_npix", "source_cuts",
+        "output_prefix", "cache_dir",
+    }
+    unknown = sorted(set(cfg) - known_keys)
+    if unknown:
+        raise ValueError(
+            f"Unknown config keys {unknown} in {config_path}; "
+            f"known keys: {sorted(known_keys)}"
+        )
+
     # Load pointing table
     ptable = Table.read(pointings_path, format="ascii.ecsv")
 
