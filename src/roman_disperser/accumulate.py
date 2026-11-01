@@ -105,6 +105,10 @@ class WindowPlan(NamedTuple):
     segment : SegmentPlan or None
     vmap_width : int
         Sources rendered in parallel per group (``"window"`` mode).
+    vectorize : bool
+        True: the sources of a group are rendered with ``vmap`` (one
+        program over the group; the GPU setting); False: with ``lax.map``
+        (one after another, as the production loop; faster on CPU).
     chunk_size : int
         Samples per chunk for ``renderer="deposit"``, ``inner="scatter"``.
     """
@@ -119,6 +123,7 @@ class WindowPlan(NamedTuple):
     n_samples: int = 0
     segment: object = None
     vmap_width: int = 8
+    vectorize: bool = True
     chunk_size: int = 2000
 
 
@@ -169,7 +174,7 @@ def min_stride(xd, yd, thr_y, thr_x):
 def make_window_plan(psf_payload, optical_payload, kind, wavelengths, *,
                      renderer="deposit", deposit="interp", n_nodes=None,
                      galaxy_npix=None, psf_at="source", inner="ordered",
-                     vmap_width=8, chunk_size=2000, probe=9,
+                     vmap_width=8, vectorize=True, chunk_size=2000, probe=9,
                      extent_factor=1.05, margin_px=2, stride_margin_px=1.0):
     """Build the static :class:`WindowPlan` for one (SCA, order, kind).
 
@@ -245,7 +250,8 @@ def make_window_plan(psf_payload, optical_payload, kind, wavelengths, *,
                       oversample=os_, stamp_shape=stamp_shape,
                       deposit=deposit, inner=inner, stride=int(stride),
                       n_samples=int(wl.size), segment=seg_plan,
-                      vmap_width=int(vmap_width), chunk_size=int(chunk_size))
+                      vmap_width=int(vmap_width), vectorize=bool(vectorize),
+                      chunk_size=int(chunk_size))
 
 
 # ---------------------------------------------------------------------------
@@ -328,20 +334,27 @@ def _deposit_window(plan, binned, grid_wl, wavelengths, counts, xd, yd):
     if n != plan.n_samples:
         raise ValueError(f"plan made for {plan.n_samples} samples, got {n}")
     layout = _class_layout(n, plan.stride)       # [J, G]
+    # Stamps of all samples at once (as the scatter path), laid out
+    # [J, G, ...]; class c = column c, scattered with unique indices.
+    valid = layout >= 0
+    nat, ly, lx = stamps(jnp.where(valid, layout, 0).ravel())
+    j, g = layout.shape
+    nat = nat.reshape((j, g) + nat.shape[1:])
+    ly = jnp.where(valid, ly.reshape(j, g), w_y)  # padding -> dropped
+    lx = lx.reshape(j, g)
 
-    def one_class(window, col):
-        valid = col >= 0
-        idx = jnp.where(valid, col, 0)
-        nat, ly, lx = stamps(idx)
-        ly = jnp.where(valid, ly, w_y)            # padding -> dropped
-        iy = jnp.broadcast_to(ly[:, None, None] + k_y[None, :, None], nat.shape)
-        ix = jnp.broadcast_to(lx[:, None, None] + k_x[None, None, :], nat.shape)
+    def one_class(window, c):
+        nat_c, ly_c, lx_c = nat[:, c], ly[:, c], lx[:, c]
+        iy = jnp.broadcast_to(ly_c[:, None, None] + k_y[None, :, None],
+                              nat_c.shape)
+        ix = jnp.broadcast_to(lx_c[:, None, None] + k_x[None, None, :],
+                              nat_c.shape)
         window = window.at[iy.ravel(), ix.ravel()].add(
-            nat.ravel(), mode="drop", unique_indices=True,
+            nat_c.ravel(), mode="drop", unique_indices=True,
             wrap_negative_indices=False)
         return window, None
 
-    window, _ = jax.lax.scan(one_class, window, layout.T)
+    window, _ = jax.lax.scan(one_class, window, jnp.arange(g))
     return window, oy, ox
 
 
@@ -473,7 +486,8 @@ def _groups(a, v):
     return a.reshape((g, v) + a.shape[1:])
 
 
-def _window_loop(geometry_fn, render_fn, n_sources, batch_args, output, width):
+def _window_loop(geometry_fn, render_fn, n_sources, batch_args, output, width,
+                 vectorize=True):
     """Groups of ``width`` sources: geometry (vmapped, outside the cond),
     render (vmapped), then the group's windows are added in source order.
     Groups past ``n_sources`` are skipped; padded rows inside the last group
@@ -496,7 +510,11 @@ def _window_loop(geometry_fn, render_fn, n_sources, batch_args, output, width):
         geom = jax.lax.map(lambda a: geometry_fn(*a), args)
 
         def body(output):
-            win, oy, ox = jax.vmap(render_fn)(geom, *args)
+            if vectorize:
+                win, oy, ox = jax.vmap(render_fn)(geom, *args)
+            else:
+                win, oy, ox = jax.lax.map(lambda a: render_fn(*a),
+                                          (geom, *args))
             win = jnp.where(valid[:, None, None], win, 0.0)
             return add_windows_ordered(output, win, oy, ox)
         output = jax.lax.cond(gi * v < n_sources, body, lambda o: o, output)
@@ -527,7 +545,8 @@ def run_star_batch_window(arrays, sens, wavelengths, dlam_angstroms,
         return render_star_window(psf_payload, optical_payload, x, y, wl_dep,
                                   counts, plan, dispersed=dispersed)
     return _window_loop(geometry_fn, render_fn, n_sources,
-                        (spectra, xsca, ysca), output, plan.vmap_width)
+                        (spectra, xsca, ysca), output, plan.vmap_width,
+                        plan.vectorize)
 
 
 @partial(jax.jit, static_argnames=("static", "plan", "sed_rebin"),
@@ -553,7 +572,7 @@ def run_galaxy_batch_window(arrays, sens, wavelengths, dlam_angstroms,
                                     dispersed=geom[1])
     return _window_loop(geometry_fn, render_fn, n_sources,
                         (spectra, xsca, ysca, images), output,
-                        plan.vmap_width)
+                        plan.vmap_width, plan.vectorize)
 
 
 def _arrays(psf_payload, optical_payload, plan, hoist_psf):
