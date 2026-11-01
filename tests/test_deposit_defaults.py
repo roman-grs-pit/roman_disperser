@@ -129,3 +129,17 @@ def test_cli_defaults_and_off_switches(bdi, monkeypatch):
                      "--rebin-dlam", "0:40,1:4,2:2")
     assert kw["hoist_star_psf"] is True
     assert kw["rebin_dlam"] == {"0": 40.0, "1": 4.0, "2": 2.0}
+
+
+def test_benchmark_settings_match_driver_defaults(bdi):
+    spec = importlib.util.spec_from_file_location(
+        "bench_deposit_defaults",
+        Path(__file__).parent.parent / "benchmarks" / "bench_deposit.py")
+    bench = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bench)
+    d = bench.SETTINGS["default"]
+    assert d["deposit"] == bdi.DEFAULT_DEPOSIT
+    assert d["rebin_dlam"] == bdi.DEFAULT_REBIN_DLAM
+    assert d["hoist_star_psf"] is bdi.DEFAULT_HOIST_STAR_PSF
+    assert bench.SETTINGS["floor"] == {"deposit": "floor", "rebin_dlam": None,
+                                       "hoist_star_psf": False}
