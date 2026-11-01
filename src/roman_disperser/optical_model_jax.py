@@ -445,6 +445,216 @@ def get_fpa_pos(ra, dec, pointing_ra, pointing_dec, pointing_pa):
     return get_fpa_pos_from_offsets(dx, dy, pointing_pa)
 
 
+# ---------------------------------------------------------------------------
+# Differentiable sky -> detector transform (small perturbations)
+# ---------------------------------------------------------------------------
+#
+# sky_to_tangent_offsets is host float64 by design (rule 1 above), so RA/Dec
+# cannot be traced. For gradients w.r.t. source positions and the pointing,
+# the absolute geometry is evaluated once in float64 at the nominal pointing
+# (make_sky_reference) and the perturbed position is that reference plus a
+# *change* computed in float32 JAX from small quantities only. Every term of
+# the change is a small number times an O(1) one, so float32 carries it to
+# ~1e-7 of its size (~2e-4 px for a 0.1 deg pointing change), and the only
+# other rounding is the final reference + change.
+
+
+def _fpa_to_sca_f64(det, xfpa, yfpa):
+    """float64 NumPy :func:`fpa_to_sca` (host reference)."""
+    pixel_scale = float(det["pixel_scale"])
+    plate_scale = float(det["plate_scale"])
+    xcen, ycen = (float(v) for v in det["xy_center"])
+    dx = xfpa * 3600.0 / pixel_scale - xcen * plate_scale
+    dy = yfpa * 3600.0 / pixel_scale - ycen * plate_scale
+    return -dx + float(det["crpix1"]), dy + float(det["crpix2"])
+
+
+def make_sky_reference(ra, dec, pointing_ra, pointing_dec, pointing_pa,
+                       payload=None):
+    """Host float64 reference for the ``perturbed_sky_to_*`` functions.
+
+    Runs the float64 tangent-plane differencing of
+    :func:`sky_to_tangent_offsets`, the PA rotation and (with ``payload``)
+    the FPA -> SCA map once at the nominal pointing, in float64 NumPy, and
+    keeps the results as float32 JAX arrays together with sin/cos of the
+    nominal Dec and PA rotation angle. Everything downstream is float32 JAX
+    (rule 1 of the precision convention).
+
+    Args:
+        ra, dec: source coordinates in degrees (float64 host arrays, as for
+            :func:`sky_to_tangent_offsets`, which rejects float32)
+        pointing_ra, pointing_dec, pointing_pa: nominal pointing in degrees
+        payload: optional :func:`make_sca_payload` result; adds the nominal
+            SCA position (needed by :func:`perturbed_sky_to_sca` for its
+            full accuracy)
+
+    Returns:
+        dict of float32 JAX arrays: ``xi0``, ``eta0``, ``xfpa0``, ``yfpa0``
+        [N] (degrees), optionally ``xsca0``, ``ysca0`` [N] (pixels), and the
+        scalars ``sin_dec0``, ``cos_dec0``, ``cos_pa0``, ``sin_pa0``
+    """
+    xi, eta = sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec)
+    dec0 = np.deg2rad(np.float64(pointing_dec))
+    theta0 = np.deg2rad(np.float64(pointing_pa) + 180.0 + FOCAL_PA_DEG)
+    c, s = np.cos(theta0), np.sin(theta0)
+    xfpa = -(c * xi - s * eta)
+    yfpa = -(s * xi + c * eta)
+    f32 = lambda v: jnp.asarray(v, jnp.float32)
+    ref = {
+        "xi0": f32(xi), "eta0": f32(eta),
+        "xfpa0": f32(xfpa), "yfpa0": f32(yfpa),
+        "sin_dec0": f32(np.sin(dec0)), "cos_dec0": f32(np.cos(dec0)),
+        "cos_pa0": f32(c), "sin_pa0": f32(s),
+    }
+    if payload is not None:
+        xs, ys = _fpa_to_sca_f64(payload["det"], xfpa, yfpa)
+        ref["xsca0"], ref["ysca0"] = f32(xs), f32(ys)
+    return ref
+
+
+def _two_sin2_half(a):
+    """``1 - cos(a)`` without cancellation: ``2 sin^2(a/2)``."""
+    h = jnp.sin(0.5 * a)
+    return 2.0 * h * h
+
+
+def _tangent_change(ref, d_xi, d_eta, d_ra, d_dec):
+    """Change (degrees) of the tangent-plane offsets, see
+    :func:`perturbed_tangent_offsets`."""
+    deg = jnp.float32(np.pi / 180.0)
+    dxi = jnp.asarray(d_xi, jnp.float32)
+    deta = jnp.asarray(d_eta, jnp.float32)
+    da = jnp.asarray(d_ra, jnp.float32) * deg
+    dd = jnp.asarray(d_dec, jnp.float32) * deg
+    s0, c0 = ref["sin_dec0"], ref["cos_dec0"]
+
+    # Source vector in the nominal pointing frame, unnormalised and scaled
+    # by 180/pi so that its x, y components are offsets in degrees
+    # (xr = -eta, yr = xi, zr = 180/pi).
+    big = jnp.float32(180.0 / np.pi)
+    sx = -(ref["eta0"] + deta)
+    sy = ref["xi0"] + dxi
+    sz = jnp.full_like(sy, big)
+
+    # New frame = M @ nominal, M = F(Dec0 + d_dec) Rz(-d_ra) F(Dec0)^T, with
+    # F(d) = [[sin d, 0, -cos d], [0, 1, 0], [cos d, 0, sin d]] the
+    # RA-shifted equatorial -> pointing-frame rotation of
+    # sky_to_tangent_offsets. M - I = (rotation about y by d_dec) - I
+    # + F(d1) Z F(d0)^T with Z = Rz(-d_ra) - I; only sin and 2 sin^2(x/2)
+    # of the small angles enter, so nothing O(1) cancels.
+    sin_dd, omc_dd = jnp.sin(dd), _two_sin2_half(dd)
+    s1 = s0 * (1.0 - omc_dd) + c0 * sin_dd           # sin(Dec0 + d_dec)
+    c1 = c0 * (1.0 - omc_dd) - s0 * sin_dd           # cos(Dec0 + d_dec)
+    sin_da, omc_da = jnp.sin(da), _two_sin2_half(da)
+    ux = s0 * sx + c0 * sz                           # u = F(d0)^T s
+    uy = sy
+    wx = -omc_da * ux + sin_da * uy                  # w = Z u (wz = 0)
+    wy = -sin_da * ux - omc_da * uy
+    # (M - I) s, componentwise
+    ex = -omc_dd * sx + sin_dd * sz + s1 * wx
+    ey = wy
+    ez = -sin_dd * sx - omc_dd * sz + c1 * wx
+
+    # Tangent ratios: xi' = big * (sy + ey) / (sz + ez), and the change
+    # xi' - xi = big * (ey * sz - sy * ez) / ((sz + ez) * sz), likewise eta.
+    nz = sz + ez
+    scale = big / (nz * sz)
+    dxi_t = dxi + scale * (ey * sz - sy * ez)
+    deta_t = deta + scale * (-(ex * sz - sx * ez))
+    return dxi_t, deta_t
+
+
+def perturbed_tangent_offsets(ref, d_xi=0.0, d_eta=0.0, d_ra=0.0, d_dec=0.0):
+    """Tangent-plane offsets after small source and pointing perturbations.
+
+    JAX, float32, jittable and differentiable in every perturbation. The
+    source is moved by ``(d_xi, d_eta)`` in the *nominal* tangent plane and
+    the pointing moves to ``(RA0 + d_ra, Dec0 + d_dec)``; the result is the
+    source's gnomonic offset (xi East, eta North) from the new pointing,
+    exact up to float32 rounding (no small-angle approximation).
+
+    Args:
+        ref: from :func:`make_sky_reference`
+        d_xi, d_eta: source offsets in degrees in the nominal tangent plane,
+            scalars or [N]
+        d_ra, d_dec: pointing offsets in degrees (``d_ra`` is a coordinate
+            offset, ``d_ra * cos(Dec)`` on the sky)
+
+    Returns:
+        xi, eta: tangent-plane offsets in degrees
+    """
+    dxi, deta = _tangent_change(ref, d_xi, d_eta, d_ra, d_dec)
+    return ref["xi0"] + dxi, ref["eta0"] + deta
+
+
+def _fpa_change(ref, d_xi, d_eta, d_ra, d_dec, d_pa):
+    dxi, deta = _tangent_change(ref, d_xi, d_eta, d_ra, d_dec)
+    dp = jnp.asarray(d_pa, jnp.float32) * jnp.float32(np.pi / 180.0)
+    sin_dp, omc_dp = jnp.sin(dp), _two_sin2_half(dp)
+    c0, s0 = ref["cos_pa0"], ref["sin_pa0"]
+    c = c0 * (1.0 - omc_dp) - s0 * sin_dp            # cos(theta0 + d_pa)
+    s = s0 * (1.0 - omc_dp) + c0 * sin_dp            # sin(theta0 + d_pa)
+    dc = -c0 * omc_dp - s0 * sin_dp                  # c - c0
+    ds = -s0 * omc_dp + c0 * sin_dp                  # s - s0
+    xi0, eta0 = ref["xi0"], ref["eta0"]
+    # xfpa = -(c xi - s eta), yfpa = -(s xi + c eta) (get_fpa_pos_from_
+    # offsets); elementwise, so there is no matmul to annotate.
+    dx = -(c * dxi - s * deta) - (dc * xi0 - ds * eta0)
+    dy = -(s * dxi + c * deta) - (ds * xi0 + dc * eta0)
+    return dx, dy
+
+
+def perturbed_sky_to_fpa(ref, d_xi=0.0, d_eta=0.0, d_ra=0.0, d_dec=0.0,
+                         d_pa=0.0):
+    """FPA position (degrees) after small source/pointing perturbations.
+
+    :func:`perturbed_tangent_offsets` followed by the PA rotation of
+    :func:`get_fpa_pos_from_offsets` at ``PA0 + d_pa`` (``d_pa`` in degrees,
+    applied as a separate small rotation so it is not lost to the float32
+    rounding of PA0 + d_pa). Jittable and differentiable. The result is the
+    float64 reference plus a float32 change; its float32 rounding in degrees
+    is ~5e-4 px at the field edge.
+    """
+    dx, dy = _fpa_change(ref, d_xi, d_eta, d_ra, d_dec, d_pa)
+    return ref["xfpa0"] + dx, ref["yfpa0"] + dy
+
+
+def perturbed_sky_to_sca(ref, payload, d_xi=0.0, d_eta=0.0, d_ra=0.0,
+                         d_dec=0.0, d_pa=0.0, wavelengths=None):
+    """SCA pixel position (and optionally the trace) after perturbations.
+
+    The undispersed SCA position (:func:`fpa_to_sca`, as in the production
+    driver) of :func:`perturbed_sky_to_fpa`. With ``ref`` built with this
+    ``payload`` it is the float64 nominal pixel position plus the float32
+    change (the FPA -> SCA map is linear), ~2e-4 px from a float64
+    evaluation; without, it is ``fpa_to_sca`` of the float32 FPA position
+    (~1e-3 px, like production). If ``wavelengths`` (microns) is given, the
+    dispersed trace from :func:`trace_beam` and :func:`mpa_to_sca` is
+    returned too. Jittable and differentiable (``jax.grad`` /
+    ``jax.jacfwd``) in all perturbations.
+
+    Returns:
+        xsca, ysca [N]; with ``wavelengths``, also xtrace, ytrace [N, N_wl]
+    """
+    dx, dy = _fpa_change(ref, d_xi, d_eta, d_ra, d_dec, d_pa)
+    xfpa, yfpa = ref["xfpa0"] + dx, ref["yfpa0"] + dy
+    if "xsca0" in ref:
+        k = jnp.float32(3600.0) / payload["det"]["pixel_scale"]
+        xsca, ysca = ref["xsca0"] - k * dx, ref["ysca0"] + k * dy
+    else:
+        xsca, ysca = fpa_to_sca(payload, xfpa, yfpa)
+    if wavelengths is None:
+        return xsca, ysca
+    wavelengths = jnp.asarray(wavelengths, jnp.float32)
+
+    def trace_one(xf, yf):   # as star_disperser._compute_dispersed_positions
+        xmpa, ympa = trace_beam(payload, xf[None], yf[None], wavelengths)
+        xt, yt = mpa_to_sca(payload, xmpa, ympa)
+        return xt.reshape(-1), yt.reshape(-1)
+
+    xt, yt = jax.vmap(trace_one)(jnp.atleast_1d(xfpa), jnp.atleast_1d(yfpa))
+    return xsca, ysca, xt, yt
+
 # -------- polynomial functions --------
 
 
