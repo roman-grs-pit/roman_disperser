@@ -1981,7 +1981,8 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         "sensitivity_dir", "optical_model", "optical_model_version",
         "psf_cache_dir", "cone_radius", "star_batch_size",
         "galaxy_batch_size", "galaxy_npix", "source_cuts",
-        "output_prefix", "cache_dir",
+        "output_prefix", "cache_dir", "deposit", "rebin_dlam",
+        "hoist_star_psf", "order_mag_limits",
     }
     unknown = sorted(set(cfg) - known_keys)
     if unknown:
