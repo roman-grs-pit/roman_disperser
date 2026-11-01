@@ -11,6 +11,16 @@ Defaults are unchanged: `deposit="floor"`, no rebinning, no hoist reproduce
 v0.16.0 bit for bit (golden-frames-v3 still apply).
 
 ### Added
+- **Scene linear operator** (`roman_disperser.linear_operator.SceneOperator`,
+  new module, nothing existing changed): the dispersed image of a fixed set
+  of stars and Sersic galaxies on one SCA as a matrix-free linear map of
+  their spectra (per-sample or a piecewise-linear basis), with `forward`
+  (A), `transpose` (A^T via `jax.linear_transpose`; `transpose_vjp` via
+  `jax.vjp`) and `render`
+  with differentiable position offsets. Sources are looped with `lax.scan`
+  (checkpointed body), so reverse mode works. Forward matches
+  `make_batched_*_fori` bit for bit; the adjoint identity holds to f32
+  precision. Needs `deposit="interp"` for position gradients.
 - **Interpolating deposit** (`deposit="interp"` on `make_star_disperser`,
   `make_galaxy_disperser`, `disperse_star_psf`, `disperse_galaxy`,
   `deposit_stack_native`; `--deposit` / config `deposit` in
