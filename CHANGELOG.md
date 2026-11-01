@@ -48,6 +48,14 @@ v0.16.0 bit for bit (golden-frames-v3 still apply).
   `deposit_stack_native`), `psf_model.interpolate_psf_spatial(grid_key=)`,
   FITS cards `DEPOSIT` / `DEPDLAM<order>` and meta keys `deposit`,
   `deposit_dlam_angstroms` (per order), `hoist_star_psf`.
+- **Per-order brightness cut** (`--order-mag-limits 0:24,2:24` / config
+  `order_mag_limits: {"0": 24, "2": 24}`; `pipeline.parse_order_mag_limits`,
+  `order_mag_limits_by_order`, `apply_order_mag_limits`, `flux_to_ab_mag`):
+  in a limited order only sources with F158 AB mag <= limit are dispersed
+  (catalog column `F158`, maggies, stars and galaxies). Applied per SCA after
+  the on-detector selection. FITS cards `ORDMAG<order>`, meta key
+  `order_mag_limits`, and `stars_mag_cut` / `galaxies_mag_cut` in the
+  per-order `source_counts`. Off by default.
 
 ### Changed
 - Deposit chunk length is derived from the number of wavelengths

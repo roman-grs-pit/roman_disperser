@@ -86,6 +86,8 @@ from roman_disperser.pipeline import (
     make_batched_galaxy_fori, disperse_batched_sersic_galaxies,
     parse_rebin_dlam,
     sed_rebin_factors,
+    parse_order_mag_limits, order_mag_limits_by_order,
+    apply_order_mag_limits, flux_to_ab_mag,
     write_fits, write_png, write_mosaic_png, write_mosaic_from_directory,
     get_code_version, get_git_sha, make_sca_keys,
 )
@@ -619,6 +621,7 @@ def setup_pipeline(
     deposit=None,
     rebin_dlam=None,
     hoist_star_psf=False,
+    order_mag_limits=None,
     verbose=True,
 ):
     """One-time setup: load model, catalog, optical payloads, sensitivities.
@@ -672,6 +675,14 @@ def setup_pipeline(
         Phase-bin the PSF grid once per (SCA, order) for the star path
         (``make_star_disperser(hoist_psf=True)``): ~1.35x faster stars,
         +1 PSF grid of device memory per order.
+    order_mag_limits : dict, optional
+        Per-order brightness cut ``{order: AB mag}`` on the F158 column
+        (maggies, for stars and galaxies alike): in a limited order only
+        sources with F158 AB mag <= limit are dispersed (non-positive or NaN
+        flux is cut). Orders left out are not cut; None cuts nothing. Applied
+        per SCA after the on-detector selection; recorded as ``ORDMAG<o>``
+        header cards, ``order_mag_limits`` in the meta YAML and the skipped
+        counts in ``source_counts``. Meant for the faint grism orders 0 and 2.
     verbose : bool
         Print progress information.
 
@@ -732,6 +743,12 @@ def setup_pipeline(
         + ", ".join(f"order {o}: {f * dlam_angstroms:.1f} A"
                     for o, f in sed_rebin.items())
         + f", star PSF hoist: {bool(hoist_star_psf)}")
+    order_mag_limits = order_mag_limits_by_order(order_mag_limits,
+                                                 element.orders)
+    if order_mag_limits:
+        log("Per-order brightness cut (F158 AB mag <= limit): "
+            + ", ".join(f"order {o}: {m:g}"
+                        for o, m in order_mag_limits.items()))
 
     # -- Load full star SED array (trimmed) ----------------------------------
     log("Loading star SED templates...")
@@ -812,6 +829,7 @@ def setup_pipeline(
         "deposit": deposit,
         "sed_rebin": sed_rebin,
         "hoist_star_psf": bool(hoist_star_psf),
+        "order_mag_limits": order_mag_limits,
         "oversample": oversample,
         "n_catalog_rows": n_catalog_rows,
         "source_cuts": source_cuts_summary,
@@ -901,6 +919,8 @@ def process_pointing(
         **{f"DEPDLAM{o}": (f * pipeline["dlam_angstroms"],
                            f"[A] Count rebinning, order {o}")
            for o, f in pipeline["sed_rebin"].items()},
+        **{f"ORDMAG{o}": (m, f"F158 AB mag limit, order {o}")
+           for o, m in pipeline.get("order_mag_limits", {}).items()},
         **{f"SRCCUT{i + 1}": (describe_source_cut(r)[:68], "source_cuts rule")
            for i, r in enumerate(pipeline["source_cuts"])},
         **(extra_headers or {}),
@@ -960,6 +980,12 @@ def process_pointing(
     else:
         xfpa = jnp.array([], dtype=jnp.float32)
         yfpa = jnp.array([], dtype=jnp.float32)
+
+    # Per-source F158 AB magnitude for the per-order brightness cut
+    order_mag_limits = pipeline.get("order_mag_limits") or {}
+    mag_cone = None
+    if order_mag_limits:
+        mag_cone = flux_to_ab_mag(meta_cone_reset["F158"].values)
 
     # -- Step 3: Load star SEDs into CPU memory ------------------------------
     # Galaxy SEDs are loaded per-SCA below to avoid holding all cone galaxies
@@ -1076,6 +1102,25 @@ def process_pointing(
 
         sca_counts = {order: {"stars": 0, "galaxies": 0} for order in element.orders}
         source_counts[sca_num] = sca_counts
+
+        # Per-order brightness cut (faint orders): AND mag <= limit into the
+        # order masks; a source cut from every order leaves any_mask.
+        if order_mag_limits and n_any > 0:
+            order_masks, mag_skipped = apply_order_mag_limits(
+                order_masks, mag_cone, order_mag_limits)
+            any_mask = np.zeros(len(mag_cone), dtype=bool)
+            for order in element.orders:
+                any_mask |= order_masks[order]
+            n_any = int(any_mask.sum())
+            for order in order_mag_limits:
+                sk = mag_skipped[order]
+                sca_counts[order]["stars_mag_cut"] = int((sk & is_star).sum())
+                sca_counts[order]["galaxies_mag_cut"] = int(
+                    (sk & is_galaxy).sum())
+                log(f"    Order {order}: brightness cut F158 <= "
+                    f"{order_mag_limits[order]:g} skips "
+                    f"{sca_counts[order]['stars_mag_cut']} stars, "
+                    f"{sca_counts[order]['galaxies_mag_cut']} galaxies")
 
         # Disperse sources
         output = jnp.zeros(
@@ -1372,6 +1417,7 @@ def process_pointing(
             for o, f in pipeline["sed_rebin"].items()
         },
         "hoist_star_psf": pipeline["hoist_star_psf"],
+        "order_mag_limits": dict(pipeline.get("order_mag_limits") or {}),
         "oversample": pipeline["oversample"],
         "catalog_rows": pipeline["n_catalog_rows"],
         "source_cuts": pipeline["source_cuts"],
@@ -1418,6 +1464,7 @@ def build_dispersed_image(
     deposit=None,
     rebin_dlam=None,
     hoist_star_psf=False,
+    order_mag_limits=None,
     verbose=True,
     force=False,
 ):
@@ -1453,6 +1500,8 @@ def build_dispersed_image(
         Declarative row selection (see ``_CUT_OPS``); None keeps every row.
     deposit, rebin_dlam, hoist_star_psf : optional
         Deposit options, see ``setup_pipeline``.
+    order_mag_limits : dict, optional
+        Per-order F158 brightness cut, see ``setup_pipeline``.
     verbose : bool
         Print progress information (default: True).
     force : bool
@@ -1484,6 +1533,7 @@ def build_dispersed_image(
         deposit=deposit,
         rebin_dlam=rebin_dlam,
         hoist_star_psf=hoist_star_psf,
+        order_mag_limits=order_mag_limits,
         verbose=verbose,
     )
 
@@ -1603,6 +1653,14 @@ galaxy_npix: 30
 # deposit: interp
 # rebin_dlam: {"0": 4, "1": 4, "2": 2}
 # hoist_star_psf: true
+
+# -- Per-order brightness cut (optional) ---------------------------------------
+# Disperse a source in a listed order only if its F158 AB magnitude (catalog
+# column F158, maggies; stars and galaxies) is <= the limit. Orders left out
+# are not cut. Grism orders 0 and 2 carry ~0.4 % and ~0.2 % of the order-1
+# flux, so faint sources add light there far below the noise. Recorded as
+# ORDMAG<o> header cards and in the meta YAML (with the skipped counts).
+# order_mag_limits: {"0": 24, "2": 24}
 
 # -- Source cuts (optional) ----------------------------------------------------
 # Declarative row selection applied right after loading the catalog, so one
@@ -1943,6 +2001,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         deposit=cfg.get("deposit"),
         rebin_dlam=cfg.get("rebin_dlam"),
         hoist_star_psf=cfg.get("hoist_star_psf", False),
+        order_mag_limits=cfg.get("order_mag_limits"),
         verbose=verbose,
     )
 
@@ -2101,6 +2160,12 @@ def main():
     parser.add_argument("--hoist-star-psf", action="store_true",
                         help="Phase-bin the PSF grid once per SCA for stars "
                              "(faster, +1 PSF grid of memory per order)")
+    parser.add_argument("--order-mag-limits", type=parse_order_mag_limits,
+                        default=None,
+                        help="Per-order brightness cut on F158 AB mag, e.g. "
+                             "0:24,2:24: in those orders only sources with "
+                             "F158 <= limit are dispersed (quick mode; "
+                             "default: none)")
     parser.add_argument("--seed", type=int, default=None,
                         help="RNG seed (required for quick mode)")
     parser.add_argument("--exptime", type=float, default=190.22,
@@ -2212,6 +2277,7 @@ def main():
         deposit=args.deposit,
         rebin_dlam=args.rebin_dlam,
         hoist_star_psf=args.hoist_star_psf,
+        order_mag_limits=args.order_mag_limits,
         verbose=not args.quiet,
         force=args.force,
     )
