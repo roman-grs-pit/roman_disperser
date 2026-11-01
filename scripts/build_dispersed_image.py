@@ -142,6 +142,8 @@ def parse_segment_render(text):
     production deposit for that order). Returns None, an int or a dict."""
     if text is None or text.strip().lower() == "none":
         return None
+    if text.strip().lower() == "auto":
+        return "auto"
     if ":" not in text:
         return int(text)
     out = {}
@@ -150,6 +152,31 @@ def parse_segment_render(text):
         value = value.strip()
         out[order.strip()] = None if value.lower() == "none" else int(value)
     return out
+
+
+# ``auto`` choices by backend: (segment_render, accumulate). The CPU keeps the
+# sequential scatter-add (already deterministic there and the fastest); GPUs
+# use per-source windows, several devices the tiled sum. 56 nodes reproduce
+# the production deposit to ~1e-6 of peak. The GPU rows are not yet measured
+# (T85-T87), so ``auto`` is opt-in.
+AUTO_SEGMENT_NODES = 56
+
+
+def auto_backend_choice(backend=None, n_devices=None):
+    """``(segment_render, accumulate, label)`` for ``auto`` on this machine.
+
+    ``backend`` and ``n_devices`` default to ``jax.default_backend()`` and
+    ``jax.device_count()``; ``label`` is e.g. ``"gpu x2"``.
+    """
+    backend = jax.default_backend() if backend is None else backend
+    n_devices = jax.device_count() if n_devices is None else n_devices
+    if backend == "cpu":
+        accumulate = None
+    elif n_devices > 1:
+        accumulate = "tiled"
+    else:
+        accumulate = "window"
+    return AUTO_SEGMENT_NODES, accumulate, f"{backend} x{n_devices}"
 
 
 def resolve_segment_render(segment_render, orders, psf_at="source"):
@@ -1015,6 +1042,15 @@ def setup_pipeline(
         + ", ".join(f"order {o}: {f * dlam_angstroms:.1f} A"
                     for o, f in sed_rebin.items())
         + f", star PSF hoist: {bool(hoist_star_psf)}")
+    auto_selection = None
+    if segment_render == "auto" or accumulate == "auto":
+        auto_nodes, auto_accum, auto_selection = auto_backend_choice()
+        if segment_render == "auto":
+            segment_render = auto_nodes
+        if accumulate == "auto":
+            accumulate = auto_accum
+        log(f"Auto selection for {auto_selection}: segment render "
+            f"{segment_render}, accumulation {accumulate or 'sequential'}")
     segment = resolve_segment_render(segment_render, element.orders,
                                      segment_psf_at)
     if segment is not None:
@@ -1118,6 +1154,7 @@ def setup_pipeline(
         "order_mag_limits": order_mag_limits,
         "segment_render": segment,
         "accumulate": accumulate,
+        "auto_selection": auto_selection,
         "oversample": oversample,
         "psf_geometry": psf_geometry,
         "n_catalog_rows": n_catalog_rows,
@@ -1228,6 +1265,9 @@ def process_pointing(
         **({"ACCUM": (pipeline["accumulate"],
                       "Per-source windows, deterministic sum mode")}
            if pipeline.get("accumulate") else {}),
+        **({"AUTOSEL": (pipeline["auto_selection"],
+                        "Backend behind the auto choices")}
+           if pipeline.get("auto_selection") else {}),
         **{f"SRCCUT{i + 1}": (describe_source_cut(r)[:68], "source_cuts rule")
            for i, r in enumerate(pipeline["source_cuts"])},
         **(extra_headers or {}),
@@ -1759,6 +1799,7 @@ def process_pointing(
         "order_mag_limits": dict(pipeline.get("order_mag_limits") or {}),
         "segment_render": pipeline.get("segment_render"),
         "accumulate": pipeline.get("accumulate"),
+        "auto_selection": pipeline.get("auto_selection"),
         "oversample": pipeline["oversample"],
         "catalog_rows": pipeline["n_catalog_rows"],
         "source_cuts": pipeline["source_cuts"],
@@ -2574,21 +2615,23 @@ def main():
                         help="Opt-in trace-aligned segment render "
                              "(prototype): wavelength nodes for every order "
                              "(e.g. 12) or per order (e.g. 0:6,1:12,2:28; "
-                             "orders left out keep the deposit) (quick "
-                             "mode; default: off)")
+                             "orders left out keep the deposit), or auto "
+                             "(56 nodes) (quick mode; default: off)")
     parser.add_argument("--segment-psf-at", choices=("source", "landing"),
                         default="source",
                         help="PSF lookup position of the segment render: "
                              "the direct-image position (default) or each "
                              "node's landing position on the trace")
-    parser.add_argument("--accumulate", choices=accum.ACCUMULATE_MODES,
+    parser.add_argument("--accumulate",
+                        choices=accum.ACCUMULATE_MODES + ("auto",),
                         default=None,
                         help="Opt-in (prototype): render each source into "
                              "its own window and add the windows in a fixed "
                              "order ('window': batches, vmapped; 'tiled': "
-                             "8x8 detector tiles), deterministic on GPU "
-                             "(quick mode; default: off = sequential "
-                             "scatter-add)")
+                             "8x8 detector tiles), deterministic on GPU; "
+                             "'auto': sequential on CPU, window on one GPU, "
+                             "tiled on several (quick mode; default: off = "
+                             "sequential scatter-add)")
     parser.add_argument("--seed", type=int, default=None,
                         help="RNG seed (required for quick mode)")
     parser.add_argument("--exptime", type=float, default=190.22,
