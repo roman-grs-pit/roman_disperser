@@ -314,7 +314,7 @@ def disperse_galaxy(
     wavelengths,
     output,
     chunk_size=2000,
-    deposit="floor",
+    deposit="interp",
 ):
     """Disperse a galaxy onto the detector.
 
@@ -348,7 +348,7 @@ def disperse_galaxy(
         it is cheap in memory at native resolution — see
         star_disperser.deposit_stack_native.
     deposit : {"floor", "interp"}, optional
-        Deposit scheme (default ``"floor"``); see
+        Deposit scheme (default ``"interp"``; ``"floor"`` is the historical deposit); see
         star_disperser.deposit_binned.
 
     Returns
@@ -380,7 +380,7 @@ def disperse_galaxy(
 
 
 def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000,
-                          deposit="floor"):
+                          deposit="interp"):
     """Create a JIT-compiled galaxy disperser for one (SCA, order).
 
     The payload *arrays* are passed to :func:`disperse_galaxy_jit` as jit
@@ -403,7 +403,7 @@ def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000,
         it is cheap in memory at native resolution — see
         star_disperser.deposit_stack_native.
     deposit : {"floor", "interp"}, optional
-        Deposit scheme (default ``"floor"``); see
+        Deposit scheme (default ``"interp"``; ``"floor"`` is the historical deposit); see
         star_disperser.deposit_binned.
 
     Returns
@@ -443,7 +443,7 @@ def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000,
 
 @partial(jax.jit, static_argnames=("static", "chunk_size", "deposit"))
 def disperse_galaxy_jit(arrays, image, x0, y0, spectrum, wavelengths, output,
-                        *, static, chunk_size=2000, deposit="floor"):
+                        *, static, chunk_size=2000, deposit="interp"):
     """Jitted :func:`disperse_galaxy` with the payloads as arguments.
 
     ``arrays, static = jit_payload.split_payloads(psf_payload,

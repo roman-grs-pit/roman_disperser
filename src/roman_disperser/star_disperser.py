@@ -26,8 +26,9 @@ from . import jit_payload
 from . import optical_model_jax as omj
 from . import psf_model
 
-# Deposit schemes of deposit_binned / deposit_stack_native. "floor" is the
-# default (the golden frames are blessed with it); see deposit_binned.
+# Deposit schemes of deposit_binned / deposit_stack_native. "interp" is the
+# default; "floor" is the historical deposit (the pinned golden frames are
+# blessed with it). See deposit_binned.
 DEPOSIT_MODES = ("floor", "interp")
 
 
@@ -184,14 +185,15 @@ def _compute_dispersed_positions(optical_payload, xsca_star, ysca_star, waveleng
 
 def deposit_stack_native(
     stack, grid_wl, wavelengths, flux, xsca_disp, ysca_disp, output,
-    oversample, chunk_size, deposit="floor",
+    oversample, chunk_size, deposit="interp",
 ):
     """Deposit an oversampled stamp stack at native detector resolution.
 
     ``deposit`` selects how a stamp centre between phase-aligned positions
-    is handled (see :data:`DEPOSIT_MODES`): ``"floor"`` (default, the
-    historical deposit described below) or ``"interp"`` (two-tap linear
-    interpolation between adjacent phases, see :func:`deposit_binned`).
+    is handled (see :data:`DEPOSIT_MODES`): ``"interp"`` (default; two-tap
+    linear interpolation between adjacent phases, see
+    :func:`deposit_binned`) or ``"floor"`` (the historical deposit described
+    below).
     This function is :func:`bin_stack_phases` followed by
     :func:`deposit_binned`.
 
@@ -259,7 +261,7 @@ def deposit_stack_native(
         int32 indices, vs ~184 + ~367 MB; sizes computed from the array
         shapes, not a measured peak).
     deposit : {"floor", "interp"}, optional
-        Deposit scheme (default ``"floor"``); see :func:`deposit_binned`.
+        Deposit scheme (default ``"interp"``; ``"floor"`` is the historical deposit); see :func:`deposit_binned`.
 
     Returns
     -------
@@ -377,7 +379,7 @@ def _place(stamps, d, axis):
 
 def deposit_binned(
     binned, stamp_shape, grid_wl, wavelengths, flux, xsca_disp, ysca_disp,
-    output, oversample, chunk_size, deposit="floor",
+    output, oversample, chunk_size, deposit="interp",
 ):
     """Chunked deposit of a phase-binned stamp stack (the hot loop).
 
@@ -519,7 +521,7 @@ def disperse_star_psf(
     rel_x=None,
     rel_y=None,
     chunk_size=2000,
-    deposit="floor",
+    deposit="interp",
 ):
     """
     Disperse a single star through the Roman grism using wavelength-dependent PSFs.
@@ -561,7 +563,7 @@ def disperse_star_psf(
         2000 is kept because the native-resolution per-chunk arrays make
         it cheap in memory. See :func:`deposit_stack_native`.
     deposit : {"floor", "interp"}, optional
-        Deposit scheme (default ``"floor"``); see :func:`deposit_binned`.
+        Deposit scheme (default ``"interp"``; ``"floor"`` is the historical deposit); see :func:`deposit_binned`.
 
     Returns
     -------
@@ -671,7 +673,7 @@ def _bin_psf_grid_jit(psf_grid, *, oversample):
 
 
 def make_star_disperser(psf_payload, optical_payload, chunk_size=2000,
-                        deposit="floor", hoist_psf=False):
+                        deposit="interp", hoist_psf=False):
     """
     Create a JIT-compiled star disperser for a specific detector/order.
 
@@ -693,9 +695,9 @@ def make_star_disperser(psf_payload, optical_payload, chunk_size=2000,
         chunk_size × n_y × n_x × 4 bytes for the values plus twice that
         for the int32 indices. See :func:`deposit_stack_native`.
     deposit : {"floor", "interp"}, optional
-        Deposit scheme (default ``"floor"``, the historical deposit);
-        ``"interp"`` is the exact box-overlap deposit, continuous in
-        position. See :func:`deposit_binned`.
+        Deposit scheme (default ``"interp"``, the exact box-overlap deposit,
+        continuous in position); ``"floor"`` is the historical deposit.
+        See :func:`deposit_binned`.
     hoist_psf : bool, optional
         If True, phase-bin all PSF grid nodes once here
         (:func:`bin_psf_grid`, +1x the PSF grid in device memory, ~121 MB
@@ -800,7 +802,7 @@ def make_star_disperser(psf_payload, optical_payload, chunk_size=2000,
 
 @partial(jax.jit, static_argnames=("static", "chunk_size", "deposit"))
 def disperse_star_jit(arrays, xsca, ysca, wavelengths, flux, output, *,
-                      static, chunk_size=2000, deposit="floor"):
+                      static, chunk_size=2000, deposit="interp"):
     """Jitted :func:`disperse_star_psf` with the payloads as arguments.
 
     ``arrays, static = jit_payload.split_payloads(psf_payload,

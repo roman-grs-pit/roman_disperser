@@ -144,6 +144,12 @@ from roman_disperser.pipeline import (
 # roman_disperser_data release of the same name (see module docstring).
 GOLDEN_VERSION = "golden-frames-v3"
 
+# Deposit options the pinned frames were blessed with: the historical floor
+# deposit, no count rebinning, no star PSF hoist. These are no longer the
+# production defaults (interp, 40/4/2 A rebinning, hoist), so they are passed
+# explicitly; a bless with the new defaults is a new GOLDEN_VERSION.
+GOLDEN_DEPOSIT = dict(deposit="floor", sed_rebin=1, hoist_star_psf=False)
+
 SCA = 1  # matches all perf/benchmark work (bench_deposit.py, the workbench runs)
 
 # (element, order) configurations per tier, and their wavelength spacings.
@@ -355,7 +361,7 @@ def write_references(out_dir):
     for element_name, order, tier, dlam in tiers:
         fname = frame_filename(element_name, order, tier)
         print(f"rendering {fname} (dlam={dlam} A) ...", flush=True)
-        frame = render_frame(element_name, order, dlam)
+        frame = render_frame(element_name, order, dlam, **GOLDEN_DEPOSIT)
         prov = dict(base_prov, element=element_name, order=order,
                     tier=tier, dlam_A=dlam)
         np.savez_compressed(out_dir / fname, frame=frame,

@@ -404,15 +404,20 @@ def sed_rebin_factors(dlam_angstroms, rebin_dlam_angstroms, orders):
 
 
 def parse_rebin_dlam(text):
-    """Parse ``--rebin-dlam``: ``"4"`` or per order ``"0:4,1:4,2:2"``."""
+    """Parse ``--rebin-dlam``: ``"4"``, per order ``"0:40,1:4,2:2"``, or
+    ``"none"`` (no rebinning; returned as the string ``"none"``). A per-order
+    value of ``none`` leaves that order unrebinned (``None``)."""
     if text is None:
         return None
+    if text.strip().lower() == "none":
+        return "none"
     if ":" not in text:
         return float(text)
     out = {}
     for item in text.split(","):
         order, _, value = item.partition(":")
-        out[order.strip()] = float(value)
+        value = value.strip()
+        out[order.strip()] = None if value.lower() == "none" else float(value)
     return out
 
 
@@ -579,7 +584,7 @@ def _payload_args(disperser_fn, factory):
          donate_argnames=("output",))
 def run_star_batch(arrays, sens, wavelengths, dlam_angstroms,
                    n_sources, spectra, xsca, ysca, output, *,
-                   static, chunk_size=2000, deposit="floor", sed_rebin=1):
+                   static, chunk_size=2000, deposit="interp", sed_rebin=1):
     """Disperse the first ``n_sources`` stars of a padded batch (jitted).
 
     Every per-SCA input is an argument, so the compiled program depends only
@@ -720,7 +725,7 @@ def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
          donate_argnames=("output",))
 def run_galaxy_batch(arrays, sens, wavelengths, dlam_angstroms,
                      n_sources, spectra, xsca, ysca, images, output, *,
-                     static, chunk_size=2000, deposit="floor", sed_rebin=1):
+                     static, chunk_size=2000, deposit="interp", sed_rebin=1):
     """Disperse the first ``n_sources`` galaxies of a padded batch (jitted).
 
     Same contract as :func:`run_star_batch`, plus ``images``
