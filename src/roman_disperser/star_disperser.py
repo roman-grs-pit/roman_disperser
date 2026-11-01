@@ -377,6 +377,66 @@ def _place(stamps, d, axis):
                      jnp.pad(stamps, pad_lo), jnp.pad(stamps, pad_hi))
 
 
+def native_stamps(binned, stamp_shape, grid_wl, wl_chunk, flux_chunk, x_chunk,
+                  y_chunk, oversample, deposit="interp"):
+    """Native stamps of a set of samples and their base pixels (the per-chunk
+    body of :func:`deposit_binned`, factored out so that window renderers
+    (``roman_disperser.accumulate``) share the arithmetic exactly).
+
+    Returns
+    -------
+    native : [N, n_y(+1), n_x(+1)] flux-scaled native stamps (``+1`` for
+        ``deposit="interp"``)
+    m_y, m_x : [N] int32 0-based detector index of each stamp's pixel (0, 0)
+    """
+    os_ = int(oversample)
+    n_grid = binned.shape[2]
+    s_y, s_x = stamp_shape
+    # Offset of subpixel j=0 from the stamp center, in native pixels.
+    rel0_y = -(s_y - 1) / (2.0 * os_)
+    rel0_x = -(s_x - 1) / (2.0 * os_)
+    # u = detector position of subpixel j=0 minus the 0.5 FITS
+    # half-pixel; the baseline computed floor(u + j/os) for every j.
+    u_x = x_chunk - 0.5 + rel0_x
+    u_y = y_chunk - 0.5 + rel0_y
+
+    # Wavelength bracketing mirrors psf_model.interp_wavelength_chunk
+    # (binning and linear interpolation commute).
+    i0 = jnp.clip(jnp.searchsorted(grid_wl, wl_chunk) - 1, 0, n_grid - 2)
+    t = (wl_chunk - grid_wl[i0]) / (grid_wl[i0 + 1] - grid_wl[i0])
+    t = jnp.clip(t, 0.0, 1.0)[:, None, None]
+
+    def stamp_at(p_y, p_x):  # phase-selected, wavelength-interpolated
+        lo = binned[p_y, p_x, i0]       # [chunk, n_y, n_x]
+        hi = binned[p_y, p_x, i0 + 1]
+        return lo + t * (hi - lo)
+
+    if deposit == "interp":
+        pa_y, pb_y, w_y, m_y, d_y = _interp_taps(u_y, os_)
+        pa_x, pb_x, w_x, m_x, d_x = _interp_taps(u_x, os_)
+        w_x = w_x[:, None, None]
+        w_y = w_y[:, None, None]
+        grow_x = [(0, 0), (0, 0), (0, 1)]
+        grow_y = [(0, 0), (0, 1), (0, 0)]
+        row_a = ((1 - w_x) * jnp.pad(stamp_at(pa_y, pa_x), grow_x)
+                 + w_x * _place(stamp_at(pa_y, pb_x), d_x, 2))
+        row_b = ((1 - w_x) * jnp.pad(stamp_at(pb_y, pa_x), grow_x)
+                 + w_x * _place(stamp_at(pb_y, pb_x), d_x, 2))
+        native_chunk = ((1 - w_y) * jnp.pad(row_a, grow_y)
+                        + w_y * _place(row_b, d_y, 1))
+    else:
+        # Base native index m and boundary phase p, per axis.
+        m_x = jnp.floor(u_x).astype(jnp.int32)
+        m_y = jnp.floor(u_y).astype(jnp.int32)
+        p_x = jnp.clip(jnp.floor((u_x - m_x) * os_), 0, os_ - 1
+                       ).astype(jnp.int32)
+        p_y = jnp.clip(jnp.floor((u_y - m_y) * os_), 0, os_ - 1
+                       ).astype(jnp.int32)
+        native_chunk = stamp_at(p_y, p_x)
+    native_chunk = native_chunk * flux_chunk[:, None, None]
+    return native_chunk, m_y, m_x
+
+
 def deposit_binned(
     binned, stamp_shape, grid_wl, wavelengths, flux, xsca_disp, ysca_disp,
     output, oversample, chunk_size, deposit="interp",
@@ -417,13 +477,8 @@ def deposit_binned(
     if deposit not in DEPOSIT_MODES:
         raise ValueError(
             f"deposit must be one of {DEPOSIT_MODES}, got {deposit!r}")
-    n_grid = binned.shape[2]
-    s_y, s_x = stamp_shape
     os_ = int(oversample)
     n_y, n_x = binned.shape[-2:]
-    # Offset of subpixel j=0 from the stamp center, in native pixels.
-    rel0_y = -(s_y - 1) / (2.0 * os_)
-    rel0_x = -(s_x - 1) / (2.0 * os_)
     if deposit == "interp":
         k_y = jnp.arange(n_y + 1)
         k_x = jnp.arange(n_x + 1)
@@ -458,45 +513,9 @@ def deposit_binned(
         x_chunk = jax.lax.dynamic_slice(x_disp_padded, [start], [chunk_size])
         y_chunk = jax.lax.dynamic_slice(y_disp_padded, [start], [chunk_size])
 
-        # u = detector position of subpixel j=0 minus the 0.5 FITS
-        # half-pixel; the baseline computed floor(u + j/os) for every j.
-        u_x = x_chunk - 0.5 + rel0_x
-        u_y = y_chunk - 0.5 + rel0_y
-
-        # Wavelength bracketing mirrors psf_model.interp_wavelength_chunk
-        # (binning and linear interpolation commute).
-        i0 = jnp.clip(jnp.searchsorted(grid_wl, wl_chunk) - 1, 0, n_grid - 2)
-        t = (wl_chunk - grid_wl[i0]) / (grid_wl[i0 + 1] - grid_wl[i0])
-        t = jnp.clip(t, 0.0, 1.0)[:, None, None]
-
-        def stamp_at(p_y, p_x):  # phase-selected, wavelength-interpolated
-            lo = binned[p_y, p_x, i0]       # [chunk, n_y, n_x]
-            hi = binned[p_y, p_x, i0 + 1]
-            return lo + t * (hi - lo)
-
-        if deposit == "interp":
-            pa_y, pb_y, w_y, m_y, d_y = _interp_taps(u_y, os_)
-            pa_x, pb_x, w_x, m_x, d_x = _interp_taps(u_x, os_)
-            w_x = w_x[:, None, None]
-            w_y = w_y[:, None, None]
-            grow_x = [(0, 0), (0, 0), (0, 1)]
-            grow_y = [(0, 0), (0, 1), (0, 0)]
-            row_a = ((1 - w_x) * jnp.pad(stamp_at(pa_y, pa_x), grow_x)
-                     + w_x * _place(stamp_at(pa_y, pb_x), d_x, 2))
-            row_b = ((1 - w_x) * jnp.pad(stamp_at(pb_y, pa_x), grow_x)
-                     + w_x * _place(stamp_at(pb_y, pb_x), d_x, 2))
-            native_chunk = ((1 - w_y) * jnp.pad(row_a, grow_y)
-                            + w_y * _place(row_b, d_y, 1))
-        else:
-            # Base native index m and boundary phase p, per axis.
-            m_x = jnp.floor(u_x).astype(jnp.int32)
-            m_y = jnp.floor(u_y).astype(jnp.int32)
-            p_x = jnp.clip(jnp.floor((u_x - m_x) * os_), 0, os_ - 1
-                           ).astype(jnp.int32)
-            p_y = jnp.clip(jnp.floor((u_y - m_y) * os_), 0, os_ - 1
-                           ).astype(jnp.int32)
-            native_chunk = stamp_at(p_y, p_x)
-        native_chunk = native_chunk * flux_chunk[:, None, None]
+        native_chunk, m_y, m_x = native_stamps(
+            binned, stamp_shape, grid_wl, wl_chunk, flux_chunk, x_chunk,
+            y_chunk, os_, deposit)
 
         idx_y = m_y[:, None, None] + k_y[None, :, None]
         idx_x = m_x[:, None, None] + k_x[None, None, :]

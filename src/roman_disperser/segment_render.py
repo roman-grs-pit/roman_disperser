@@ -278,18 +278,20 @@ def _hat_weights(wavelengths, node_wl):
     return k, jnp.clip(t, 0.0, 1.0)
 
 
-def _line_images(plan, wavelengths, counts, xd, yd, node_wl):
-    """Per-node oversampled line images and their native window origins.
+def _line_entries(plan, wavelengths, counts, xd, yd, node_wl):
+    """Scatter entries of the per-node line images (see :func:`_line_images`).
 
     Returns
     -------
-    lines : [M, L_y, L_x] float
+    (idx_n, idx_y, idx_x), vals : flat [8 N] arrays, laid out as
+        ``reshape(4, 2, N)`` = (tent cell, hat, sample): node, oversampled
+        row/column inside the node's line window, value. The 8 entries of
+        one sample are distinct cells.
     origin_y, origin_x : [M] int32 native index (0-based) of each window.
     """
     os_ = plan.oversample
     m = plan.n_nodes
     s_y, s_x = plan.kernel_shape
-    l_y, l_x = plan.line_shape
     # Continuous oversampled index of the lower edge of stamp subpixel 0
     # (FITS centre c: native pixel i spans [i + 0.5, i + 1.5)).
     u_y = (yd - 0.5) * os_ - s_y / 2.0
@@ -325,7 +327,21 @@ def _line_images(plan, wavelengths, counts, xd, yd, node_wl):
     vals = jnp.concatenate([
         w * (1.0 - fy2) * (1.0 - fx2), w * (1.0 - fy2) * fx2,
         w * fy2 * (1.0 - fx2), w * fy2 * fx2])
-    lines = jnp.zeros((m, l_y, l_x), counts.dtype).at[idx_n, idx_y, idx_x].add(
+    return (idx_n, idx_y, idx_x), vals, origin_y, origin_x
+
+
+def _line_images(plan, wavelengths, counts, xd, yd, node_wl):
+    """Per-node oversampled line images and their native window origins.
+
+    Returns
+    -------
+    lines : [M, L_y, L_x] float
+    origin_y, origin_x : [M] int32 native index (0-based) of each window.
+    """
+    (idx_n, idx_y, idx_x), vals, origin_y, origin_x = _line_entries(
+        plan, wavelengths, counts, xd, yd, node_wl)
+    lines = jnp.zeros((plan.n_nodes,) + tuple(plan.line_shape),
+                      counts.dtype).at[idx_n, idx_y, idx_x].add(
         vals, mode="drop", wrap_negative_indices=False)
     return lines, origin_y, origin_x
 
@@ -389,6 +405,19 @@ def render_star_segments(psf_payload, optical_payload, xsca, ysca,
     static ``plan`` from :func:`make_segment_plan` (``kind="star"``).
     ``dispersed`` = precomputed dispersed positions at ``wavelengths``.
     """
+    return _add_windows(output, *star_node_windows(
+        psf_payload, optical_payload, xsca, ysca, wavelengths, counts, plan,
+        dispersed=dispersed))
+
+
+def star_node_windows(psf_payload, optical_payload, xsca, ysca, wavelengths,
+                      counts, plan, dispersed=None, line_fn=None):
+    """Per-node native windows of one star: ``(windows [M, W_y, W_x],
+    origin_y [M], origin_x [M])``; :func:`render_star_segments` adds them
+    to the detector. ``line_fn`` replaces :func:`_line_images` (same
+    signature; ``roman_disperser.accumulate`` passes an ordered variant).
+    """
+    line_fn = _line_images if line_fn is None else line_fn
     if plan.kind != "star":
         raise ValueError("plan.kind must be 'star'")
     grid_wl = psf_payload["wavelengths"]
@@ -402,9 +431,8 @@ def render_star_segments(psf_payload, optical_payload, xsca, ysca,
         psfs = _psf_at_nodes(psf_payload, plan.node_idx, nx, ny)
     else:
         psfs = _psf_at_nodes(psf_payload, plan.node_idx, xsca, ysca)
-    lines, oy, ox = _line_images(plan, wavelengths, counts, xd, yd, node_wl)
-    windows = _convolve_bin(plan, lines, (psfs,))
-    return _add_windows(output, windows, oy, ox)
+    lines, oy, ox = line_fn(plan, wavelengths, counts, xd, yd, node_wl)
+    return _convolve_bin(plan, lines, (psfs,)), oy, ox
 
 
 def render_galaxy_segments(psf_payload, optical_payload, image, x0, y0,
@@ -423,6 +451,16 @@ def render_galaxy_segments(psf_payload, optical_payload, image, x0, y0,
     ``jacobians`` = precomputed [M, 2, 2] trace Jacobians at the node
     wavelengths (``galaxy_disperser.galaxy_trace_geometry(...)[2]``).
     """
+    return _add_windows(output, *galaxy_node_windows(
+        psf_payload, optical_payload, image, x0, y0, counts, wavelengths,
+        plan, dispersed=dispersed, jacobians=jacobians))
+
+
+def galaxy_node_windows(psf_payload, optical_payload, image, x0, y0, counts,
+                        wavelengths, plan, dispersed=None, jacobians=None,
+                        line_fn=None):
+    """Per-node native windows of one galaxy (see :func:`star_node_windows`)."""
+    line_fn = _line_images if line_fn is None else line_fn
     if plan.kind != "galaxy":
         raise ValueError("plan.kind must be 'galaxy'")
     if tuple(image.shape) != tuple(plan.image_shape):
@@ -444,9 +482,8 @@ def render_galaxy_segments(psf_payload, optical_payload, image, x0, y0,
         psfs = _psf_at_nodes(psf_payload, plan.node_idx, x0, y0)
     warped = jax.vmap(lambda j: galaxy_disperser.disperse_galaxy_shape(
         image, j, 1.0 / os_, 1.0 / os_))(jacobians)
-    lines, oy, ox = _line_images(plan, wavelengths, counts, xd, yd, node_wl)
-    windows = _convolve_bin(plan, lines, (psfs, warped))
-    return _add_windows(output, windows, oy, ox)
+    lines, oy, ox = line_fn(plan, wavelengths, counts, xd, yd, node_wl)
+    return _convolve_bin(plan, lines, (psfs, warped)), oy, ox
 
 
 # ---------------------------------------------------------------------------
