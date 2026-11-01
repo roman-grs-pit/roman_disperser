@@ -38,9 +38,22 @@ Timing: wall time around the batched call with ``block_until_ready``, after a
 compile+warmup call; reported per-galaxy ms = wall / n_gal for each repeat.
 ``check_perf.py`` uses the min over repeats (least-noise estimator).
 
+Production-setting throughput (stars and galaxies)
+--------------------------------------------------
+Next to the gated galaxy pair, the bench times both source types at the
+production defaults of ``scripts/build_dispersed_image.py`` (``"default"``:
+interp deposit, count rebinning 40 / 4 / 2 A in orders 0 / 1 / 2, star PSF
+hoist) and at the historical setting for reference (``"floor"``: floor
+deposit, no rebinning, no hoist). Stars run through
+``pipeline.run_star_batch`` (the production 184^2 4x PSF, i.e. 47^2 native
+stamps), galaxies through ``run_galaxy_batch``. These rows carry
+``ms_per_src`` (ms per source per order); ``check_perf.py`` gates them
+against a baseline file when one has the device, and ``compare.py`` puts a
+CPU and a GPU result side by side. The same command runs on either backend.
+
 Requires hydrated reference data (``pixi run hydrate``) and, for GPU numbers,
 a CUDA jax. CPU runs work but the ratio gate threshold was chosen from GPU
-behaviour; treat CPU results as informational.
+behaviour; treat the CPU ratio as informational.
 
 Usage (repo root):
     pixi run -e cuda python benchmarks/bench_deposit.py --out results.json
@@ -64,10 +77,66 @@ import roman_disperser.optical_model_jax as omj
 from roman_disperser.pipeline import (
     DETECTOR_SIZE,
     disperse_batched_galaxies,
+    disperse_batched_stars,
     load_sensitivities,
     make_batched_galaxy_fori,
+    make_batched_star_fori,
     resolve_paths,
+    sed_rebin_factors,
 )
+
+# Deposit settings of the production-throughput rows. "default" must match
+# DEFAULT_DEPOSIT / DEFAULT_REBIN_DLAM / DEFAULT_HOIST_STAR_PSF in
+# scripts/build_dispersed_image.py (tests/test_deposit_defaults.py checks).
+SETTINGS = {
+    "default": {"deposit": "interp",
+                "rebin_dlam": {"0": 40.0, "1": 4.0, "2": 2.0},
+                "hoist_star_psf": True},
+    "floor": {"deposit": "floor", "rebin_dlam": None,
+              "hoist_star_psf": False},
+}
+
+
+def cpu_name():
+    """CPU model string (keys CPU baselines, like nvidia-smi names GPUs)."""
+    try:
+        if platform.system() == "Darwin":
+            out = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                                 capture_output=True, text=True, timeout=10)
+            if out.stdout.strip():
+                return out.stdout.strip()
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return platform.processor() or "unknown"
+
+
+def device_key(meta):
+    """Baseline-file key of a result: the GPU name, or the CPU model."""
+    return meta["cpu"] if meta.get("backend") == "cpu" else meta["gpu"]
+
+
+def time_batched(call, n_src, batch, make_batch, repeats):
+    """Compile+warm with a 1-row call, then ``repeats`` timed passes over all
+    sources in batches; returns (ms per source per repeat, compile s)."""
+    out = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), jnp.float32)
+    t0 = time.time()
+    call(1, *make_batch(0, batch), out).block_until_ready()
+    t_compile = time.time() - t0
+    ms = []
+    for _ in range(repeats):
+        out = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), jnp.float32)
+        out.block_until_ready()
+        t0 = time.time()
+        for start in range(0, n_src, batch):
+            n = min(batch, n_src - start)
+            out = call(n, *make_batch(start, batch), out)
+        out.block_until_ready()
+        ms.append(1e3 * (time.time() - t0) / n_src)
+    return ms, t_compile
 
 
 def make_closure_galaxy_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
@@ -217,6 +286,15 @@ def main():
                     help="wavelength spacing in Angstrom (2.0 = production)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--repeats", type=int, default=3)
+    ap.add_argument("--kinds", default="gate,star,galaxy",
+                    help="comma list: gate (floor galaxy vs noscatter, the "
+                         "check_perf ratio gate), star and galaxy (the "
+                         "production-throughput rows)")
+    ap.add_argument("--settings", default="default,floor",
+                    help="deposit settings of the star/galaxy rows "
+                         "(see SETTINGS)")
+    ap.add_argument("--n-star", type=int, default=200)
+    ap.add_argument("--star-batch", type=int, default=100)
     ap.add_argument("--tag", default="")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
@@ -230,9 +308,12 @@ def main():
         "backend": jax.default_backend(),
         "device": str(jax.devices()[0]),
         "gpu": gpu_name(),
+        "cpu": cpu_name(),
         "host": platform.node(),
         "code_commit": git_commit(),
         "n_gal": args.n_gal, "batch": args.batch,
+        "n_star": args.n_star, "star_batch": args.star_batch,
+        "settings": {k: SETTINGS[k] for k in args.settings.split(",")},
         "chunk_size": args.chunk_size, "dlam_A": args.dlam,
         "seed": args.seed, "sca": args.sca,
         "env": {k: v for k, v in __import__("os").environ.items()
@@ -288,8 +369,9 @@ def main():
     sed = (1e-16 * (1.0 + 0.3 * np.sin(wl_um * 20.0))).astype(np.float32)
     spectra = np.tile(sed, (n, 1)) * rng.uniform(0.3, 3.0, (n, 1)).astype(np.float32)
 
+    kinds = set(args.kinds.split(","))
     results = []
-    for order in orders:
+    for order in orders if "gate" in kinds else []:
         variants = {
             "baseline": galaxy_disperser.make_galaxy_disperser(
                 psf_payloads[order], optical_payloads[order],
@@ -325,6 +407,88 @@ def main():
                   f"(compile {t_compile:.1f}s)")
             results.append({"order": order, "variant": variant,
                             "ms_per_gal": ms, "compile_s": t_compile})
+
+    # -- production-throughput rows: stars and galaxies per order ---------
+    n_s = args.n_star
+    xs = rng.uniform(400, 3688, n_s).astype(np.float32)
+    ys = rng.uniform(400, 3688, n_s).astype(np.float32)
+    star_spec = (np.tile(sed, (n_s, 1))
+                 * rng.uniform(0.3, 3.0, (n_s, 1)).astype(np.float32))
+
+    def star_batch(start, b):
+        sp = np.zeros((b, n_wl), np.float32)
+        xb = np.zeros(b, np.float32)
+        yb = np.zeros(b, np.float32)
+        m = min(b, n_s - start)
+        sp[:m], xb[:m], yb[:m] = (star_spec[start:start + m],
+                                  xs[start:start + m], ys[start:start + m])
+        return jnp.asarray(sp), jnp.asarray(xb), jnp.asarray(yb)
+
+    def gal_batch(start, b):
+        sp = np.zeros((b, n_wl), np.float32)
+        xb = np.zeros(b, np.float32)
+        yb = np.zeros(b, np.float32)
+        m = min(b, n - start)
+        sp[:m], xb[:m], yb[:m] = (spectra[start:start + m],
+                                  x_gal[start:start + m],
+                                  y_gal[start:start + m])
+        im = jnp.zeros((b, npix_os, npix_os), jnp.float32
+                       ).at[:m].set(images[start:start + m])
+        return jnp.asarray(sp), jnp.asarray(xb), jnp.asarray(yb), im
+
+    for setting in args.settings.split(","):
+        cfg = SETTINGS[setting]
+        rd = cfg["rebin_dlam"]
+        if isinstance(rd, dict):
+            rd = {o: v for o, v in rd.items() if o in orders}
+        rebin = sed_rebin_factors(args.dlam, rd, orders)
+        for order in orders:
+            if "star" in kinds:
+                sd = star_disperser.make_star_disperser(
+                    psf_payloads[order], optical_payloads[order],
+                    chunk_size=args.chunk_size, deposit=cfg["deposit"],
+                    hoist_psf=cfg["hoist_star_psf"])
+                run = make_batched_star_fori(sd, sens[order], wl_jax,
+                                             args.dlam, sed_rebin=rebin[order])
+                ms, tc = time_batched(run, n_s, args.star_batch, star_batch,
+                                      args.repeats)
+                del sd, run
+                print(f"  order {order} star   {setting:8s}: "
+                      f"{' '.join(f'{m:7.2f}' for m in ms)} ms/star "
+                      f"(compile {tc:.1f}s)")
+                results.append({"order": order, "kind": "star",
+                                "variant": setting, "ms_per_src": ms,
+                                "compile_s": tc})
+            if "galaxy" in kinds:
+                gd = galaxy_disperser.make_galaxy_disperser(
+                    psf_payloads[order], optical_payloads[order],
+                    chunk_size=args.chunk_size, deposit=cfg["deposit"])
+                run = make_batched_galaxy_fori(gd, sens[order], wl_jax,
+                                               args.dlam,
+                                               sed_rebin=rebin[order])
+                ms, tc = time_batched(run, n, args.batch, gal_batch,
+                                      args.repeats)
+                del gd, run
+                print(f"  order {order} galaxy {setting:8s}: "
+                      f"{' '.join(f'{m:7.2f}' for m in ms)} ms/gal "
+                      f"(compile {tc:.1f}s)")
+                results.append({"order": order, "kind": "galaxy",
+                                "variant": setting, "ms_per_src": ms,
+                                "compile_s": tc})
+
+    rows = [r for r in results if "ms_per_src" in r]
+    if rows:
+        print(f"\nms per source per order (min over repeats; "
+              f"{meta['backend']}: {device_key(meta)})")
+        print(f"  {'kind':7s} {'setting':8s} " + " ".join(
+            f"{'order ' + o:>9s}" for o in orders))
+        for kind in ("star", "galaxy"):
+            for setting in args.settings.split(","):
+                vals = {r["order"]: min(r["ms_per_src"]) for r in rows
+                        if r["kind"] == kind and r["variant"] == setting}
+                if vals:
+                    print(f"  {kind:7s} {setting:8s} " + " ".join(
+                        f"{vals.get(o, float('nan')):9.2f}" for o in orders))
 
     if args.out:
         outp = Path(args.out)

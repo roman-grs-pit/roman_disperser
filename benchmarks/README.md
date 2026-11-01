@@ -21,6 +21,17 @@ compile+warmup call). Alongside it, a **noscatter** reference — the identical
 computation with the deposit scatter replaced by a scalar reduction — gives
 the compute floor.
 
+Next to that gated pair it times both source types at the **production
+defaults** of the driver (`default`: interp deposit, count rebinning 40 / 4 /
+2 Å in orders 0 / 1 / 2, star PSF hoist) and at the historical setting for
+reference (`floor`: floor deposit at 2 Å, no hoist): stars through
+`pipeline.run_star_batch` (the production 184² 4× PSF, 47² native stamps),
+galaxies through `run_galaxy_batch`, reported as ms per source per order and
+printed as a table at the end. `--kinds gate,star,galaxy` and
+`--settings default,floor` select what runs. The script is identical on CPU
+and GPU, so a laptop result and a GPU-node result of the same commit compare
+directly with `compare.py`.
+
 `check_perf.py` applies two gates (details and rationale in its docstring):
 
 1. **Ratio gate** (hardware-insensitive, always on): baseline/noscatter ≤ 1.5
@@ -30,9 +41,13 @@ the compute floor.
    pre-native16 it was ~1.1–1.2). The 0.11.0 regression measured 15–21 on
    the old deposit and would still blow far past 1.5 on the new one, since a
    scatter regression inflates only the baseline.
-2. **Absolute gate** (when `baselines/gpu.json` has the GPU): baseline
-   ms/gal ≤ 1.5× the recorded reference. Catches uniform slowdowns that the
-   ratio cannot see.
+2. **Absolute gate** (when the baselines file has the device): baseline
+   ms/gal ≤ 1.5× the recorded reference, and the same for every star /
+   galaxy `default` / `floor` row the baseline lists (`ms_per_src`).
+   Catches uniform slowdowns that the ratio cannot see. GPU results are
+   keyed by the `nvidia-smi` name in `baselines/gpu.json`, CPU results by the
+   CPU model string in `baselines/cpu.json`; the file is picked by the
+   result's backend unless `--baselines` is given.
 
 ## Golden jax versions
 
@@ -59,6 +74,33 @@ python benchmarks/check_perf.py results/mine.json
 bash benchmarks/run_golden.sh
 ```
 
+### CPU vs GPU comparison (stars and galaxies, production defaults)
+
+The PSF caches must exist for the SCA used (`--sca`, default 1; the laptop
+baseline used SCA 5, the only cache there). Run the same command on both
+machines from the same commit, then compare:
+
+```bash
+# laptop / CPU (the baselines/cpu.json numbers; ~15 min on an i7-9750H):
+python benchmarks/bench_deposit.py --sca 5 --n-gal 20 --batch 20 \
+    --n-star 100 --star-batch 100 --repeats 2 --out results/cpu.json
+
+# GPU node (same flags, so the rows match; add more sources if you like):
+sbatch -p <gpu-partition> --gres=gpu:1 -t 0:30:00 --wrap \
+    'pixi run -e cuda python benchmarks/bench_deposit.py --sca 5 \
+     --n-gal 20 --batch 20 --n-star 100 --star-batch 100 --repeats 2 \
+     --out results/gpu.json'
+
+python benchmarks/check_perf.py results/gpu.json     # gates vs gpu.json
+python benchmarks/compare.py results/cpu.json results/gpu.json
+```
+
+`compare.py` prints ms per source per (kind, setting, order) for each file
+and the ratio to the first. To start a GPU baseline for the star / galaxy
+rows, add an `ms_per_src` block (same layout as in `baselines/cpu.json`)
+under the GPU's entry in `baselines/gpu.json` from healthy runs; the
+existing `ms_per_gal` / `noscatter_ms_per_gal` fields keep their meaning.
+
 On a SLURM cluster, wrap the sweep:
 
 ```bash
@@ -78,5 +120,8 @@ by running the bench on healthy versions (at least two golden versions should
 agree) and recording the steady-state numbers; never update a baseline to
 absorb a slowdown without understanding it first.
 
-CPU runs work and are reported, but both gates were calibrated on GPU;
-treat CPU results as informational.
+`baselines/cpu.json` holds the laptop CPU numbers (one machine, see its
+`provenance`). The absolute gate applies to CPU results of that CPU model;
+the ratio gate was calibrated on GPU (CPU measures a different healthy
+ratio, see the provenance), so pass `--max-ratio 2.5` when gating
+CPU.

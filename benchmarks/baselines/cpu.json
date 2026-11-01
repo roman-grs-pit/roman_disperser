@@ -1,0 +1,33 @@
+{
+ "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz": {
+  "ms_per_gal": {
+   "0": 336.63,
+   "1": 339.28,
+   "2": 331.82
+  },
+  "noscatter_ms_per_gal": 185.19,
+  "ms_per_src": {
+   "star/default": {
+    "0": 11.07,
+    "1": 96.25,
+    "2": 190.59
+   },
+   "galaxy/default": {
+    "0": 133.23,
+    "1": 346.48,
+    "2": 583.56
+   },
+   "star/floor": {
+    "0": 120.77,
+    "1": 124.68,
+    "2": 122.81
+   },
+   "galaxy/floor": {
+    "0": 336.47,
+    "1": 340.6,
+    "2": 334.36
+   }
+  },
+  "provenance": "2026-11-01 laptop CPU run (MacBook Pro, Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz, 32 GB, macOS, conda env roman-disperser-tutorials, jax 0.11.2 CPU), branch svh/combined @ b41aa93+bench changes; SCA5 PSF caches (the only local ones), dlam=2A, chunk=2000; gate rows n_gal=20 batch=20, star rows n_star=100 batch=100, galaxy rows n_gal=20 batch=20, 2 repeats, min over repeats. default = interp + 40/4/2 A rebinning + star PSF hoist; floor = floor deposit, no rebinning, no hoist. Healthy CPU scatter ratio (baseline/noscatter) is 1.78-1.83, above the GPU-calibrated 1.5 gate: gate CPU results with --max-ratio 2.5. Single machine, single session; laptop thermals make +-5 % run-to-run normal."
+ }
+}

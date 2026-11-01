@@ -115,6 +115,16 @@ before the references can guard the default path.
   the first one (`check_psf_payloads`, `pipeline["psf_geometry"]`) and
   raises a ValueError naming the payload otherwise. New
   `tests/test_recompiles.py`.
+- **Star and CPU benchmarks** (`benchmarks/bench_deposit.py`): next to the
+  gated floor-galaxy / noscatter pair (unchanged, `gpu.json` format
+  unchanged) the bench times `run_star_batch` (47² native stamps) and
+  `run_galaxy_batch` per order at the production defaults (`default`) and
+  the historical setting (`floor`), as ms per source per order, on CPU or
+  GPU with the same command (`--kinds`, `--settings`, `--n-star`,
+  `--star-batch`). `check_perf.py` keys CPU results by the CPU model and
+  gates those rows against `baselines/cpu.json` (new; laptop i7-9750H) or a
+  GPU entry's `ms_per_src`; new `benchmarks/compare.py` prints CPU vs GPU
+  side by side. `benchmarks/README.md` documents the GPU-node run.
 - Deposit chunk length is derived from the number of wavelengths
   (`ceil(N / ceil(N / chunk_size))`), so zero-flux padding is < 1 chunk
   count instead of up to a whole chunk (5501 -> 3 x 1834; the 4 Å rebinned
