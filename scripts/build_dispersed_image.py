@@ -669,13 +669,16 @@ def _accumulate_fns(mode, psf_payload, optical_payload, sens, wavelengths_jax,
                          f", got {mode!r}")
     wl_dep = np.asarray(rebin_counts(wavelengths_jax, wavelengths_jax,
                                      rebin)[1])
+    # vmap the sources of a group on accelerators; on CPU lax.map is
+    # faster (XLA:CPU gains nothing from the vectorised program).
+    vectorize = jax.default_backend() != "cpu"
     fns = []
     for kind in ("star", "galaxy"):
         plan = accum.make_window_plan(
             psf_payload, optical_payload, kind, wl_dep,
             renderer="deposit" if n_nodes is None else "segment",
             deposit=deposit, n_nodes=n_nodes, galaxy_npix=galaxy_npix_os,
-            psf_at=psf_at or "source")
+            psf_at=psf_at or "source", vectorize=vectorize)
         if mode == "tiled":
             fns.append(accum.TiledDisperser(
                 psf_payload, optical_payload, sens, wavelengths_jax,
