@@ -857,6 +857,7 @@ def process_pointing(
     extra_headers=None,
     extra_meta=None,
     output_prefix=None,
+    force=False,
 ):
     """Process a single pointing: select sources, generate spectra, disperse.
 
@@ -1027,7 +1028,10 @@ def process_pointing(
         stem = f"{prefix}_detSCA{sca_num:02d}"
         fits_path = str(output_dir / f"{stem}.fits")
         png_path = str(output_dir / f"{stem}.png")
-        if Path(fits_path).exists():
+        if Path(fits_path).exists() and force:
+            log(f"    FITS exists, --force: re-rendering.")
+            Path(fits_path).unlink()
+        elif Path(fits_path).exists():
             log(f"    FITS exists, skipping.")
             # Load existing model for mosaic
             from astropy.io import fits as afits
@@ -2084,6 +2088,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
             extra_headers=extra_headers,
             extra_meta=extra_meta,
             output_prefix=cfg.get("output_prefix"),
+            force=force,
         )
 
     total = time.time() - t_all
