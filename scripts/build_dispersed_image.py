@@ -78,6 +78,7 @@ import zarr
 from roman_disperser import (
     elements, galaxy_disperser, psf_model, sersic, star_disperser,
 )
+import roman_disperser.segment_render as segrender
 from roman_disperser.optical_model import RomanOpticalModel
 from roman_disperser.pipeline import (
     DETECTOR_SIZE,
@@ -132,6 +133,52 @@ def resolve_rebin_dlam(rebin_dlam, orders, dlam_angstroms):
                                and rebin_dlam.strip().lower() == "none"):
         return None
     return rebin_dlam
+
+
+def parse_segment_render(text):
+    """Parse ``--segment-render``: node count for every order (``"12"``) or
+    per order (``"0:6,1:12,2:28"``; ``none`` or a missing order keeps the
+    production deposit for that order). Returns None, an int or a dict."""
+    if text is None or text.strip().lower() == "none":
+        return None
+    if ":" not in text:
+        return int(text)
+    out = {}
+    for item in text.split(","):
+        order, _, value = item.partition(":")
+        value = value.strip()
+        out[order.strip()] = None if value.lower() == "none" else int(value)
+    return out
+
+
+def resolve_segment_render(segment_render, orders, psf_at="source"):
+    """``{"nodes": {order: n_nodes or None}, "psf_at": ...}`` or None.
+
+    ``segment_render`` is None (production deposit everywhere), one node
+    count for every order, or ``{order: n_nodes or None}``. See
+    ``roman_disperser.segment_render``.
+    """
+    if segment_render is None:
+        return None
+    if psf_at not in segrender.PSF_AT_MODES:
+        raise ValueError(f"segment psf_at must be one of "
+                         f"{segrender.PSF_AT_MODES}, got {psf_at!r}")
+    if isinstance(segment_render, dict):
+        by_order = {str(k): v for k, v in segment_render.items()}
+        unknown = sorted(set(by_order) - {str(o) for o in orders})
+        if unknown:
+            raise ValueError(f"segment_render has orders {unknown} not in "
+                             f"{list(orders)}")
+        nodes = {str(o): (None if by_order.get(str(o)) is None
+                          else int(by_order[str(o)])) for o in orders}
+    else:
+        nodes = {str(o): int(segment_render) for o in orders}
+    for o, m in nodes.items():
+        if m is not None and m < 2:
+            raise ValueError(f"segment_render order {o}: need >= 2 nodes")
+    if all(m is None for m in nodes.values()):
+        return None
+    return {"nodes": nodes, "psf_at": psf_at}
 
 
 def resolve_hoist_star_psf(hoist_star_psf):
@@ -528,8 +575,16 @@ def make_order_fori_fns(psf_payloads, optical_payloads, sensitivities,
                         wavelengths_jax, dlam_angstroms, orders, *,
                         deposit=DEFAULT_DEPOSIT, sed_rebin=1,
                         hoist_star_psf=DEFAULT_HOIST_STAR_PSF,
-                        psf_geometry=None, detector=""):
+                        psf_geometry=None, detector="",
+                        segment=None, galaxy_npix_os=None):
     """Build the batched star and galaxy fori functions for every order.
+
+    ``segment`` (from :func:`resolve_segment_render`) switches the orders
+    it lists to the trace-aligned segment render
+    (``roman_disperser.segment_render``; ``deposit`` and ``hoist_star_psf``
+    then do not apply to those orders); ``galaxy_npix_os`` is required with
+    it. The segment plans are built per (SCA, order) from the trace
+    geometry, so SCAs whose plans differ compile separately.
 
     Shared by ``process_pointing`` and ``run_warmup`` so both compile the
     same programs. ``deposit``, ``sed_rebin`` and ``hoist_star_psf`` are
@@ -548,6 +603,26 @@ def make_order_fori_fns(psf_payloads, optical_payloads, sensitivities,
     galaxy_fori_fns = {}
     for order in orders:
         rebin = sed_rebin[order] if isinstance(sed_rebin, dict) else sed_rebin
+        n_nodes = None if segment is None else segment["nodes"].get(str(order))
+        if n_nodes is not None:
+            wl_np = np.asarray(wavelengths_jax)
+            plans = {
+                kind: segrender.make_segment_plan(
+                    psf_payloads[order], optical_payloads[order], n_nodes,
+                    kind, galaxy_npix=galaxy_npix_os,
+                    psf_at=segment["psf_at"],
+                    wl_range=(float(wl_np.min()), float(wl_np.max())))
+                for kind in ("star", "galaxy")}
+            star_fori_fns[order] = segrender.make_batched_star_segment(
+                psf_payloads[order], optical_payloads[order],
+                sensitivities[order], wavelengths_jax, dlam_angstroms,
+                plans["star"], sed_rebin=rebin)
+            galaxy_fori_fns[order] = (
+                segrender.make_batched_galaxy_segment(
+                    psf_payloads[order], optical_payloads[order],
+                    sensitivities[order], wavelengths_jax, dlam_angstroms,
+                    plans["galaxy"], sed_rebin=rebin))
+            continue
         sd_fn = star_disperser.make_star_disperser(
             psf_payloads[order], optical_payloads[order],
             deposit=deposit, hoist_psf=hoist_star_psf,
@@ -717,6 +792,8 @@ def setup_pipeline(
     rebin_dlam=None,
     hoist_star_psf=None,
     order_mag_limits=None,
+    segment_render=None,
+    segment_psf_at="source",
     verbose=True,
 ):
     """One-time setup: load model, catalog, optical payloads, sensitivities.
@@ -781,6 +858,15 @@ def setup_pipeline(
         per SCA after the on-detector selection; recorded as ``ORDMAG<o>``
         header cards, ``order_mag_limits`` in the meta YAML and the skipped
         counts in ``source_counts``. Meant for the faint grism orders 0 and 2.
+    segment_render : int or dict, optional
+        Opt-in trace-aligned segment render (``roman_disperser.segment_render``):
+        number of wavelength nodes for every order, or ``{order: n_nodes}``
+        (orders left out or None keep the deposit). None (default) = the
+        production deposit everywhere. Recorded as ``SEGNODE<o>`` /
+        ``SEGPSFAT`` header cards and ``segment_render`` in the meta YAML.
+    segment_psf_at : {"source", "landing"}
+        PSF lookup position of the segment render (default "source", as
+        the deposit; "landing" = each node's trace position).
     verbose : bool
         Print progress information.
 
@@ -845,6 +931,13 @@ def setup_pipeline(
         + ", ".join(f"order {o}: {f * dlam_angstroms:.1f} A"
                     for o, f in sed_rebin.items())
         + f", star PSF hoist: {bool(hoist_star_psf)}")
+    segment = resolve_segment_render(segment_render, element.orders,
+                                     segment_psf_at)
+    if segment is not None:
+        log("Segment render (nodes per order): "
+            + ", ".join(f"order {o}: {m if m is not None else 'off'}"
+                        for o, m in segment["nodes"].items())
+            + f", PSF at {segment['psf_at']}")
     order_mag_limits = order_mag_limits_by_order(order_mag_limits,
                                                  element.orders)
     if order_mag_limits:
@@ -933,6 +1026,7 @@ def setup_pipeline(
         "sed_rebin": sed_rebin,
         "hoist_star_psf": bool(hoist_star_psf),
         "order_mag_limits": order_mag_limits,
+        "segment_render": segment,
         "oversample": oversample,
         "psf_geometry": psf_geometry,
         "n_catalog_rows": n_catalog_rows,
@@ -1034,6 +1128,12 @@ def process_pointing(
            for o, f in pipeline["sed_rebin"].items()},
         **{f"ORDMAG{o}": (m, f"F158 AB mag limit, order {o}")
            for o, m in pipeline.get("order_mag_limits", {}).items()},
+        **({f"SEGNODE{o}": (m, f"Segment render nodes, order {o}")
+            for o, m in (pipeline.get("segment_render") or {}).get(
+                "nodes", {}).items() if m is not None}),
+        **({"SEGPSFAT": (pipeline["segment_render"]["psf_at"],
+                         "Segment render PSF lookup position")}
+           if pipeline.get("segment_render") else {}),
         **{f"SRCCUT{i + 1}": (describe_source_cut(r)[:68], "source_cuts rule")
            for i, r in enumerate(pipeline["source_cuts"])},
         **(extra_headers or {}),
@@ -1179,6 +1279,8 @@ def process_pointing(
             hoist_star_psf=pipeline["hoist_star_psf"],
             psf_geometry=pipeline.get("psf_geometry"),
             detector=detector_name,
+            segment=pipeline.get("segment_render"),
+            galaxy_npix_os=pipeline["galaxy_npix_os"],
         )
 
         # JIT warmup (hits disk cache after first run)
@@ -1556,6 +1658,7 @@ def process_pointing(
         },
         "hoist_star_psf": pipeline["hoist_star_psf"],
         "order_mag_limits": dict(pipeline.get("order_mag_limits") or {}),
+        "segment_render": pipeline.get("segment_render"),
         "oversample": pipeline["oversample"],
         "catalog_rows": pipeline["n_catalog_rows"],
         "source_cuts": pipeline["source_cuts"],
@@ -1603,6 +1706,8 @@ def build_dispersed_image(
     rebin_dlam=None,
     hoist_star_psf=None,
     order_mag_limits=None,
+    segment_render=None,
+    segment_psf_at="source",
     verbose=True,
     force=False,
 ):
@@ -1640,6 +1745,8 @@ def build_dispersed_image(
         Deposit options, see ``setup_pipeline``.
     order_mag_limits : dict, optional
         Per-order F158 brightness cut, see ``setup_pipeline``.
+    segment_render, segment_psf_at : optional
+        Opt-in segment render, see ``setup_pipeline``.
     verbose : bool
         Print progress information (default: True).
     force : bool
@@ -1672,6 +1779,8 @@ def build_dispersed_image(
         rebin_dlam=rebin_dlam,
         hoist_star_psf=hoist_star_psf,
         order_mag_limits=order_mag_limits,
+        segment_render=segment_render,
+        segment_psf_at=segment_psf_at,
         verbose=verbose,
     )
 
@@ -2356,6 +2465,18 @@ def main():
                              "0:24,2:24: in those orders only sources with "
                              "F158 <= limit are dispersed (quick mode; "
                              "default: none)")
+    parser.add_argument("--segment-render", type=parse_segment_render,
+                        default=None,
+                        help="Opt-in trace-aligned segment render "
+                             "(prototype): wavelength nodes for every order "
+                             "(e.g. 12) or per order (e.g. 0:6,1:12,2:28; "
+                             "orders left out keep the deposit) (quick "
+                             "mode; default: off)")
+    parser.add_argument("--segment-psf-at", choices=("source", "landing"),
+                        default="source",
+                        help="PSF lookup position of the segment render: "
+                             "the direct-image position (default) or each "
+                             "node's landing position on the trace")
     parser.add_argument("--seed", type=int, default=None,
                         help="RNG seed (required for quick mode)")
     parser.add_argument("--exptime", type=float, default=190.22,
@@ -2468,6 +2589,8 @@ def main():
         rebin_dlam=args.rebin_dlam,
         hoist_star_psf=args.hoist_star_psf,
         order_mag_limits=args.order_mag_limits,
+        segment_render=args.segment_render,
+        segment_psf_at=args.segment_psf_at,
         verbose=not args.quiet,
         force=args.force,
     )
