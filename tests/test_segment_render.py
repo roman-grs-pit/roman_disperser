@@ -282,3 +282,45 @@ class TestGalaxy:
         _assert_close(out, a, 5e-3)  # ~1 ulp position differences, as above
         assert abs(out.sum() / a.sum() - 1) < 1e-5
         assert abs(out.sum() / float(flux.sum()) - 1) < 1e-4
+
+
+class TestDriverOptions:
+    """Opt-in wiring in scripts/build_dispersed_image.py (off by default)."""
+
+    @pytest.fixture(scope="class")
+    def bdi(self):
+        import importlib.util
+        from pathlib import Path
+        path = Path(__file__).parent.parent / "scripts" / "build_dispersed_image.py"
+        spec = importlib.util.spec_from_file_location("bdi_segment", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_parse_and_resolve(self, bdi):
+        orders = ("0", "1", "2")
+        assert bdi.parse_segment_render(None) is None
+        assert bdi.parse_segment_render("none") is None
+        assert bdi.parse_segment_render("12") == 12
+        assert bdi.parse_segment_render("0:6, 1:12,2:none") == {
+            "0": 6, "1": 12, "2": None}
+        assert bdi.resolve_segment_render(None, orders) is None
+        assert bdi.resolve_segment_render({"2": None}, orders) is None
+        r = bdi.resolve_segment_render(12, orders, "landing")
+        assert r == {"nodes": {"0": 12, "1": 12, "2": 12}, "psf_at": "landing"}
+        r = bdi.resolve_segment_render({0: 6}, orders)
+        assert r["nodes"] == {"0": 6, "1": None, "2": None}
+        for bad in ({"3": 6}, 1):
+            with pytest.raises(ValueError):
+                bdi.resolve_segment_render(bad, orders)
+        with pytest.raises(ValueError):
+            bdi.resolve_segment_render(6, orders, "pupil")
+
+    def test_default_off(self, bdi):
+        import inspect
+        for fn in (bdi.setup_pipeline, bdi.build_dispersed_image):
+            p = inspect.signature(fn).parameters
+            assert p["segment_render"].default is None
+            assert p["segment_psf_at"].default == "source"
+        assert inspect.signature(bdi.make_order_fori_fns).parameters[
+            "segment"].default is None
