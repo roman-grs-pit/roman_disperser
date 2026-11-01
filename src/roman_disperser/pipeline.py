@@ -930,6 +930,9 @@ def write_fits(model_np, isim_np, output_file, pointing_ra, pointing_dec,
     # Comment kept short: a 40-char SHA (+ '-dirty') leaves only ~19 chars
     # of comment inside the 80-char card before astropy truncates.
     primary.header["GITSHA"] = (get_git_sha(), "pipeline git commit")
+    # What the products do NOT contain: source light only.
+    primary.header["BKGINCL"] = (False, "Sky/zodi background included")
+    primary.header["DETEFF"] = (False, "Dark/read/IPC/CR/nonlin included")
 
     if extra_headers:
         for key, val in extra_headers.items():
@@ -937,6 +940,10 @@ def write_fits(model_np, isim_np, output_file, pointing_ra, pointing_dec,
 
     model_hdu = fits.ImageHDU(data=model_np, name="MODEL")
     isim_hdu = fits.ImageHDU(data=isim_np, name="ISIM")
+    # Units follow the SENSITIVITY tables, whose unit is not declared.
+    model_hdu.header["BUNIT"] = ("counts/s", "SENSITIVITY counts per s")
+    isim_hdu.header["BUNIT"] = ("counts", "source-only Poisson draw")
+    isim_hdu.header["NOISE"] = ("POISSON-SRC", "no background/detector noise")
 
     hdul = fits.HDUList([primary, model_hdu, isim_hdu])
     hdul.writeto(output_file, overwrite=True)
