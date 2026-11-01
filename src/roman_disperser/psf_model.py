@@ -291,13 +291,16 @@ def load_psf_payload(filepath, verbose=True):
             except ModuleNotFoundError:
                 pass  # stpsf not installed; skip version check
 
-        # Reconstruct payload with JAX arrays
+        # Reconstruct payload with JAX arrays. Every float leaf is float32
+        # explicitly: with jax_enable_x64 on, an untyped jnp.array of the
+        # float64 grids would give float64 leaves next to the float32 PSF
+        # and optical payload (mixed precision and a separate compile).
         payload = {
             'psf_grid': jnp.array(data['psf_grid'], dtype=jnp.float32),
-            'wavelengths': jnp.array(data['wavelengths']),
-            'wl_grid': jnp.array(data['wavelengths']),  # Alias
-            'spatial_x': jnp.array(data['spatial_x']),
-            'spatial_y': jnp.array(data['spatial_y']),
+            'wavelengths': jnp.array(data['wavelengths'], dtype=jnp.float32),
+            'wl_grid': jnp.array(data['wavelengths'], dtype=jnp.float32),  # Alias
+            'spatial_x': jnp.array(data['spatial_x'], dtype=jnp.float32),
+            'spatial_y': jnp.array(data['spatial_y'], dtype=jnp.float32),
             'psf_fov_pixels': int(data['psf_grid'].shape[-1]),
             'pixel_scale': float(data.get('pixel_scale', 0.11)),
             'oversample': int(data['oversample']),
@@ -433,10 +436,10 @@ def _make_psf_payload_with_progress(
     return {
         'detector': detector,
         'order': order,
-        'wavelengths': jnp.array(wavelengths),
-        'wl_grid': jnp.array(wavelengths),
-        'spatial_x': jnp.array(x_grid),
-        'spatial_y': jnp.array(y_grid),
+        'wavelengths': jnp.array(wavelengths, dtype=jnp.float32),
+        'wl_grid': jnp.array(wavelengths, dtype=jnp.float32),
+        'spatial_x': jnp.array(x_grid, dtype=jnp.float32),
+        'spatial_y': jnp.array(y_grid, dtype=jnp.float32),
         'psf_grid': jnp.array(psf_grid, dtype=jnp.float32),
         'psf_fov_pixels': psf_grid.shape[-1],
         'pixel_scale': 0.11,
@@ -1074,10 +1077,10 @@ def make_psf_payload(
         'detector': detector,
         'order': order,
         'stpsf_filter': stpsf_filter,
-        'wavelengths': jnp.array(wavelengths),
-        'wl_grid': jnp.array(wavelengths),  # Alias for consistency with optical model
-        'spatial_x': jnp.array(spatial_grid['x']),
-        'spatial_y': jnp.array(spatial_grid['y']),
+        'wavelengths': jnp.array(wavelengths, dtype=jnp.float32),
+        'wl_grid': jnp.array(wavelengths, dtype=jnp.float32),  # Alias for consistency with optical model
+        'spatial_x': jnp.array(spatial_grid['x'], dtype=jnp.float32),
+        'spatial_y': jnp.array(spatial_grid['y'], dtype=jnp.float32),
         'psf_grid': jnp.array(psf_grid, dtype=jnp.float32),
         'psf_fov_pixels': psf_grid.shape[-1],  # Assumes square PSF
         'pixel_scale': 0.11,  # Roman WFI pixel scale (arcsec/pixel)

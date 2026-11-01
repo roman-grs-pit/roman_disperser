@@ -492,10 +492,43 @@ def trim_wavelength_grid(wavelengths, element):
 _GALAXY_SED_VALUE_LIMIT = 1e-12
 
 
+def check_psf_payloads(psf_payloads, expected=None, detector=""):
+    """Require one PSF grid geometry for every order (and SCA) of a run.
+
+    ``expected`` is ``(psf_grid.shape, oversample)`` of the run's first PSF
+    payload (``setup_pipeline`` records it as ``pipeline["psf_geometry"]``);
+    None takes the first payload in ``psf_payloads``. The run relies on it:
+    the galaxy stamp size (``galaxy_npix * oversample``) and the warmup
+    shapes are fixed from the first payload, and one compiled program per
+    order serves every SCA only while the shapes agree. A cache with another
+    stamp size, node count or wavelength grid (e.g. regenerated with a
+    different STPSF version or FOV) would otherwise recompile per SCA and
+    silently change the FFT size of the galaxy convolution.
+
+    Returns the geometry; raises ValueError naming the offending payload.
+    """
+    for order, payload in psf_payloads.items():
+        geometry = (tuple(int(n) for n in payload["psf_grid"].shape),
+                    int(payload["oversample"]))
+        if expected is None:
+            expected = geometry
+        elif geometry != expected:
+            raise ValueError(
+                f"PSF payload for {detector or 'this SCA'} order {order} has "
+                f"psf_grid shape {geometry[0]}, oversample {geometry[1]}; the "
+                f"run was set up with shape {expected[0]}, oversample "
+                f"{expected[1]}. All PSF caches of one run must share the "
+                f"grid geometry (stamp size, spatial nodes, wavelengths, "
+                f"oversampling): regenerate the odd cache with the same "
+                f"settings or run it separately.")
+    return expected
+
+
 def make_order_fori_fns(psf_payloads, optical_payloads, sensitivities,
                         wavelengths_jax, dlam_angstroms, orders, *,
                         deposit=DEFAULT_DEPOSIT, sed_rebin=1,
-                        hoist_star_psf=DEFAULT_HOIST_STAR_PSF):
+                        hoist_star_psf=DEFAULT_HOIST_STAR_PSF,
+                        psf_geometry=None, detector=""):
     """Build the batched star and galaxy fori functions for every order.
 
     Shared by ``process_pointing`` and ``run_warmup`` so both compile the
@@ -503,10 +536,14 @@ def make_order_fori_fns(psf_payloads, optical_payloads, sensitivities,
     the deposit options (see ``setup_pipeline``); ``sed_rebin`` is one
     factor for every order or ``{order: factor}``.
 
+    ``psf_geometry``: see :func:`check_psf_payloads` (checked here).
+
     Returns
     -------
     star_fori_fns, galaxy_fori_fns : dict order -> callable
     """
+    check_psf_payloads({o: psf_payloads[o] for o in orders}, psf_geometry,
+                       detector)
     star_fori_fns = {}
     galaxy_fori_fns = {}
     for order in orders:
@@ -844,6 +881,7 @@ def setup_pipeline(
         cache_dir=str(psf_cache_dir), verbose=False,
     )
     oversample = int(first_psf["oversample"])
+    psf_geometry = check_psf_payloads({"1": first_psf})
     galaxy_npix_os = galaxy_npix * oversample
     log(f"  PSF oversample: {oversample}x, "
         f"galaxy image: {galaxy_npix}px native = {galaxy_npix_os}px oversampled")
@@ -896,6 +934,7 @@ def setup_pipeline(
         "hoist_star_psf": bool(hoist_star_psf),
         "order_mag_limits": order_mag_limits,
         "oversample": oversample,
+        "psf_geometry": psf_geometry,
         "n_catalog_rows": n_catalog_rows,
         "source_cuts": source_cuts_summary,
         "timings": timings,
@@ -1138,6 +1177,8 @@ def process_pointing(
             wavelengths_jax, dlam_angstroms, element.orders,
             deposit=pipeline["deposit"], sed_rebin=pipeline["sed_rebin"],
             hoist_star_psf=pipeline["hoist_star_psf"],
+            psf_geometry=pipeline.get("psf_geometry"),
+            detector=detector_name,
         )
 
         # JIT warmup (hits disk cache after first run)
@@ -1905,6 +1946,7 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
         cache_dir=str(psf_cache_dir), verbose=False,
     )
     oversample = int(first_psf["oversample"])
+    psf_geometry = check_psf_payloads({"1": first_psf})
     galaxy_npix_os = galaxy_npix * oversample
 
     t_total = time.time()
@@ -1943,6 +1985,7 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
             wavelengths_jax, dlam_angstroms, element.orders,
             deposit=deposit, sed_rebin=sed_rebin,
             hoist_star_psf=hoist_star_psf,
+            psf_geometry=psf_geometry, detector=detector_name,
         )
 
         t_jit = time.time()

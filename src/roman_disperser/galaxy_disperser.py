@@ -457,6 +457,9 @@ def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000,
     arrays, static = jit_payload.split_payloads(psf_payload, optical_payload)
 
     def disperse_fn(image, x0, y0, spectrum, wavelengths, output):
+        # One dtype for the traced positions (see make_star_disperser).
+        x0 = jnp.asarray(x0, jnp.float32)
+        y0 = jnp.asarray(y0, jnp.float32)
         return disperse_galaxy_jit(
             arrays, image, x0, y0, spectrum, wavelengths, output,
             static=static, chunk_size=chunk_size, deposit=deposit,

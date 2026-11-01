@@ -104,6 +104,17 @@ before the references can guard the default path.
   503 / 566 / 630 MiB before (+64 MiB per SCA), 0.3 MiB after; outputs bit
   for bit unchanged. Quick mode's `build_dispersed_image()` now returns the
   MODEL as a NumPy array.
+- **Fewer recompiles off the production path.** The factory dispersers
+  (`make_star_disperser`, `make_galaxy_disperser`) cast scalar positions to
+  float32 arrays, so Python float, `np.float32`, `np.float64` and
+  `jnp.float32` positions share one compile (3 compiles before, 1 now).
+  PSF payload `wavelengths` / `wl_grid` / `spatial_x` / `spatial_y` are
+  float32 explicitly, so with `jax_enable_x64` on the payload is no longer
+  mixed precision (an x64 session still compiles its own programs). The
+  driver checks that every PSF payload of a run has the grid geometry of
+  the first one (`check_psf_payloads`, `pipeline["psf_geometry"]`) and
+  raises a ValueError naming the payload otherwise. New
+  `tests/test_recompiles.py`.
 - Deposit chunk length is derived from the number of wavelengths
   (`ceil(N / ceil(N / chunk_size))`), so zero-flux padding is < 1 chunk
   count instead of up to a whole chunk (5501 -> 3 x 1834; the 4 Å rebinned
