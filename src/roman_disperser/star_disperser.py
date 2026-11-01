@@ -798,6 +798,11 @@ def make_star_disperser(psf_payload, optical_payload, chunk_size=2000,
         output : jnp.ndarray
             Updated detector array
         """
+        # One dtype for the traced positions: a Python float (weak type),
+        # np.float32, np.float64 and jnp.float32 would otherwise each key a
+        # separate compile.
+        xsca = jnp.asarray(xsca, jnp.float32)
+        ysca = jnp.asarray(ysca, jnp.float32)
         return disperse_star_jit(
             arrays, xsca, ysca, wavelengths, flux, output,
             static=static, chunk_size=chunk_size, deposit=deposit,
