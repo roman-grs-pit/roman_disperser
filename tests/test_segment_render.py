@@ -324,3 +324,40 @@ class TestDriverOptions:
             assert p["segment_psf_at"].default == "source"
         assert inspect.signature(bdi.make_order_fori_fns).parameters[
             "segment"].default is None
+
+
+def test_galaxy_gradients(payloads, flux):
+    """Reverse mode through run_galaxy_batch_segment vs central differences."""
+    psf, opt = payloads
+    img = _galaxy_image()
+    plan = sr.make_segment_plan(psf, opt, 3, "galaxy", galaxy_npix=16)
+    sens = jnp.ones_like(WL)
+    arrays, static = sr.jit_payload.split_payloads(psf, opt)
+    img0 = _np(sr.render_galaxy_segments(psf, opt, img, X0, Y0, flux, WL,
+                                         ZERO, plan))
+    ys_, xs_ = np.nonzero(img0 > 1e-3 * img0.max())
+    y0, y1, x0, x1 = ys_.min() - 5, ys_.max() + 6, xs_.min() - 5, xs_.max() + 6
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    wgt = np.zeros((4088, 4088), np.float32)
+    wgt[y0:y1, x0:x1] = np.cos(xx / 7.0) * np.sin(yy / 11.0) + 1.5
+    wgt = jnp.asarray(wgt)
+
+    def loss(spec, x, y):
+        out = sr.run_galaxy_batch_segment(
+            arrays, sens, WL, jnp.float32(1.0), 1, spec[None], x[None],
+            y[None], img[None], jnp.zeros((4088, 4088), jnp.float32),
+            static=static, plan=plan)
+        return jnp.sum(out * wgt)
+
+    g_spec, g_x, g_y = jax.grad(loss, argnums=(0, 1, 2))(flux, X0, Y0)
+    e = np.zeros(WL.size, np.float32)
+    e[80] = 1.0
+    fd = (float(loss(flux + 0.5 * e, X0, Y0))
+          - float(loss(flux - 0.5 * e, X0, Y0)))
+    assert np.isclose(float(g_spec[80]), fd, rtol=2e-3)
+    for g, args in ((g_x, lambda d: (flux, X0 + d, Y0)),
+                    (g_y, lambda d: (flux, X0, Y0 + d))):
+        d = 0.05
+        fd = (float(loss(*args(d))) - float(loss(*args(-d)))) / (2 * d)
+        assert abs(fd) > 0
+        assert np.isclose(float(g), fd, rtol=0.05), (float(g), fd)
