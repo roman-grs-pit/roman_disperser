@@ -664,7 +664,10 @@ def setup_pipeline(
         the catalog spacing. With ``deposit="interp"``, ``{"0": 4, "1": 4,
         "2": 2}`` costs about the same as the floor deposit at 2 A and is
         ~100x more accurate; 4 A in order 2 is 0.73 px and blurs narrow
-        lines by up to 5 % of their peak.
+        lines by up to 5 % of their peak. Order 0 (~270 A/px) can take
+        40 A with interp: continuum within 1e-3 of peak, narrow-line
+        centroids within 0.06 px, star cost ~1/6 of 4 A (galaxies ~1/2.5,
+        bounded by the per-galaxy PSF convolution).
     hoist_star_psf : bool
         Phase-bin the PSF grid once per (SCA, order) for the star path
         (``make_star_disperser(hoist_psf=True)``): ~1.35x faster stars,
@@ -1593,7 +1596,9 @@ galaxy_npix: 30
 # width (A, a multiple of the catalog spacing) before the deposit; interp at
 # 4 A costs about the same as floor at 2 A.  rebin_dlam is one width for all
 # orders or a per-order mapping; orders left out are not rebinned.  Keep order 2
-# at 2 A: 4 A is 0.73 px there.  hoist_star_psf: bin the star PSF grid once per
+# at 2 A: 4 A is 0.73 px there.  Order 0 (~270 A/px) takes 40 A with interp
+# (continuum within 1e-3 of peak; narrow lines move <= 0.06 px) at ~1/6 of the
+# 4 A star cost.  hoist_star_psf: bin the star PSF grid once per
 # SCA (faster stars, +1 PSF grid of memory per order).
 # deposit: interp
 # rebin_dlam: {"0": 4, "1": 4, "2": 2}
