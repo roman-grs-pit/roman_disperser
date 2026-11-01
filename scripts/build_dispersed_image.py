@@ -922,6 +922,7 @@ def process_pointing(
     extra_meta=None,
     output_prefix=None,
     force=False,
+    return_outputs=True,
 ):
     """Process a single pointing: select sources, generate spectra, disperse.
 
@@ -954,9 +955,16 @@ def process_pointing(
         name — ``grism`` for grism runs (unchanged historical naming),
         ``prism`` for prism runs.
 
+    return_outputs : bool
+        Return the per-SCA MODEL arrays (default True; quick mode uses
+        them). Batch mode passes False, so nothing beyond the mosaic's host
+        copies is kept across SCAs.
+
     Returns
     -------
-    sca_outputs : dict mapping sca (int) -> jnp.ndarray [4088, 4088]
+    sca_outputs : dict mapping sca (int) -> np.ndarray [4088, 4088], or None
+        The MODEL of each SCA rendered in this call, as host (NumPy)
+        arrays; None with ``return_outputs=False``.
     """
     t_total = time.time()
 
@@ -1073,7 +1081,7 @@ def process_pointing(
             f"in {time.time() - t0:.2f}s")
 
     # -- Step 4: Per-SCA loop ------------------------------------------------
-    sca_outputs = {}
+    sca_outputs = {} if return_outputs else None
     sca_model_np = {}
     source_counts = {}
     manifest_rows = []
@@ -1369,9 +1377,7 @@ def process_pointing(
             log(f"    No sources on detector.")
 
         # Release compiled functions and PSF payloads for this SCA
-        del star_fori_fns, galaxy_fori_fns, psf_payloads
-
-        sca_outputs[sca_num] = output
+        del star_fori_fns, galaxy_fori_fns, psf_payloads, payloads_by_filter
 
         # Log per-order counts
         for order in element.orders:
@@ -1404,6 +1410,7 @@ def process_pointing(
             )
             isim = output * exptime
             key_data = np.zeros(2, dtype=np.uint32)
+            expected_counts = None
 
         # Single GPU->CPU transfer
         t0 = time.time()
@@ -1411,6 +1418,11 @@ def process_pointing(
         isim_np = np.array(isim)
         t_transfer = time.time() - t0
         sca_model_np[sca_num] = output_np
+        if return_outputs:
+            sca_outputs[sca_num] = output_np   # host array, shared
+        # Drop this SCA's device buffers (MODEL, ISIM and the Poisson
+        # intermediates, ~67 MB each) before the next SCA loads its PSFs.
+        del output, isim, rate_clean, finite, expected_counts
 
         # Safety net: warn if any non-finite pixels slipped through. The
         # disperser should produce only finite values when fed sane SEDs;
@@ -1594,7 +1606,7 @@ def build_dispersed_image(
 
     Returns
     -------
-    output : jnp.ndarray [4088, 4088], or None if skipped
+    output : np.ndarray [4088, 4088] (MODEL, host), or None if skipped
     """
     output_file = Path(output_file)
     if not force and output_file.exists():
@@ -2198,6 +2210,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
             extra_meta=extra_meta,
             output_prefix=cfg.get("output_prefix"),
             force=force,
+            return_outputs=False,
         )
 
     total = time.time() - t_all

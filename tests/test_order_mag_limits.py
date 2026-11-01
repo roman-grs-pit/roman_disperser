@@ -236,3 +236,20 @@ def test_cut_every_order_drops_source(bdi, tmp_path, monkeypatch):
                                  monkeypatch)
     assert sorted(set(man.catalog_index)) == [0, 1, 4]
     assert hdr["ORDMAG1"] == 20.0
+
+
+def test_process_pointing_outputs_on_host(bdi, tmp_path, monkeypatch):
+    """Per-SCA MODEL comes back as host arrays (no device buffer kept per
+    SCA); batch mode (return_outputs=False) returns nothing."""
+    import jax
+    _patch(monkeypatch, bdi, [])
+    pipe = _fake_pipeline(None)
+    out = bdi.process_pointing(pipe, 10.0, 0.1, 0.0, str(tmp_path / "a"),
+                               cone_radius=1.0, verbose=False,
+                               pointing_key=jax.random.key(0))
+    assert set(out) == {5} and isinstance(out[5], np.ndarray)
+    assert out[5].shape == (16, 16) and out[5].sum() > 0
+    assert bdi.process_pointing(pipe, 10.0, 0.1, 0.0, str(tmp_path / "b"),
+                                cone_radius=1.0, verbose=False,
+                                pointing_key=jax.random.key(0),
+                                return_outputs=False) is None
