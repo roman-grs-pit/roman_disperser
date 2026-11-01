@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Defaults are unchanged: `deposit="floor"`, no rebinning, no hoist reproduce
+v0.16.0 bit for bit (golden-frames-v3 still apply).
+
+### Added
+- **Interpolating deposit** (`deposit="interp"` on `make_star_disperser`,
+  `make_galaxy_disperser`, `disperse_star_psf`, `disperse_galaxy`,
+  `deposit_stack_native`; `--deposit` / config `deposit` in
+  `build_dispersed_image.py`). Two-tap interpolation between adjacent
+  phase-binned stamps per axis, combined into one (n+1)² stamp per
+  wavelength: the exact sub-pixel box-overlap deposit of the oversampled
+  stamp. Removes the ±1/8 px per-wavelength placement quantisation, the
+  0.5-2.4 % rms continuum ripple of point sources and the zero position
+  gradients; flux-conserving. ~1.7x the floor deposit cost on CPU at
+  the same sampling.
+- **Count rebinning before the deposit** (`pipeline.rebin_counts`,
+  `sed_rebin` on `make_batched_*_fori`, `--rebin-dlam` / config
+  `rebin_dlam`). Sums `spectrum*sens*dlam` over groups of samples and
+  deposits at the bin centre. The spacing is one value for every order or
+  per order (`--rebin-dlam 0:4,1:4,2:2`, config `rebin_dlam: {"0": 4,
+  "1": 4, "2": 2}`; `pipeline.sed_rebin_factors`). Interp with 4/4/2 Å costs
+  about the same as floor at 2 Å. Keep order 2 at 2 Å: at ~5.4 Å/px a 4 Å
+  bin is 0.73 px and blurs narrow lines by up to 5 % of their peak.
+- **Star PSF hoist** (`make_star_disperser(hoist_psf=True)`,
+  `--hoist-star-psf` / config `hoist_star_psf`): phase-bins the PSF grid
+  nodes once per (SCA, order) (`star_disperser.bin_psf_grid`) and blends the
+  binned nodes per star. Same result up to f32 rounding; +1 PSF grid of
+  device memory per order.
+- `star_disperser.bin_stack_phases` / `deposit_binned` (the two halves of
+  `deposit_stack_native`), `psf_model.interpolate_psf_spatial(grid_key=)`,
+  FITS cards `DEPOSIT` / `DEPDLAM<order>` and meta keys `deposit`,
+  `deposit_dlam_angstroms` (per order), `hoist_star_psf`.
+
+### Changed
+- Deposit chunk length is derived from the number of wavelengths
+  (`ceil(N / ceil(N / chunk_size))`), so zero-flux padding is < 1 chunk
+  count instead of up to a whole chunk (5501 -> 3 x 1834; the 4 Å rebinned
+  2751 -> 2 x 1376 instead of 2 x 2000). Bit-identical output.
+- `.payload_args` of the factory dispersers is now
+  `(arrays, static, chunk_size, deposit)`.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the

@@ -1496,7 +1496,7 @@ def interp_wavelength_chunk(psfs_grid, grid_wl, target_wl):
     return psf_lo + t[:, None, None] * (psf_hi - psf_lo)
 
 
-def interpolate_psf_spatial(payload, xsca, ysca):
+def interpolate_psf_spatial(payload, xsca, ysca, grid_key='psf_grid'):
     """
     Interpolate PSF at (x, y) for ALL wavelengths using bilinear interpolation.
 
@@ -1516,12 +1516,17 @@ def interpolate_psf_spatial(payload, xsca, ysca):
     xsca, ysca : float
         SCA coordinates (1-indexed FITS, range 1-4088)
         Must be scalar values (not arrays)
+    grid_key : str, optional
+        Payload key of the node grid to blend (default ``'psf_grid'``).
+        Any [N_y, N_x, ...] array on the same spatial nodes works, e.g.
+        the phase-binned grid ``'psf_grid_binned'`` that
+        ``star_disperser.make_star_disperser(hoist_psf=True)`` adds.
 
     Returns
     -------
     psfs : jnp.ndarray
         Interpolated PSF array for all wavelengths in the grid
-        Shape: [N_wl, PSF_y, PSF_x]
+        Shape: [N_wl, PSF_y, PSF_x] (``payload[grid_key].shape[2:]``)
 
     Examples
     --------
@@ -1549,7 +1554,7 @@ def interpolate_psf_spatial(payload, xsca, ysca):
     # Extract grid parameters
     x_grid = payload['spatial_x']
     y_grid = payload['spatial_y']
-    psf_grid = payload['psf_grid']  # [N_y, N_x, N_wl, PSF_y, PSF_x]
+    psf_grid = payload[grid_key]  # [N_y, N_x, N_wl, PSF_y, PSF_x]
 
     # 1. Find spatial bracket (x dimension)
     x_idx = jnp.searchsorted(x_grid, xsca)
