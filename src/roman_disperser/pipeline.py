@@ -301,6 +301,98 @@ def load_sensitivities(sensitivity_dir, sca, wavelengths, orders):
 
 
 # ---------------------------------------------------------------------------
+# Per-order brightness cut (F158)
+# ---------------------------------------------------------------------------
+
+def order_mag_limits_by_order(limits, orders):
+    """Normalise ``order_mag_limits`` to ``{order: float}`` (limited orders only).
+
+    ``limits`` is None (no cut) or a mapping ``{order: AB mag or None}``;
+    order keys may be str or int, orders missing from the mapping or set to
+    None are not cut. A source is dispersed in a limited order only if its
+    F158 AB magnitude is at most the limit (see :func:`apply_order_mag_limits`).
+    Meant for the faint orders (grism 0 and 2 carry ~0.4 % and ~0.2 % of the
+    order-1 flux), where the faintest sources add light far below the noise.
+    """
+    if limits is None:
+        return {}
+    if not isinstance(limits, dict):
+        raise TypeError("order_mag_limits must be a mapping {order: mag}, "
+                        f"got {type(limits).__name__}")
+    by_order = {str(k): v for k, v in limits.items()}
+    unknown = sorted(set(by_order) - {str(o) for o in orders})
+    if unknown:
+        raise ValueError(f"order_mag_limits has orders {unknown} "
+                         f"not in {list(orders)}")
+    out = {}
+    for order in orders:
+        value = by_order.get(str(order))
+        if value is None:
+            continue
+        value = float(value)
+        if not np.isfinite(value):
+            raise ValueError(f"order_mag_limits[{order!r}] must be finite, "
+                             f"got {value}")
+        out[order] = value
+    return out
+
+
+def parse_order_mag_limits(text):
+    """Parse ``--order-mag-limits``: per order ``"0:24,2:24"`` (AB mag)."""
+    if text is None:
+        return None
+    out = {}
+    for item in text.split(","):
+        order, sep, value = item.partition(":")
+        if not sep or not order.strip():
+            raise ValueError(f"--order-mag-limits wants ORDER:MAG items "
+                             f"(e.g. 0:24,2:24), got {item!r}")
+        out[order.strip()] = float(value)
+    return out
+
+
+def flux_to_ab_mag(flux_maggies):
+    """AB magnitude of a flux in maggies; non-positive or NaN flux gives +inf."""
+    f = np.asarray(flux_maggies, dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mag = -2.5 * np.log10(f)
+    return np.where(f > 0, mag, np.inf)
+
+
+def apply_order_mag_limits(order_masks, mag, limits):
+    """AND ``mag <= limit`` into the masks of the limited orders.
+
+    Parameters
+    ----------
+    order_masks : dict mapping order str -> bool ndarray [N]
+        From :func:`select_sources_per_order`.
+    mag : ndarray [N]
+        Per-source AB magnitude (``flux_to_ab_mag(F158)``). NaN or +inf
+        (non-positive flux) fails every limit.
+    limits : dict mapping order str -> float
+        From :func:`order_mag_limits_by_order`; orders not in it are kept.
+
+    Returns
+    -------
+    masks : dict mapping order str -> bool ndarray [N] (new arrays)
+    skipped : dict mapping order str -> bool ndarray [N]
+        Sources on the detector in that order but removed by the limit.
+    """
+    mag = np.asarray(mag)
+    masks, skipped = {}, {}
+    for order, mask in order_masks.items():
+        mask = np.asarray(mask, dtype=bool)
+        if order in limits:
+            keep = mag <= limits[order]          # False for NaN
+            masks[order] = mask & keep
+            skipped[order] = mask & ~keep
+        else:
+            masks[order] = mask.copy()
+            skipped[order] = np.zeros_like(mask)
+    return masks, skipped
+
+
+# ---------------------------------------------------------------------------
 # Star batching
 # ---------------------------------------------------------------------------
 
