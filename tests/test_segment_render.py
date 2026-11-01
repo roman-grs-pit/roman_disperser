@@ -316,6 +316,18 @@ class TestDriverOptions:
         with pytest.raises(ValueError):
             bdi.resolve_segment_render(6, orders, "pupil")
 
+    def test_auto(self, bdi):
+        assert bdi.parse_segment_render("auto") == "auto"
+        assert bdi.parse_segment_render(" AUTO ") == "auto"
+        n = bdi.AUTO_SEGMENT_NODES
+        assert bdi.auto_backend_choice("cpu", 1) == (n, None, "cpu x1")
+        assert bdi.auto_backend_choice("cpu", 4)[1] is None
+        assert bdi.auto_backend_choice("gpu", 1) == (n, "window", "gpu x1")
+        assert bdi.auto_backend_choice("gpu", 2) == (n, "tiled", "gpu x2")
+        nodes, mode, label = bdi.auto_backend_choice()
+        assert label == f"{jax.default_backend()} x{jax.device_count()}"
+        assert mode in (None,) + tuple(bdi.accum.ACCUMULATE_MODES)
+
     def test_default_off(self, bdi):
         import inspect
         for fn in (bdi.setup_pipeline, bdi.build_dispersed_image):
