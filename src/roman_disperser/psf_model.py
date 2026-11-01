@@ -329,9 +329,17 @@ def load_psf_payload(filepath, verbose=True):
 
 
 def _init_worker(counter):
-    """Initialize worker process with shared counter."""
+    """Initialize worker process with shared counter.
+
+    Workers only build and save payloads, so keep their JAX on the CPU: a
+    GPU backend in every worker would each preallocate GPU memory.
+    """
     global _progress_counter
     _progress_counter = counter
+    try:
+        jax.config.update("jax_platforms", "cpu")
+    except RuntimeError:  # backend already initialised in this process
+        pass
 
 
 def _generate_single_cache(args):
@@ -623,8 +631,11 @@ def generate_all_psf_caches(
                     print(f"  FAILED: {e}")
     else:
         # Parallel execution with shared progress counter
-        from multiprocessing import Pool, Value
+        # spawn, not fork: the parent may hold a multithreaded JAX runtime
+        # (and a CUDA context), which is not fork-safe (Linux default).
+        import multiprocessing
         import ctypes
+        mp_context = multiprocessing.get_context("spawn")
 
         # Calculate total PSF positions across all tasks
         n_positions_per_cache = len(spatial_grid['x']) * len(spatial_grid['y'])
@@ -635,13 +646,14 @@ def generate_all_psf_caches(
             print(f"  Total PSF positions to compute: {total_positions}")
 
         # Create shared counter for progress tracking
-        progress_counter = Value(ctypes.c_int, 0)
+        progress_counter = mp_context.Value(ctypes.c_int, 0)
 
         # Progress bar thread
         if verbose and have_tqdm:
             pbar = tqdm(total=total_positions, desc="Computing PSFs", unit="pos")
 
-        with Pool(n_workers, initializer=_init_worker, initargs=(progress_counter,)) as pool:
+        with mp_context.Pool(n_workers, initializer=_init_worker,
+                             initargs=(progress_counter,)) as pool:
             # Submit all tasks asynchronously
             async_results = {
                 pool.apply_async(_generate_single_cache, (task,)): task
