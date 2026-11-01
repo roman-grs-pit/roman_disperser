@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Per-order brightness cut** (`--order-mag-limits 0:24,2:24` / config
+  `order_mag_limits: {"0": 24, "2": 24}`; `pipeline.parse_order_mag_limits`,
+  `order_mag_limits_by_order`, `apply_order_mag_limits`, `flux_to_ab_mag`):
+  in a limited order only sources with F158 AB mag <= limit are dispersed
+  (catalog column `F158`, maggies, stars and galaxies). Applied per SCA after
+  the on-detector selection. FITS cards `ORDMAG<order>`, meta key
+  `order_mag_limits`, and `stars_mag_cut` / `galaxies_mag_cut` in the
+  per-order `source_counts`. Off by default.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
