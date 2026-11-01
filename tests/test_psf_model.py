@@ -1172,3 +1172,46 @@ class TestPSFCaching:
         # Verify flux is reasonable (should be ~1.0 for normalized PSF)
         flux = float(psf_loaded.sum())
         assert 0.95 < flux < 1.001, f"Unexpected flux: {flux}"
+
+
+# ---------------------------------------------------------------------------
+# F11: no JAX backend at import; cache workers are spawned, not forked
+# ---------------------------------------------------------------------------
+
+def test_import_does_not_initialise_jax_backend():
+    """Importing the package must not start a JAX backend (on a GPU node
+    that preallocates GPU memory before cache workers are started)."""
+    import subprocess
+    import sys
+    code = ("import roman_disperser, roman_disperser.psf_model\n"
+            "from jax._src import xla_bridge as xb\n"
+            "print(xb.backends_are_initialized())")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                         text=True, check=True)
+    assert out.stdout.strip().splitlines()[-1] == "False"
+
+
+def test_parallel_cache_generation_spawns_workers(tmp_path, monkeypatch):
+    """The worker pool uses the spawn start method and returns one result per
+    task (without STPSF each task fails, which still exercises the pool)."""
+    import multiprocessing
+    try:
+        import stpsf  # noqa: F401
+        pytest.skip("STPSF installed: real generation would take hours")
+    except ImportError:
+        pass
+    methods = []
+    real = multiprocessing.get_context
+
+    def spy(method=None):
+        methods.append(method)
+        return real(method)
+
+    monkeypatch.setattr(multiprocessing, "get_context", spy)
+    res = psf_model.generate_all_psf_caches(
+        tmp_path, orders=("1",), detectors=["WFI01", "WFI02"],
+        wavelengths=np.array([1.0, 1.5]),
+        spatial_grid={"x": np.array([1.0]), "y": np.array([1.0])},
+        n_workers=2, verbose=False)
+    assert methods == ["spawn"]
+    assert len(res["generated"]) + len(res["failed"]) == 2
