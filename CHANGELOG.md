@@ -72,6 +72,18 @@ before the references can guard the default path.
   positions, `disperse_galaxy` / `prepare_galaxy_images` optional
   `geometry` (new `galaxy_disperser.galaxy_trace_geometry`) and
   `dispersed`. New `tests/test_batch_autodiff.py`.
+- **Differentiable sky -> detector transform** (`optical_model_jax.
+  make_sky_reference`, `perturbed_tangent_offsets`, `perturbed_sky_to_fpa`,
+  `perturbed_sky_to_sca`; existing functions unchanged). A float64 host
+  reference at the nominal pointing (tangent offsets, FPA and, with the
+  payload, SCA position) plus a jittable float32 JAX change for source
+  offsets (d_xi, d_eta) and pointing offsets (d_ra, d_dec, d_pa), assembled
+  from small quantities only, so `jax.grad` / `jax.jacfwd` w.r.t. source
+  position and pointing work; optional dispersed trace. Within 1.3e-3 px of
+  a float64 evaluation for perturbations up to 10 arcsec and 0.1 deg (the
+  existing float32 chain: 1-5e-3 px); Jacobians match float64 finite
+  differences to ~3e-7. New `tests/test_sky_perturbation.py`,
+  `docs/optical_model.md` section.
 - **Per-order brightness cut** (`--order-mag-limits 0:24,2:24` / config
   `order_mag_limits: {"0": 24, "2": 24}`; `pipeline.parse_order_mag_limits`,
   `order_mag_limits_by_order`, `apply_order_mag_limits`, `flux_to_ab_mag`):

@@ -92,3 +92,27 @@ def trace_sca(sca):
 scas = [1, 2, 5, 10]
 results = jax.vmap(trace_sca)(np.array(scas))
 ```
+
+## Differentiable sky → detector transform (small perturbations)
+
+`sky_to_tangent_offsets` is host float64 NumPy by design (absolute RA/Dec
+need float64; see the precision convention in `optical_model_jax`), so
+`jax.grad` cannot see RA/Dec. For gradients w.r.t. source positions and the
+pointing, evaluate the geometry once at the nominal pointing and perturb in
+JAX:
+
+```python
+ref = omj.make_sky_reference(ra, dec, ra0, dec0, pa0, payload=payload)  # host f64
+x, y = omj.perturbed_sky_to_sca(ref, payload, d_xi, d_eta, d_ra, d_dec, d_pa)
+J = jax.jacfwd(lambda p: jnp.stack(omj.perturbed_sky_to_sca(ref, payload, *p)))(p0)
+```
+
+All perturbations are in degrees (`d_xi`, `d_eta`: source offsets in the
+nominal tangent plane, per source or scalar; `d_ra`, `d_dec`, `d_pa`:
+pointing). The result is the float64 reference plus a float32 change built
+only from small quantities (no small-angle approximation): within ~1.3e-3 px
+of a float64 evaluation for 10″ source and 0.1° pointing perturbations on
+SCA 5 (the existing `get_fpa_pos` + `fpa_to_sca` chain is at 1-5e-3 px), and
+Jacobians agree with float64 finite differences to ~3e-7 relative.
+`perturbed_sky_to_fpa` / `perturbed_tangent_offsets` give the intermediate
+coordinates, `wavelengths=` adds the dispersed trace.
