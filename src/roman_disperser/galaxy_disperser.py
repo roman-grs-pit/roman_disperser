@@ -241,7 +241,25 @@ def fft_convolve_full(images, kernels):
     return jnp.fft.irfft2(spectrum, s=(s_y, s_x))[..., :conv_y, :conv_x]
 
 
-def prepare_galaxy_images(optical_payload, psf_payload, image, x0, y0, dx, dy):
+def galaxy_trace_geometry(optical_payload, x0, y0, grid_wl):
+    """Dispersed centres and trace Jacobians at the PSF grid wavelengths.
+
+    Returns
+    -------
+    centers_x, centers_y : jnp.ndarray [N_grid]
+    jacobians : jnp.ndarray [N_grid, 2, 2]
+    """
+    def compute_jac_and_pos(wavelength):
+        x_out, y_out, J = trace_beam_sca_with_jacobian(
+            optical_payload, x0, y0, wavelength
+        )
+        return x_out, y_out, J
+
+    return jax.vmap(compute_jac_and_pos)(grid_wl)
+
+
+def prepare_galaxy_images(optical_payload, psf_payload, image, x0, y0, dx, dy,
+                          geometry=None):
     """Prepare dispersed, PSF-convolved galaxy images at PSF grid wavelengths.
 
     For each PSF grid wavelength:
@@ -261,6 +279,9 @@ def prepare_galaxy_images(optical_payload, psf_payload, image, x0, y0, dx, dy):
         Undispersed center position in SCA coordinates (1-indexed FITS)
     dx, dy : float
         Pixel spacing in SCA coords (1/oversample)
+    geometry : tuple, optional
+        Precomputed :func:`galaxy_trace_geometry` at the PSF grid
+        wavelengths.
 
     Returns
     -------
@@ -280,16 +301,9 @@ def prepare_galaxy_images(optical_payload, psf_payload, image, x0, y0, dx, dy):
     grid_wl = psf_payload['wavelengths']
 
     # Compute Jacobians and dispersed positions at all grid wavelengths
-    def compute_jac_and_pos(wavelength):
-        x_out, y_out, J = trace_beam_sca_with_jacobian(
-            optical_payload, x0, y0, wavelength
-        )
-        return x_out, y_out, J
-
-    # vmap over wavelengths
-    centers_x, centers_y, jacobians = jax.vmap(
-        compute_jac_and_pos
-    )(grid_wl)  # [N_wl], [N_wl], [N_wl, 2, 2]
+    if geometry is None:
+        geometry = galaxy_trace_geometry(optical_payload, x0, y0, grid_wl)
+    centers_x, centers_y, jacobians = geometry  # [N_wl], [N_wl], [N_wl, 2, 2]
 
     # Warp galaxy at each wavelength
     def warp_at_wl(jacobian):
@@ -315,6 +329,8 @@ def disperse_galaxy(
     output,
     chunk_size=2000,
     deposit="interp",
+    geometry=None,
+    dispersed=None,
 ):
     """Disperse a galaxy onto the detector.
 
@@ -350,6 +366,12 @@ def disperse_galaxy(
     deposit : {"floor", "interp"}, optional
         Deposit scheme (default ``"interp"``; ``"floor"`` is the historical deposit); see
         star_disperser.deposit_binned.
+    geometry, dispersed : optional
+        Precomputed :func:`galaxy_trace_geometry` (at the PSF grid
+        wavelengths) and ``star_disperser._compute_dispersed_positions``
+        (at ``wavelengths``). The batch loop (``pipeline.run_galaxy_batch``)
+        computes them outside its ``lax.cond``, which keeps them
+        bit-identical to the unconditional evaluation.
 
     Returns
     -------
@@ -361,14 +383,17 @@ def disperse_galaxy(
 
     # Step 1: Prepare convolved images at PSF grid wavelengths
     convolved, _, _, grid_wl = prepare_galaxy_images(
-        optical_payload, psf_payload, image, x0, y0, dx, dy
+        optical_payload, psf_payload, image, x0, y0, dx, dy,
+        geometry=geometry,
     )  # [N_grid_wl, Conv_y, Conv_x]
 
     # Step 2: Compute exact dispersed positions at every fine wavelength
     # (cheap vectorized trace_beam call — no interpolation needed here)
-    xsca_disp, ysca_disp = star_disperser._compute_dispersed_positions(
-        optical_payload, x0, y0, wavelengths
-    )
+    if dispersed is None:
+        dispersed = star_disperser._compute_dispersed_positions(
+            optical_payload, x0, y0, wavelengths
+        )
+    xsca_disp, ysca_disp = dispersed
 
     # Step 3: Native-resolution chunked deposit (16-phase pre-binning; see
     # star_disperser.deposit_stack_native for the exactness argument)

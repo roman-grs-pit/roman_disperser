@@ -54,6 +54,24 @@ before the references can guard the default path.
   `deposit_stack_native`), `psf_model.interpolate_psf_spatial(grid_key=)`,
   FITS cards `DEPOSIT` / `DEPDLAM<order>` and meta keys `deposit`,
   `deposit_dlam_angstroms` (per order), `hoist_star_psf`.
+- **Reverse-mode autodiff through the production batch loops.**
+  `pipeline.run_star_batch` / `run_galaxy_batch` loop over the static batch
+  length with a `jax.checkpoint`-ed `lax.scan` instead of a `fori_loop`
+  with the traced `n_sources` as trip count (a `while_loop`, which has no
+  transpose). `jax.grad` / `jax.vjp` of the image w.r.t. spectra, positions
+  (with `deposit="interp"`) and galaxy images now work through them; the
+  checkpoint keeps the transpose's memory per source, not per batch. Padded
+  rows take the identity branch of a `lax.cond`, so partially filled
+  batches stay cheap; the trace positions (and galaxy Jacobians) are
+  evaluated outside the `lax.cond`, because inside a conditional branch
+  XLA:CPU rounds the trace polynomials differently (pixel differences of
+  ~1e-3 of the peak with interp, flipped phases with floor). Forward images
+  are bit for bit those of the `fori_loop` (stars and galaxies, floor and
+  interp, production PSF); CPU throughput is unchanged and `output` is still
+  donated. `disperse_star_psf` takes optional precomputed `dispersed`
+  positions, `disperse_galaxy` / `prepare_galaxy_images` optional
+  `geometry` (new `galaxy_disperser.galaxy_trace_geometry`) and
+  `dispersed`. New `tests/test_batch_autodiff.py`.
 - **Per-order brightness cut** (`--order-mag-limits 0:24,2:24` / config
   `order_mag_limits: {"0": 24, "2": 24}`; `pipeline.parse_order_mag_limits`,
   `order_mag_limits_by_order`, `apply_order_mag_limits`, `flux_to_ab_mag`):
