@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Defaults are unchanged: `deposit="floor"`, no rebinning, no hoist reproduce
-v0.16.0 bit for bit (golden-frames-v3 still apply).
+**Results change by default:** the driver now runs the interpolating deposit
+with per-order count rebinning (40 / 4 / 2 Å in grism orders 0 / 1 / 2) and
+the star PSF hoist (see *Changed*). `--deposit floor --rebin-dlam none
+--no-hoist-star-psf` (config `deposit: floor`, `rebin_dlam: none`,
+`hoist_star_psf: false`) reproduces v0.16.0 bit for bit. The golden-frame
+test passes these floor settings explicitly, so golden-frames-v3 still
+apply; **a new bless (golden-frames-v4) with the interp defaults is needed**
+before the references can guard the default path.
 
 ### Added
 - **Scene linear operator** (`roman_disperser.linear_operator.SceneOperator`,
@@ -58,6 +64,19 @@ v0.16.0 bit for bit (golden-frames-v3 still apply).
   per-order `source_counts`. Off by default.
 
 ### Changed
+- **Production deposit defaults** (`build_dispersed_image.py`:
+  `DEFAULT_DEPOSIT = "interp"`, `DEFAULT_REBIN_DLAM = {"0": 40, "1": 4,
+  "2": 2}`, `DEFAULT_HOIST_STAR_PSF = True`; CLI, config and
+  `setup_pipeline` / `build_dispersed_image` defaults are None = these).
+  `--rebin-dlam none` (config `rebin_dlam: none`, or `ORDER:none` per order)
+  switches rebinning off, `--no-hoist-star-psf` the hoist. Default spacings
+  round down to a multiple of the catalog spacing; explicit ones must be
+  exact multiples. The library default `deposit` of `make_star_disperser`,
+  `make_galaxy_disperser`, `disperse_star_psf`, `disperse_galaxy`,
+  `deposit_stack_native`, `deposit_binned` and `run_*_batch` is now
+  `"interp"` too; the low-level functions keep `sed_rebin=1` and
+  `hoist_psf=False` (rebinning and the hoist are per-run choices of the
+  driver). The per-order brightness cut stays off by default.
 - Deposit chunk length is derived from the number of wavelengths
   (`ceil(N / ceil(N / chunk_size))`), so zero-flux padding is < 1 chunk
   count instead of up to a whole chunk (5501 -> 3 x 1834; the 4 Å rebinned

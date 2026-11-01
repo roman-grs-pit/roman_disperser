@@ -680,7 +680,7 @@ class TestDepositStackNativeSizes:
         out = jnp.zeros(self.SHAPE, dtype=jnp.float32)
         got = star_disperser.deposit_stack_native(
             stack, grid_wl, wavelengths, flux, x_disp, y_disp, out,
-            oversample=oversample, chunk_size=chunk_size)
+            oversample=oversample, chunk_size=chunk_size, deposit="floor")
         want = _reference_deposit_f64(
             stack, grid_wl, wavelengths, flux, x_disp, y_disp,
             self.SHAPE, oversample)
@@ -724,7 +724,7 @@ class TestDepositStackNativeSizes:
         out = jnp.zeros(self.SHAPE, dtype=jnp.float32)
         got = star_disperser.deposit_stack_native(
             stack, grid_wl, wavelengths, flux, x_disp, y_disp, out,
-            oversample=2, chunk_size=2)
+            oversample=2, chunk_size=2, deposit="floor")
         want = _reference_deposit_f64(
             stack, grid_wl, wavelengths, flux, x_disp, y_disp,
             self.SHAPE, 2)

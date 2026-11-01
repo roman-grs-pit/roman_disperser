@@ -293,7 +293,7 @@ def main():
         variants = {
             "baseline": galaxy_disperser.make_galaxy_disperser(
                 psf_payloads[order], optical_payloads[order],
-                chunk_size=args.chunk_size),
+                chunk_size=args.chunk_size, deposit="floor"),
             "noscatter": make_noscatter_disperser(
                 psf_payloads[order], optical_payloads[order],
                 args.chunk_size),

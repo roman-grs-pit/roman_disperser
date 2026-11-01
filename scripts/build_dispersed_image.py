@@ -95,8 +95,49 @@ from roman_disperser.pipeline import (
 import roman_disperser.optical_model_jax as omj
 
 
-# Deposit scheme when neither the config nor the CLI names one.
-DEFAULT_DEPOSIT = "floor"
+# Deposit options when neither the config nor the CLI names them: the
+# recommended production setting. The interpolating deposit with per-order
+# count rebinning (40 / 4 / 2 A in grism orders 0 / 1 / 2, i.e. ~0.15 / 0.38 /
+# 0.37 px) is ~100x more accurate than the floor deposit at 2 A and about as
+# fast; the star PSF hoist makes stars ~1.35x faster for one extra PSF grid of
+# device memory per order. The historical setting (golden frames, outputs up
+# to v0.16) is deposit "floor", no rebinning, no hoist: ``--deposit floor
+# --rebin-dlam none --no-hoist-star-psf``.
+DEFAULT_DEPOSIT = "interp"
+DEFAULT_REBIN_DLAM = {"0": 40.0, "1": 4.0, "2": 2.0}
+DEFAULT_HOIST_STAR_PSF = True
+
+
+def resolve_rebin_dlam(rebin_dlam, orders, dlam_angstroms):
+    """Resolve the user's ``rebin_dlam`` for ``sed_rebin_factors``.
+
+    ``None`` selects :data:`DEFAULT_REBIN_DLAM` for the element's orders
+    (orders without a default are not rebinned). Each default spacing is
+    rounded down to a multiple of the catalog spacing (at least one sample),
+    so a catalog on a coarser or odd grid still runs; explicit values must
+    be exact multiples (``sed_rebin_factor`` raises otherwise). The string
+    ``"none"`` (any case) or ``False`` switches rebinning off. Anything else
+    is passed through unchanged.
+    """
+    if rebin_dlam is None:
+        out = {}
+        for order in orders:
+            target = DEFAULT_REBIN_DLAM.get(str(order))
+            if target is None:
+                continue
+            factor = max(1, int(np.floor(target / dlam_angstroms + 1e-6)))
+            out[str(order)] = factor * float(dlam_angstroms)
+        return out
+    if rebin_dlam is False or (isinstance(rebin_dlam, str)
+                               and rebin_dlam.strip().lower() == "none"):
+        return None
+    return rebin_dlam
+
+
+def resolve_hoist_star_psf(hoist_star_psf):
+    """``None`` -> :data:`DEFAULT_HOIST_STAR_PSF`, else ``bool(value)``."""
+    return DEFAULT_HOIST_STAR_PSF if hoist_star_psf is None \
+        else bool(hoist_star_psf)
 
 
 def make_pointing_key(seed, pointing_filename, plan, pass_, segment,
@@ -453,7 +494,8 @@ _GALAXY_SED_VALUE_LIMIT = 1e-12
 
 def make_order_fori_fns(psf_payloads, optical_payloads, sensitivities,
                         wavelengths_jax, dlam_angstroms, orders, *,
-                        deposit="floor", sed_rebin=1, hoist_star_psf=False):
+                        deposit=DEFAULT_DEPOSIT, sed_rebin=1,
+                        hoist_star_psf=DEFAULT_HOIST_STAR_PSF):
     """Build the batched star and galaxy fori functions for every order.
 
     Shared by ``process_pointing`` and ``run_warmup`` so both compile the
@@ -636,7 +678,7 @@ def setup_pipeline(
     source_cuts=None,
     deposit=None,
     rebin_dlam=None,
-    hoist_star_psf=False,
+    hoist_star_psf=None,
     order_mag_limits=None,
     verbose=True,
 ):
@@ -670,27 +712,30 @@ def setup_pipeline(
         (see ``_CUT_OPS``). None keeps every row.
     deposit : {"floor", "interp"}, optional
         Deposit scheme (``star_disperser.deposit_binned``); None gives
-        ``DEFAULT_DEPOSIT`` ("floor", the scheme the golden frames are
-        blessed with). "interp" is the exact box-overlap deposit: no
-        sub-pixel quantisation of positions, no continuum ripple, nonzero
-        position gradients, at ~1.7x the deposit cost for the same
-        wavelength sampling.
-    rebin_dlam : float or dict, optional
+        ``DEFAULT_DEPOSIT`` ("interp"). "interp" is the exact box-overlap
+        deposit: no sub-pixel quantisation of positions, no continuum
+        ripple, nonzero position gradients, at ~1.7x the deposit cost for
+        the same wavelength sampling. "floor" is the historical deposit
+        (the scheme the golden frames are blessed with).
+    rebin_dlam : float, dict or "none", optional
         Rebin the counts to this spacing in A before the deposit
         (``pipeline.rebin_counts``; must be an integer multiple of the
         catalog spacing), either for every order or per order as
-        ``{order: spacing}`` (orders left out are not rebinned). None keeps
-        the catalog spacing. With ``deposit="interp"``, ``{"0": 4, "1": 4,
+        ``{order: spacing}`` (orders left out are not rebinned). None gives
+        ``DEFAULT_REBIN_DLAM`` (``{"0": 40, "1": 4, "2": 2}``, see
+        :func:`resolve_rebin_dlam`); ``"none"`` keeps the catalog spacing
+        (the historical setting). With ``deposit="interp"``, ``{"0": 4, "1": 4,
         "2": 2}`` costs about the same as the floor deposit at 2 A and is
         ~100x more accurate; 4 A in order 2 is 0.73 px and blurs narrow
         lines by up to 5 % of their peak. Order 0 (~270 A/px) can take
         40 A with interp: continuum within 1e-3 of peak, narrow-line
         centroids within 0.06 px, star cost ~1/6 of 4 A (galaxies ~1/2.5,
         bounded by the per-galaxy PSF convolution).
-    hoist_star_psf : bool
+    hoist_star_psf : bool, optional
         Phase-bin the PSF grid once per (SCA, order) for the star path
         (``make_star_disperser(hoist_psf=True)``): ~1.35x faster stars,
-        +1 PSF grid of device memory per order.
+        +1 PSF grid of device memory per order. None gives
+        ``DEFAULT_HOIST_STAR_PSF`` (True).
     order_mag_limits : dict, optional
         Per-order brightness cut ``{order: AB mag}`` on the F158 column
         (maggies, for stars and galaxies alike): in a limited order only
@@ -754,7 +799,11 @@ def setup_pipeline(
     if deposit not in star_disperser.DEPOSIT_MODES:
         raise ValueError(f"deposit must be one of "
                          f"{star_disperser.DEPOSIT_MODES}, got {deposit!r}")
-    sed_rebin = sed_rebin_factors(dlam_angstroms, rebin_dlam, element.orders)
+    hoist_star_psf = resolve_hoist_star_psf(hoist_star_psf)
+    sed_rebin = sed_rebin_factors(
+        dlam_angstroms,
+        resolve_rebin_dlam(rebin_dlam, element.orders, dlam_angstroms),
+        element.orders)
     log(f"Deposit: {deposit}, count rebinning "
         + ", ".join(f"order {o}: {f * dlam_angstroms:.1f} A"
                     for o, f in sed_rebin.items())
@@ -1499,7 +1548,7 @@ def build_dispersed_image(
     source_cuts=None,
     deposit=None,
     rebin_dlam=None,
-    hoist_star_psf=False,
+    hoist_star_psf=None,
     order_mag_limits=None,
     verbose=True,
     force=False,
@@ -1676,18 +1725,21 @@ galaxy_batch_size: 100
 galaxy_npix: 30
 
 # -- Deposit -------------------------------------------------------------------
-# floor (default): historical 16-phase floor deposit (positions quantised to
-# 1/4 px).  interp: exact sub-pixel box-overlap deposit (~1.7x the deposit
-# cost at the same sampling).  rebin_dlam: sum the counts into bins of this
-# width (A, a multiple of the catalog spacing) before the deposit; interp at
-# 4 A costs about the same as floor at 2 A.  rebin_dlam is one width for all
-# orders or a per-order mapping; orders left out are not rebinned.  Keep order 2
-# at 2 A: 4 A is 0.73 px there.  Order 0 (~270 A/px) takes 40 A with interp
-# (continuum within 1e-3 of peak; narrow lines move <= 0.06 px) at ~1/6 of the
-# 4 A star cost.  hoist_star_psf: bin the star PSF grid once per
-# SCA (faster stars, +1 PSF grid of memory per order).
+# interp (default): exact sub-pixel box-overlap deposit (~1.7x the deposit
+# cost at the same sampling).  floor: historical 16-phase floor deposit
+# (positions quantised to 1/4 px; the golden frames are blessed with it).
+# rebin_dlam: sum the counts into bins of this width (A, a multiple of the
+# catalog spacing) before the deposit; interp at 4 A costs about the same as
+# floor at 2 A.  rebin_dlam is one width for all orders, a per-order mapping
+# (orders left out are not rebinned), or none (no rebinning).  Default
+# {"0": 40, "1": 4, "2": 2}: keep order 2 at 2 A (4 A is 0.73 px there);
+# order 0 (~270 A/px) takes 40 A with interp (continuum within 1e-3 of peak;
+# narrow lines move <= 0.06 px) at ~1/6 of the 4 A star cost.
+# hoist_star_psf (default true): bin the star PSF grid once per SCA (faster
+# stars, +1 PSF grid of memory per order).  The historical setting is
+# deposit: floor, rebin_dlam: none, hoist_star_psf: false.
 # deposit: interp
-# rebin_dlam: {"0": 4, "1": 4, "2": 2}
+# rebin_dlam: {"0": 40, "1": 4, "2": 2}
 # hoist_star_psf: true
 
 # -- Per-order brightness cut (optional) ---------------------------------------
@@ -1800,8 +1852,8 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
     galaxy_batch_size = cfg.get("galaxy_batch_size", 100)
     galaxy_npix = cfg.get("galaxy_npix", 30)
     # Deposit options (also compile-time; must match run_batch)
-    deposit = cfg.get("deposit", DEFAULT_DEPOSIT)
-    hoist_star_psf = bool(cfg.get("hoist_star_psf", False))
+    deposit = cfg.get("deposit") or DEFAULT_DEPOSIT
+    hoist_star_psf = resolve_hoist_star_psf(cfg.get("hoist_star_psf"))
 
     element = elements.get_element(cfg.get("element"))
     log(f"Dispersing element: {element.name}")
@@ -1818,8 +1870,11 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
     wavelengths_full = np.array(store["wavelengths"])
     wavelengths_ang, _, dlam_angstroms = trim_wavelength_grid(
         wavelengths_full, element)
-    sed_rebin = sed_rebin_factors(dlam_angstroms, cfg.get("rebin_dlam"),
-                                  element.orders)
+    sed_rebin = sed_rebin_factors(
+        dlam_angstroms,
+        resolve_rebin_dlam(cfg.get("rebin_dlam"), element.orders,
+                           dlam_angstroms),
+        element.orders)
     wavelengths_um = (wavelengths_ang / 1e4).astype(np.float32)
     wavelengths_jax = jnp.array(wavelengths_um)
     n_wavelength = len(wavelengths_um)
@@ -2073,7 +2128,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         source_cuts=cfg.get("source_cuts"),
         deposit=cfg.get("deposit"),
         rebin_dlam=cfg.get("rebin_dlam"),
-        hoist_star_psf=cfg.get("hoist_star_psf", False),
+        hoist_star_psf=cfg.get("hoist_star_psf"),
         order_mag_limits=cfg.get("order_mag_limits"),
         verbose=verbose,
     )
@@ -2224,16 +2279,21 @@ def main():
                         help="Sersic image size in native pixels (default: 30)")
     parser.add_argument("--deposit", choices=("floor", "interp"),
                         default=None,
-                        help="Deposit scheme (default: floor); interp is "
-                             "the exact box-overlap deposit (quick mode)")
+                        help="Deposit scheme (default: interp, the exact "
+                             "box-overlap deposit; floor is the historical "
+                             "deposit) (quick mode)")
     parser.add_argument("--rebin-dlam", type=parse_rebin_dlam, default=None,
                         help="Rebin counts to this spacing in A before the "
-                             "deposit: one value (e.g. 4) or per order "
-                             "(e.g. 0:4,1:4,2:2; orders left out are not "
-                             "rebinned) (quick mode; default: none)")
-    parser.add_argument("--hoist-star-psf", action="store_true",
+                             "deposit: one value (e.g. 4), per order "
+                             "(e.g. 0:40,1:4,2:2; orders left out are not "
+                             "rebinned), or 'none' for no rebinning "
+                             "(quick mode; default: 0:40,1:4,2:2)")
+    parser.add_argument("--hoist-star-psf",
+                        action=argparse.BooleanOptionalAction, default=None,
                         help="Phase-bin the PSF grid once per SCA for stars "
-                             "(faster, +1 PSF grid of memory per order)")
+                             "(faster, +1 PSF grid of memory per order; "
+                             "default: on, --no-hoist-star-psf to switch "
+                             "off)")
     parser.add_argument("--order-mag-limits", type=parse_order_mag_limits,
                         default=None,
                         help="Per-order brightness cut on F158 AB mag, e.g. "

@@ -72,7 +72,8 @@ def _compare(element_name, order, tier, dlam_A):
         f"{prov['dlam_A']} A but the test expects {dlam_A} A — "
         "reference and code are out of step")
 
-    new = golden_frame.render_frame(element_name, order, dlam_A)
+    new = golden_frame.render_frame(element_name, order, dlam_A,
+                                     **golden_frame.GOLDEN_DEPOSIT)
 
     ref_sum = float(np.sum(ref, dtype=np.float64))
     new_sum = float(np.sum(new, dtype=np.float64))

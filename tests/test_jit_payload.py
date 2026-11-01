@@ -117,10 +117,13 @@ class TestOneCompileAcrossSCAs:
         """New path == old closure-captured path."""
         psf, opt = two_scas[1]
         out = jnp.zeros((4088, 4088), jnp.float32)
-        new = star_disperser.make_star_disperser(psf, opt)(
+        # floor deposit: piecewise constant in position, so the f32
+        # rounding differences of the constant-folded closure (~1e-4 px at
+        # x ~ 2000) do not show; interp would move pixels by ~1e-3 rel.
+        new = star_disperser.make_star_disperser(psf, opt, deposit="floor")(
             1500.0, 2500.0, self.WL, self.FLUX, out)
         old = jax.jit(lambda x, y, w, f, o: star_disperser.disperse_star_psf(
-            psf, opt, x, y, w, f, o))(1500.0, 2500.0, self.WL, self.FLUX, out)
+            psf, opt, x, y, w, f, o, deposit="floor"))(1500.0, 2500.0, self.WL, self.FLUX, out)
         assert float(old.sum()) > 0
         np.testing.assert_allclose(new, old, rtol=1e-5, atol=1e-7 * float(old.max()))
 
@@ -134,8 +137,10 @@ class TestOneCompileAcrossSCAs:
         imgs = jnp.ones((batch, npix, npix), jnp.float32) / npix**2
 
         def build(psf, opt, sens):
-            sd = star_disperser.make_star_disperser(psf, opt)
-            gd = galaxy_disperser.make_galaxy_disperser(psf, opt)
+            # floor: see test_star_matches_closure
+            sd = star_disperser.make_star_disperser(psf, opt, deposit="floor")
+            gd = galaxy_disperser.make_galaxy_disperser(psf, opt,
+                                                        deposit="floor")
             return (make_batched_star_fori(sd, sens, self.WL, 5.0),
                     make_batched_galaxy_fori(gd, sens, self.WL, 5.0),
                     _closure_star_fori(sd, sens, self.WL, 5.0),
