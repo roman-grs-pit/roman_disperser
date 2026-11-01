@@ -314,6 +314,7 @@ def disperse_galaxy(
     wavelengths,
     output,
     chunk_size=2000,
+    deposit="floor",
 ):
     """Disperse a galaxy onto the detector.
 
@@ -346,6 +347,9 @@ def disperse_galaxy(
         (500 and 2000 measured identical on a10g); 2000 is kept because
         it is cheap in memory at native resolution — see
         star_disperser.deposit_stack_native.
+    deposit : {"floor", "interp"}, optional
+        Deposit scheme (default ``"floor"``); see
+        star_disperser.deposit_binned.
 
     Returns
     -------
@@ -371,18 +375,19 @@ def disperse_galaxy(
     return star_disperser.deposit_stack_native(
         convolved, grid_wl, wavelengths, spectrum,
         xsca_disp, ysca_disp, output,
-        oversample=oversample, chunk_size=chunk_size,
+        oversample=oversample, chunk_size=chunk_size, deposit=deposit,
     )
 
 
-def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000):
+def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000,
+                          deposit="floor"):
     """Create a JIT-compiled galaxy disperser for one (SCA, order).
 
     The payload *arrays* are passed to :func:`disperse_galaxy_jit` as jit
     arguments rather than captured as constants, so dispersers built for
     different SCAs share one compiled program (see ``jit_payload``). The
     returned function carries ``.payload_args = (arrays, static,
-    chunk_size)``, which ``pipeline.make_batched_galaxy_fori`` uses to keep
+    chunk_size, deposit)``, which ``pipeline.make_batched_galaxy_fori`` uses to keep
     the payloads as arguments in the batched loop too.
 
     Parameters
@@ -397,6 +402,9 @@ def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000):
         (500 and 2000 measured identical on a10g); 2000 is kept because
         it is cheap in memory at native resolution — see
         star_disperser.deposit_stack_native.
+    deposit : {"floor", "interp"}, optional
+        Deposit scheme (default ``"floor"``); see
+        star_disperser.deposit_binned.
 
     Returns
     -------
@@ -417,21 +425,25 @@ def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000):
             f"places the PSF center at the cross-hairs of central pixels."
         )
 
+    if deposit not in star_disperser.DEPOSIT_MODES:
+        raise ValueError(f"deposit must be one of "
+                         f"{star_disperser.DEPOSIT_MODES}, got {deposit!r}")
+
     arrays, static = jit_payload.split_payloads(psf_payload, optical_payload)
 
     def disperse_fn(image, x0, y0, spectrum, wavelengths, output):
         return disperse_galaxy_jit(
             arrays, image, x0, y0, spectrum, wavelengths, output,
-            static=static, chunk_size=chunk_size,
+            static=static, chunk_size=chunk_size, deposit=deposit,
         )
 
-    disperse_fn.payload_args = (arrays, static, chunk_size)
+    disperse_fn.payload_args = (arrays, static, chunk_size, deposit)
     return disperse_fn
 
 
-@partial(jax.jit, static_argnames=("static", "chunk_size"))
+@partial(jax.jit, static_argnames=("static", "chunk_size", "deposit"))
 def disperse_galaxy_jit(arrays, image, x0, y0, spectrum, wavelengths, output,
-                        *, static, chunk_size=2000):
+                        *, static, chunk_size=2000, deposit="floor"):
     """Jitted :func:`disperse_galaxy` with the payloads as arguments.
 
     ``arrays, static = jit_payload.split_payloads(psf_payload,
@@ -443,5 +455,5 @@ def disperse_galaxy_jit(arrays, image, x0, y0, spectrum, wavelengths, output,
     psf_payload, optical_payload = jit_payload.merge_payloads(arrays, static)
     return disperse_galaxy(
         optical_payload, psf_payload, image, x0, y0, spectrum, wavelengths,
-        output, chunk_size,
+        output, chunk_size, deposit,
     )

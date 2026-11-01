@@ -301,10 +301,116 @@ def load_sensitivities(sensitivity_dir, sca, wavelengths, orders):
 
 
 # ---------------------------------------------------------------------------
+# SED rebinning (before the deposit)
+# ---------------------------------------------------------------------------
+
+def rebin_counts(counts, wavelengths, factor):
+    """Flux-conserving rebinning of per-sample counts by an integer factor.
+
+    Sums each run of ``factor`` consecutive samples (the last bin may hold
+    fewer) and places the bin at the mean wavelength of its members, i.e.
+    the bin centre on a uniform grid. Applied to *counts*
+    (``spectrum * sens * dlam``), so each bin carries exactly the counts of
+    its fine samples, including the variation of the sensitivity across the
+    bin; rebinning the SED first and multiplying by the sensitivity at the
+    bin centre would bias every bin by the covariance of SED and
+    sensitivity within it (e.g. a narrow line on a sloped throughput).
+    Linear in ``counts``, so superposition of sources and spectra is kept.
+
+    Moving each sample by at most ``(factor - 1) * dlam / 2`` to its bin
+    centre is accurate as long as the bin stays well below a native pixel
+    along dispersion (4 A = 0.38 px for the grism at ~10.5 A/px); with the
+    interpolating deposit the PSF is then sampled finely enough that no
+    ripple appears. See ``deposit`` in ``make_star_disperser``.
+
+    Parameters
+    ----------
+    counts : jnp.ndarray [..., N_wl]
+    wavelengths : jnp.ndarray [N_wl]
+    factor : int
+        Samples per bin (1 returns the inputs unchanged).
+
+    Returns
+    -------
+    counts_binned : jnp.ndarray [..., ceil(N_wl / factor)]
+    wavelengths_binned : jnp.ndarray [ceil(N_wl / factor)]
+    """
+    factor = int(factor)
+    if factor < 1:
+        raise ValueError(f"rebin factor must be >= 1, got {factor}")
+    if factor == 1:
+        return counts, wavelengths
+    n_wl = wavelengths.shape[-1]
+    n_bins = -(-n_wl // factor)
+    pad = n_bins * factor - n_wl
+    lead = counts.shape[:-1]
+    pad_c = [(0, 0)] * len(lead) + [(0, pad)]
+    counts_binned = jnp.pad(counts, pad_c).reshape(
+        lead + (n_bins, factor)).sum(axis=-1)
+    members = jnp.pad(jnp.ones(n_wl, wavelengths.dtype), (0, pad)
+                      ).reshape(n_bins, factor).sum(axis=-1)
+    wavelengths_binned = jnp.pad(wavelengths, (0, pad)).reshape(
+        n_bins, factor).sum(axis=-1) / members
+    return counts_binned, wavelengths_binned
+
+
+def sed_rebin_factor(dlam_angstroms, rebin_dlam_angstroms):
+    """Integer rebin factor taking a ``dlam`` grid to ``rebin_dlam``.
+
+    ``rebin_dlam_angstroms=None`` (or equal to ``dlam``) gives 1. Raises
+    ValueError unless ``rebin_dlam`` is an integer multiple of ``dlam``.
+    """
+    if rebin_dlam_angstroms is None:
+        return 1
+    ratio = float(rebin_dlam_angstroms) / float(dlam_angstroms)
+    factor = int(round(ratio))
+    if factor < 1 or abs(ratio - factor) > 1e-6 * max(ratio, 1.0):
+        raise ValueError(
+            f"rebin_dlam {rebin_dlam_angstroms} A must be a positive integer "
+            f"multiple of the catalog spacing {dlam_angstroms} A")
+    return factor
+
+
+def sed_rebin_factors(dlam_angstroms, rebin_dlam_angstroms, orders):
+    """Per-order rebin factors, ``{order: int}``, for :func:`rebin_counts`.
+
+    ``rebin_dlam_angstroms`` is None (no rebinning), one spacing in A for
+    every order, or a mapping ``{order: spacing or None}``; orders missing
+    from the mapping are not rebinned. Order keys may be str or int. The
+    dispersion differs a lot between orders (grism: ~270, ~10.5 and
+    ~5.4 A/px in orders 0, 1, 2), so a bin that is well below a pixel in
+    order 1 can be most of a pixel in order 2.
+    """
+    if not isinstance(rebin_dlam_angstroms, dict):
+        return {order: sed_rebin_factor(dlam_angstroms, rebin_dlam_angstroms)
+                for order in orders}
+    by_order = {str(k): v for k, v in rebin_dlam_angstroms.items()}
+    unknown = sorted(set(by_order) - {str(o) for o in orders})
+    if unknown:
+        raise ValueError(f"rebin_dlam has orders {unknown} not in {list(orders)}")
+    return {order: sed_rebin_factor(dlam_angstroms, by_order.get(str(order)))
+            for order in orders}
+
+
+def parse_rebin_dlam(text):
+    """Parse ``--rebin-dlam``: ``"4"`` or per order ``"0:4,1:4,2:2"``."""
+    if text is None:
+        return None
+    if ":" not in text:
+        return float(text)
+    out = {}
+    for item in text.split(","):
+        order, _, value = item.partition(":")
+        out[order.strip()] = float(value)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Star batching
 # ---------------------------------------------------------------------------
 
-def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
+def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms,
+                           sed_rebin=1):
     """Build a JIT-compiled fori_loop that processes a fixed-size batch of stars.
 
     The compiled function takes padded arrays of shape [batch_size, ...]
@@ -318,6 +424,10 @@ def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
     sens : jnp.ndarray [N_wl]
     wavelengths_jax : jnp.ndarray [N_wl]
     dlam_angstroms : float
+    sed_rebin : int, optional
+        Rebin the counts by this integer factor before the deposit
+        (:func:`rebin_counts`; default 1 = no rebinning). Inputs stay on
+        the ``wavelengths_jax`` grid.
 
     Returns
     -------
@@ -340,14 +450,16 @@ def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
     instead of running slowly. To loop a custom disperser, write the
     ``jax.jit(fori_loop)`` yourself (``benchmarks/bench_deposit.py`` does).
     """
-    arrays, static, chunk_size = _payload_args(disperser_fn, "make_star_disperser")
+    arrays, static, chunk_size, deposit = _payload_args(
+        disperser_fn, "make_star_disperser")
     dlam = jnp.float32(dlam_angstroms)
 
     def run(n_sources, spectra, xsca, ysca, output):
         return run_star_batch(
             arrays, sens, wavelengths_jax, dlam,
             n_sources, spectra, xsca, ysca, output,
-            static=static, chunk_size=chunk_size,
+            static=static, chunk_size=chunk_size, deposit=deposit,
+            sed_rebin=int(sed_rebin),
         )
     return run
 
@@ -363,10 +475,11 @@ def _payload_args(disperser_fn, factory):
     return payload_args
 
 
-@partial(jax.jit, static_argnames=("static", "chunk_size"))
+@partial(jax.jit, static_argnames=("static", "chunk_size", "deposit",
+                                   "sed_rebin"))
 def run_star_batch(arrays, sens, wavelengths, dlam_angstroms,
                    n_sources, spectra, xsca, ysca, output, *,
-                   static, chunk_size=2000):
+                   static, chunk_size=2000, deposit="floor", sed_rebin=1):
     """Disperse the first ``n_sources`` stars of a padded batch (jitted).
 
     Every per-SCA input is an argument, so the compiled program depends only
@@ -386,16 +499,21 @@ def run_star_batch(arrays, sens, wavelengths, dlam_angstroms,
         Number of valid rows (traced; does not trigger recompiles).
     spectra : [batch_size, N_wl]; xsca, ysca : [batch_size]
     output : [H, W] detector accumulator
-    static : hashable, chunk_size : int
-        Compile-time constants.
+    static : hashable, chunk_size : int, deposit : str, sed_rebin : int
+        Compile-time constants (``deposit``: see
+        ``star_disperser.deposit_binned``; ``sed_rebin``: see
+        :func:`rebin_counts`).
     """
     psf_payload, optical_payload = jit_payload.merge_payloads(arrays, static)
+    _, wl_deposit = rebin_counts(sens, wavelengths, sed_rebin)
 
     def body_fn(i, output):
         counts = spectra[i] * sens * dlam_angstroms
+        counts, _ = rebin_counts(counts, wavelengths, sed_rebin)
         return star_disperser.disperse_star_psf(
             psf_payload, optical_payload, xsca[i], ysca[i],
-            wavelengths, counts, output, chunk_size=chunk_size,
+            wl_deposit, counts, output, chunk_size=chunk_size,
+            deposit=deposit,
         )
     return jax.lax.fori_loop(0, n_sources, body_fn, output)
 
@@ -449,7 +567,7 @@ def disperse_batched_stars(fori_fn, spectra, xsca, ysca, output, batch_size):
 # ---------------------------------------------------------------------------
 
 def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
-                             dlam_angstroms):
+                             dlam_angstroms, sed_rebin=1):
     """Build a JIT-compiled fori_loop for galaxy dispersion.
 
     Like the star version but the loop body also indexes into a galaxy
@@ -462,6 +580,8 @@ def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
     sens : jnp.ndarray [N_wl]
     wavelengths_jax : jnp.ndarray [N_wl]
     dlam_angstroms : float
+    sed_rebin : int, optional
+        As in :func:`make_batched_star_fori`.
 
     Returns
     -------
@@ -481,34 +601,39 @@ def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
     (payloads as arguments, one compile for all SCAs). The closure fallback
     for other callables was removed in v0.16.0.
     """
-    arrays, static, chunk_size = _payload_args(disperser_fn, "make_galaxy_disperser")
+    arrays, static, chunk_size, deposit = _payload_args(
+        disperser_fn, "make_galaxy_disperser")
     dlam = jnp.float32(dlam_angstroms)
 
     def run(n_sources, spectra, xsca, ysca, images, output):
         return run_galaxy_batch(
             arrays, sens, wavelengths_jax, dlam,
             n_sources, spectra, xsca, ysca, images, output,
-            static=static, chunk_size=chunk_size,
+            static=static, chunk_size=chunk_size, deposit=deposit,
+            sed_rebin=int(sed_rebin),
         )
     return run
 
 
-@partial(jax.jit, static_argnames=("static", "chunk_size"))
+@partial(jax.jit, static_argnames=("static", "chunk_size", "deposit",
+                                   "sed_rebin"))
 def run_galaxy_batch(arrays, sens, wavelengths, dlam_angstroms,
                      n_sources, spectra, xsca, ysca, images, output, *,
-                     static, chunk_size=2000):
+                     static, chunk_size=2000, deposit="floor", sed_rebin=1):
     """Disperse the first ``n_sources`` galaxies of a padded batch (jitted).
 
     Same contract as :func:`run_star_batch`, plus ``images``
     [batch_size, npix, npix] at the PSF oversampling.
     """
     psf_payload, optical_payload = jit_payload.merge_payloads(arrays, static)
+    _, wl_deposit = rebin_counts(sens, wavelengths, sed_rebin)
 
     def body_fn(i, output):
         counts = spectra[i] * sens * dlam_angstroms
+        counts, _ = rebin_counts(counts, wavelengths, sed_rebin)
         return galaxy_disperser.disperse_galaxy(
             optical_payload, psf_payload, images[i], xsca[i], ysca[i],
-            counts, wavelengths, output, chunk_size,
+            counts, wl_deposit, output, chunk_size, deposit,
         )
     return jax.lax.fori_loop(0, n_sources, body_fn, output)
 

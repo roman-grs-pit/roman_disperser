@@ -217,12 +217,15 @@ def _sed(wl_um, scale, line=False, lam_c_um=None):
     return sed.astype(np.float32)
 
 
-def render_frame(element_name, order, dlam_A):
+def render_frame(element_name, order, dlam_A, deposit="floor", sed_rebin=1,
+                 hoist_star_psf=False):
     """Render the golden scene for one (element, order) at spacing dlam_A.
 
     Runs the production dispersal path end to end on the real (hydrated)
     optical model, PSF cache, and sensitivities for SCA 1. Returns the
-    4088x4088 float32 detector frame.
+    4088x4088 float32 detector frame. ``deposit``, ``sed_rebin`` and
+    ``hoist_star_psf`` select the deposit options (defaults: the scheme the
+    pinned references were blessed with).
     """
     element = elements.get_element(element_name)
     _, sensitivity_dir, model_path, psf_cache_dir = resolve_paths(element=element)
@@ -255,8 +258,10 @@ def render_frame(element_name, order, dlam_A):
         _sed(wl_um, scale, line=(name == LINE_GALAXY), lam_c_um=lam_c_um)
         for name, scale in zip(names, GALAXY_SCALES)])
 
-    gd_fn = galaxy_disperser.make_galaxy_disperser(psf_payload, optical_payload)
-    gal_fori = make_batched_galaxy_fori(gd_fn, sens, wl_jax, dlam_A)
+    gd_fn = galaxy_disperser.make_galaxy_disperser(
+        psf_payload, optical_payload, deposit=deposit)
+    gal_fori = make_batched_galaxy_fori(gd_fn, sens, wl_jax, dlam_A,
+                                        sed_rebin=sed_rebin)
 
     output = jnp.zeros((DETECTOR_SIZE, DETECTOR_SIZE), dtype=jnp.float32)
     # Same per-batch Sersic path as the production driver.
@@ -270,8 +275,11 @@ def render_frame(element_name, order, dlam_A):
     star_spectra = np.stack([
         _sed(wl_um, scale) for scale in STAR_SCALES])
 
-    sd_fn = star_disperser.make_star_disperser(psf_payload, optical_payload)
-    star_fori = make_batched_star_fori(sd_fn, sens, wl_jax, dlam_A)
+    sd_fn = star_disperser.make_star_disperser(
+        psf_payload, optical_payload, deposit=deposit,
+        hoist_psf=hoist_star_psf)
+    star_fori = make_batched_star_fori(sd_fn, sens, wl_jax, dlam_A,
+                                       sed_rebin=sed_rebin)
     output = disperse_batched_stars(
         star_fori, star_spectra,
         np.array(s_xs, dtype=np.float32), np.array(s_ys, dtype=np.float32),

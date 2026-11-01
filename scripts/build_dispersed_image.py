@@ -84,10 +84,16 @@ from roman_disperser.pipeline import (
     load_sensitivities,
     make_batched_star_fori, disperse_batched_stars,
     make_batched_galaxy_fori, disperse_batched_sersic_galaxies,
+    parse_rebin_dlam,
+    sed_rebin_factors,
     write_fits, write_png, write_mosaic_png, write_mosaic_from_directory,
     get_code_version, get_git_sha, make_sca_keys,
 )
 import roman_disperser.optical_model_jax as omj
+
+
+# Deposit scheme when neither the config nor the CLI names one.
+DEFAULT_DEPOSIT = "floor"
 
 
 def make_pointing_key(seed, pointing_filename, plan, pass_, segment,
@@ -427,6 +433,42 @@ def trim_wavelength_grid(wavelengths, element):
 _GALAXY_SED_VALUE_LIMIT = 1e-12
 
 
+def make_order_fori_fns(psf_payloads, optical_payloads, sensitivities,
+                        wavelengths_jax, dlam_angstroms, orders, *,
+                        deposit="floor", sed_rebin=1, hoist_star_psf=False):
+    """Build the batched star and galaxy fori functions for every order.
+
+    Shared by ``process_pointing`` and ``run_warmup`` so both compile the
+    same programs. ``deposit``, ``sed_rebin`` and ``hoist_star_psf`` are
+    the deposit options (see ``setup_pipeline``); ``sed_rebin`` is one
+    factor for every order or ``{order: factor}``.
+
+    Returns
+    -------
+    star_fori_fns, galaxy_fori_fns : dict order -> callable
+    """
+    star_fori_fns = {}
+    galaxy_fori_fns = {}
+    for order in orders:
+        rebin = sed_rebin[order] if isinstance(sed_rebin, dict) else sed_rebin
+        sd_fn = star_disperser.make_star_disperser(
+            psf_payloads[order], optical_payloads[order],
+            deposit=deposit, hoist_psf=hoist_star_psf,
+        )
+        star_fori_fns[order] = make_batched_star_fori(
+            sd_fn, sensitivities[order],
+            wavelengths_jax, dlam_angstroms, sed_rebin=rebin,
+        )
+        gd_fn = galaxy_disperser.make_galaxy_disperser(
+            psf_payloads[order], optical_payloads[order], deposit=deposit,
+        )
+        galaxy_fori_fns[order] = make_batched_galaxy_fori(
+            gd_fn, sensitivities[order],
+            wavelengths_jax, dlam_angstroms, sed_rebin=rebin,
+        )
+    return star_fori_fns, galaxy_fori_fns
+
+
 def sim_array_key(sim):
     """Zarr key of the galaxy-SED array for one ``sim`` metadata value.
 
@@ -574,6 +616,9 @@ def setup_pipeline(
     galaxy_batch_size=100,
     galaxy_npix=30,
     source_cuts=None,
+    deposit=None,
+    rebin_dlam=None,
+    hoist_star_psf=False,
     verbose=True,
 ):
     """One-time setup: load model, catalog, optical payloads, sensitivities.
@@ -604,6 +649,26 @@ def setup_pipeline(
     source_cuts : list of dict, optional
         Declarative row selection applied right after loading the catalog
         (see ``_CUT_OPS``). None keeps every row.
+    deposit : {"floor", "interp"}, optional
+        Deposit scheme (``star_disperser.deposit_binned``); None gives
+        ``DEFAULT_DEPOSIT`` ("floor", the scheme the golden frames are
+        blessed with). "interp" is the exact box-overlap deposit: no
+        sub-pixel quantisation of positions, no continuum ripple, nonzero
+        position gradients, at ~1.7x the deposit cost for the same
+        wavelength sampling.
+    rebin_dlam : float or dict, optional
+        Rebin the counts to this spacing in A before the deposit
+        (``pipeline.rebin_counts``; must be an integer multiple of the
+        catalog spacing), either for every order or per order as
+        ``{order: spacing}`` (orders left out are not rebinned). None keeps
+        the catalog spacing. With ``deposit="interp"``, ``{"0": 4, "1": 4,
+        "2": 2}`` costs about the same as the floor deposit at 2 A and is
+        ~100x more accurate; 4 A in order 2 is 0.73 px and blurs narrow
+        lines by up to 5 % of their peak.
+    hoist_star_psf : bool
+        Phase-bin the PSF grid once per (SCA, order) for the star path
+        (``make_star_disperser(hoist_psf=True)``): ~1.35x faster stars,
+        +1 PSF grid of device memory per order.
     verbose : bool
         Print progress information.
 
@@ -655,6 +720,15 @@ def setup_pipeline(
     n_wavelength = len(wavelengths_um)
     log(f"Wavelength grid: {element.lam_min}-{element.lam_max} um, "
         f"{dlam_angstroms:.1f} A spacing, {n_wavelength} samples")
+    deposit = DEFAULT_DEPOSIT if deposit is None else deposit
+    if deposit not in star_disperser.DEPOSIT_MODES:
+        raise ValueError(f"deposit must be one of "
+                         f"{star_disperser.DEPOSIT_MODES}, got {deposit!r}")
+    sed_rebin = sed_rebin_factors(dlam_angstroms, rebin_dlam, element.orders)
+    log(f"Deposit: {deposit}, count rebinning "
+        + ", ".join(f"order {o}: {f * dlam_angstroms:.1f} A"
+                    for o, f in sed_rebin.items())
+        + f", star PSF hoist: {bool(hoist_star_psf)}")
 
     # -- Load full star SED array (trimmed) ----------------------------------
     log("Loading star SED templates...")
@@ -732,6 +806,9 @@ def setup_pipeline(
         "galaxy_batch_size": galaxy_batch_size,
         "galaxy_npix": galaxy_npix,
         "galaxy_npix_os": galaxy_npix_os,
+        "deposit": deposit,
+        "sed_rebin": sed_rebin,
+        "hoist_star_psf": bool(hoist_star_psf),
         "oversample": oversample,
         "n_catalog_rows": n_catalog_rows,
         "source_cuts": source_cuts_summary,
@@ -817,6 +894,10 @@ def process_pointing(
                      "Optical-model delivery file"),
         "SRCCUTN": (len(pipeline["source_cuts"]),
                     "Number of source_cuts rules applied"),
+        "DEPOSIT": (pipeline["deposit"], "Deposit scheme (floor/interp)"),
+        **{f"DEPDLAM{o}": (f * pipeline["dlam_angstroms"],
+                           f"[A] Count rebinning, order {o}")
+           for o, f in pipeline["sed_rebin"].items()},
         **{f"SRCCUT{i + 1}": (describe_source_cut(r)[:68], "source_cuts rule")
            for i, r in enumerate(pipeline["source_cuts"])},
         **(extra_headers or {}),
@@ -946,23 +1027,12 @@ def process_pointing(
                 )
             psf_payloads[order] = payloads_by_filter[fname]
 
-        star_fori_fns = {}
-        galaxy_fori_fns = {}
-        for order in element.orders:
-            sd_fn = star_disperser.make_star_disperser(
-                psf_payloads[order], sd["optical_payloads"][order],
-            )
-            star_fori_fns[order] = make_batched_star_fori(
-                sd_fn, sd["sensitivities"][order],
-                wavelengths_jax, dlam_angstroms,
-            )
-            gd_fn = galaxy_disperser.make_galaxy_disperser(
-                psf_payloads[order], sd["optical_payloads"][order],
-            )
-            galaxy_fori_fns[order] = make_batched_galaxy_fori(
-                gd_fn, sd["sensitivities"][order],
-                wavelengths_jax, dlam_angstroms,
-            )
+        star_fori_fns, galaxy_fori_fns = make_order_fori_fns(
+            psf_payloads, sd["optical_payloads"], sd["sensitivities"],
+            wavelengths_jax, dlam_angstroms, element.orders,
+            deposit=pipeline["deposit"], sed_rebin=pipeline["sed_rebin"],
+            hoist_star_psf=pipeline["hoist_star_psf"],
+        )
 
         # JIT warmup (hits disk cache after first run)
         warmup_output = jnp.zeros(
@@ -1293,6 +1363,12 @@ def process_pointing(
         "star_batch_size": pipeline["star_batch_size"],
         "galaxy_batch_size": pipeline["galaxy_batch_size"],
         "galaxy_npix": pipeline["galaxy_npix"],
+        "deposit": pipeline["deposit"],
+        "deposit_dlam_angstroms": {
+            o: f * pipeline["dlam_angstroms"]
+            for o, f in pipeline["sed_rebin"].items()
+        },
+        "hoist_star_psf": pipeline["hoist_star_psf"],
         "oversample": pipeline["oversample"],
         "catalog_rows": pipeline["n_catalog_rows"],
         "source_cuts": pipeline["source_cuts"],
@@ -1336,6 +1412,9 @@ def build_dispersed_image(
     galaxy_batch_size=100,
     galaxy_npix=30,
     source_cuts=None,
+    deposit=None,
+    rebin_dlam=None,
+    hoist_star_psf=False,
     verbose=True,
     force=False,
 ):
@@ -1369,6 +1448,8 @@ def build_dispersed_image(
         Sersic image size in native pixels (default: 30).
     source_cuts : list of dict, optional
         Declarative row selection (see ``_CUT_OPS``); None keeps every row.
+    deposit, rebin_dlam, hoist_star_psf : optional
+        Deposit options, see ``setup_pipeline``.
     verbose : bool
         Print progress information (default: True).
     force : bool
@@ -1397,6 +1478,9 @@ def build_dispersed_image(
         galaxy_batch_size=galaxy_batch_size,
         galaxy_npix=galaxy_npix,
         source_cuts=source_cuts,
+        deposit=deposit,
+        rebin_dlam=rebin_dlam,
+        hoist_star_psf=hoist_star_psf,
         verbose=verbose,
     )
 
@@ -1502,6 +1586,19 @@ galaxy_batch_size: 100
 # 30 native pixels = 120 oversampled pixels at 4x oversampling.
 galaxy_npix: 30
 
+# -- Deposit -------------------------------------------------------------------
+# floor (default): historical 16-phase floor deposit (positions quantised to
+# 1/4 px).  interp: exact sub-pixel box-overlap deposit (~1.7x the deposit
+# cost at the same sampling).  rebin_dlam: sum the counts into bins of this
+# width (A, a multiple of the catalog spacing) before the deposit; interp at
+# 4 A costs about the same as floor at 2 A.  rebin_dlam is one width for all
+# orders or a per-order mapping; orders left out are not rebinned.  Keep order 2
+# at 2 A: 4 A is 0.73 px there.  hoist_star_psf: bin the star PSF grid once per
+# SCA (faster stars, +1 PSF grid of memory per order).
+# deposit: interp
+# rebin_dlam: {"0": 4, "1": 4, "2": 2}
+# hoist_star_psf: true
+
 # -- Source cuts (optional) ----------------------------------------------------
 # Declarative row selection applied right after loading the catalog, so one
 # catalog store serves any depth. Rules are ANDed; `types` (optional) limits a
@@ -1597,6 +1694,9 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
     star_batch_size = cfg.get("star_batch_size", 1000)
     galaxy_batch_size = cfg.get("galaxy_batch_size", 100)
     galaxy_npix = cfg.get("galaxy_npix", 30)
+    # Deposit options (also compile-time; must match run_batch)
+    deposit = cfg.get("deposit", DEFAULT_DEPOSIT)
+    hoist_star_psf = bool(cfg.get("hoist_star_psf", False))
 
     element = elements.get_element(cfg.get("element"))
     log(f"Dispersing element: {element.name}")
@@ -1613,6 +1713,8 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
     wavelengths_full = np.array(store["wavelengths"])
     wavelengths_ang, _, dlam_angstroms = trim_wavelength_grid(
         wavelengths_full, element)
+    sed_rebin = sed_rebin_factors(dlam_angstroms, cfg.get("rebin_dlam"),
+                                  element.orders)
     wavelengths_um = (wavelengths_ang / 1e4).astype(np.float32)
     wavelengths_jax = jnp.array(wavelengths_um)
     n_wavelength = len(wavelengths_um)
@@ -1664,23 +1766,12 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
         )
 
         # Build dispersers and JIT-compile
-        star_fori_fns = {}
-        galaxy_fori_fns = {}
-        for order in element.orders:
-            sd_fn = star_disperser.make_star_disperser(
-                psf_payloads[order], optical_payloads[order],
-            )
-            star_fori_fns[order] = make_batched_star_fori(
-                sd_fn, sensitivities[order],
-                wavelengths_jax, dlam_angstroms,
-            )
-            gd_fn = galaxy_disperser.make_galaxy_disperser(
-                psf_payloads[order], optical_payloads[order],
-            )
-            galaxy_fori_fns[order] = make_batched_galaxy_fori(
-                gd_fn, sensitivities[order],
-                wavelengths_jax, dlam_angstroms,
-            )
+        star_fori_fns, galaxy_fori_fns = make_order_fori_fns(
+            psf_payloads, optical_payloads, sensitivities,
+            wavelengths_jax, dlam_angstroms, element.orders,
+            deposit=deposit, sed_rebin=sed_rebin,
+            hoist_star_psf=hoist_star_psf,
+        )
 
         t_jit = time.time()
         log(f"    Build dispersers: {t_jit - t_sca:.1f}s")
@@ -1844,6 +1935,9 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         galaxy_batch_size=cfg.get("galaxy_batch_size", 100),
         galaxy_npix=cfg.get("galaxy_npix", 30),
         source_cuts=cfg.get("source_cuts"),
+        deposit=cfg.get("deposit"),
+        rebin_dlam=cfg.get("rebin_dlam"),
+        hoist_star_psf=cfg.get("hoist_star_psf", False),
         verbose=verbose,
     )
 
@@ -1990,6 +2084,18 @@ def main():
                         help="Galaxies per JIT batch (default: 100)")
     parser.add_argument("--galaxy-npix", type=int, default=30,
                         help="Sersic image size in native pixels (default: 30)")
+    parser.add_argument("--deposit", choices=("floor", "interp"),
+                        default=None,
+                        help="Deposit scheme (default: floor); interp is "
+                             "the exact box-overlap deposit (quick mode)")
+    parser.add_argument("--rebin-dlam", type=parse_rebin_dlam, default=None,
+                        help="Rebin counts to this spacing in A before the "
+                             "deposit: one value (e.g. 4) or per order "
+                             "(e.g. 0:4,1:4,2:2; orders left out are not "
+                             "rebinned) (quick mode; default: none)")
+    parser.add_argument("--hoist-star-psf", action="store_true",
+                        help="Phase-bin the PSF grid once per SCA for stars "
+                             "(faster, +1 PSF grid of memory per order)")
     parser.add_argument("--seed", type=int, default=None,
                         help="RNG seed (required for quick mode)")
     parser.add_argument("--exptime", type=float, default=190.22,
@@ -2098,6 +2204,9 @@ def main():
         star_batch_size=args.star_batch_size,
         galaxy_batch_size=args.galaxy_batch_size,
         galaxy_npix=args.galaxy_npix,
+        deposit=args.deposit,
+        rebin_dlam=args.rebin_dlam,
+        hoist_star_psf=args.hoist_star_psf,
         verbose=not args.quiet,
         force=args.force,
     )
