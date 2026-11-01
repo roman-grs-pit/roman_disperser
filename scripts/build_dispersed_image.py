@@ -1316,13 +1316,27 @@ def process_pointing(
 
         # Poisson sample on GPU
         sca_key = sca_keys.get(sca_num)
+        # jax.random.poisson returns -1 for rate < 0 or NaN (Knuth branch),
+        # so clip round-off negatives and non-finite pixels to 0 first.
+        finite = jnp.isfinite(output)
+        n_neg_model = int(jnp.sum(finite & (output < 0)))
+        rate_clean = jnp.where(finite, jnp.maximum(output, 0.0), 0.0)
+        if n_neg_model:
+            log(f"    NOTE: {n_neg_model} MODEL pixels < 0 set to 0 for the "
+                f"Poisson draw (MODEL itself is unchanged)")
         if sca_key is not None:
-            expected_counts = output * exptime
+            expected_counts = rate_clean * exptime
             isim = jax.random.poisson(sca_key, expected_counts).astype(
                 jnp.float32,
             )
             key_data = np.array(jax.random.key_data(sca_key))
         else:
+            import warnings
+            warnings.warn(
+                f"SCA {sca_num}: no pointing_key, so ISIM is the noiseless "
+                f"MODEL*exptime, not a Poisson draw (RNDSEED0/1 = 0).",
+                RuntimeWarning,
+            )
             isim = output * exptime
             key_data = np.zeros(2, dtype=np.uint32)
 
