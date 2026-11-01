@@ -23,8 +23,9 @@ Everything is built from the existing single-source pieces
 ``star_disperser.bin_stack_phases`` / ``_compute_dispersed_positions`` /
 ``deposit_binned``, ``pipeline.rebin_counts``); no existing function is
 changed. Sources are looped with ``lax.scan`` over a static number of rows
-(pad with zero-flux rows to reuse a compile), so reverse mode works, unlike
-the production ``fori_loop`` with a traced trip count (no reverse-mode gradients).
+(pad with zero-flux rows to reuse a compile), so reverse mode works; the
+production ``pipeline.run_*_batch`` loops are reverse-differentiable too
+(checkpointed ``lax.scan`` over the padded batch).
 
 The model can be evaluated in a sub-window ``(y0, x0, ny, nx)`` of the SCA
 (0-indexed array rows/columns); positions are shifted by the integer window

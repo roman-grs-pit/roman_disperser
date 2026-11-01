@@ -515,7 +515,7 @@ def apply_order_mag_limits(order_masks, mag, limits):
 
 def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms,
                            sed_rebin=1):
-    """Build a JIT-compiled fori_loop that processes a fixed-size batch of stars.
+    """Build a JIT-compiled loop that processes a fixed-size batch of stars.
 
     The compiled function takes padded arrays of shape [batch_size, ...]
     and a dynamic n_sources argument controlling how many are actually
@@ -579,6 +579,40 @@ def _payload_args(disperser_fn, factory):
     return payload_args
 
 
+def _source_loop(geometry_fn, body_fn, n_sources, batch_size, output):
+    """Disperse rows ``i < n_sources`` of a padded batch of static length
+    ``batch_size``: ``output = body_fn(i, geometry_fn(i), output)``.
+
+    A ``lax.scan`` over the static batch length, so the loop has a reverse
+    mode (``jax.grad`` / ``jax.vjp``); a ``fori_loop`` with the traced
+    ``n_sources`` as trip count lowers to a ``while_loop``, which has none.
+    Padded rows take the identity branch of a ``lax.cond`` and cost only
+    their ``geometry_fn`` (the trace positions, a small fraction of a
+    source). The step is ``jax.checkpoint``-ed, so the transpose recomputes
+    each source's intermediates (PSF/galaxy stacks, deposit indices) instead
+    of storing them for the whole batch.
+
+    ``geometry_fn`` (the trace positions and, for galaxies, Jacobians) runs
+    outside the ``lax.cond``: inside a conditional branch XLA:CPU compiles
+    the trace polynomials differently at the float32 rounding level, which
+    the deposit turns into pixel differences (~1e-3 of the peak with
+    interp; flipped phases with floor). Split this way the images are
+    bit-identical to the earlier ``fori_loop`` (checked for stars and
+    galaxies, floor and interp, on the production PSF).
+    """
+    def step(output, i):
+        geometry = geometry_fn(i)
+        output = jax.lax.cond(
+            i < n_sources,
+            lambda output: body_fn(i, geometry, output),
+            lambda output: output, output)
+        return output, None
+
+    output, _ = jax.lax.scan(jax.checkpoint(step), output,
+                             jnp.arange(batch_size))
+    return output
+
+
 @partial(jax.jit, static_argnames=("static", "chunk_size", "deposit",
                                    "sed_rebin"),
          donate_argnames=("output",))
@@ -601,7 +635,11 @@ def run_star_batch(arrays, sens, wavelengths, dlam_angstroms,
     dlam_angstroms : scalar
         Wavelength step in Å (counts = spectrum * sens * dlam).
     n_sources : int
-        Number of valid rows (traced; does not trigger recompiles).
+        Number of valid rows (traced; does not trigger recompiles). Rows
+        ``>= n_sources`` are skipped (see :func:`_source_loop`), so the
+        call is reverse-differentiable w.r.t. ``spectra``, ``xsca``,
+        ``ysca`` (and ``images`` for galaxies); position gradients need
+        ``deposit="interp"``.
     spectra : [batch_size, N_wl]; xsca, ysca : [batch_size]
     output : [H, W] detector accumulator
     static : hashable, chunk_size : int, deposit : str, sed_rebin : int
@@ -612,15 +650,20 @@ def run_star_batch(arrays, sens, wavelengths, dlam_angstroms,
     psf_payload, optical_payload = jit_payload.merge_payloads(arrays, static)
     _, wl_deposit = rebin_counts(sens, wavelengths, sed_rebin)
 
-    def body_fn(i, output):
+    def geometry_fn(i):
+        return star_disperser._compute_dispersed_positions(
+            optical_payload, xsca[i], ysca[i], wl_deposit)
+
+    def body_fn(i, dispersed, output):
         counts = spectra[i] * sens * dlam_angstroms
         counts, _ = rebin_counts(counts, wavelengths, sed_rebin)
         return star_disperser.disperse_star_psf(
             psf_payload, optical_payload, xsca[i], ysca[i],
             wl_deposit, counts, output, chunk_size=chunk_size,
-            deposit=deposit,
+            deposit=deposit, dispersed=dispersed,
         )
-    return jax.lax.fori_loop(0, n_sources, body_fn, output)
+    return _source_loop(geometry_fn, body_fn, n_sources, xsca.shape[0],
+                        output)
 
 
 def disperse_batched_stars(fori_fn, spectra, xsca, ysca, output, batch_size):
@@ -673,7 +716,7 @@ def disperse_batched_stars(fori_fn, spectra, xsca, ysca, output, batch_size):
 
 def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
                              dlam_angstroms, sed_rebin=1):
-    """Build a JIT-compiled fori_loop for galaxy dispersion.
+    """Build a JIT-compiled batch loop for galaxy dispersion.
 
     Like the star version but the loop body also indexes into a galaxy
     images array.
@@ -734,14 +777,23 @@ def run_galaxy_batch(arrays, sens, wavelengths, dlam_angstroms,
     psf_payload, optical_payload = jit_payload.merge_payloads(arrays, static)
     _, wl_deposit = rebin_counts(sens, wavelengths, sed_rebin)
 
-    def body_fn(i, output):
+    def geometry_fn(i):
+        return (galaxy_disperser.galaxy_trace_geometry(
+                    optical_payload, xsca[i], ysca[i],
+                    psf_payload['wavelengths']),
+                star_disperser._compute_dispersed_positions(
+                    optical_payload, xsca[i], ysca[i], wl_deposit))
+
+    def body_fn(i, geom, output):
         counts = spectra[i] * sens * dlam_angstroms
         counts, _ = rebin_counts(counts, wavelengths, sed_rebin)
         return galaxy_disperser.disperse_galaxy(
             optical_payload, psf_payload, images[i], xsca[i], ysca[i],
             counts, wl_deposit, output, chunk_size, deposit,
+            geometry=geom[0], dispersed=geom[1],
         )
-    return jax.lax.fori_loop(0, n_sources, body_fn, output)
+    return _source_loop(geometry_fn, body_fn, n_sources, xsca.shape[0],
+                        output)
 
 
 def disperse_batched_galaxies(fori_fn, spectra, xsca, ysca, images, output,
@@ -807,7 +859,7 @@ def disperse_batched_galaxies(fori_fn, spectra, xsca, ysca, images, output,
 
 # Padding values for unused rows of a partial Sersic batch: a benign round
 # profile, so the padded images are finite. They are never deposited, because
-# the fori_loop stops at n_actual.
+# the batch loop skips rows >= n_actual.
 _SERSIC_PAD = (1.0, 1.0, 1.0, 0.0)  # r_eff_pix, n, ba, theta
 
 # Jitted Sersic generator for one batch. Fusing the kernel means one GPU launch

@@ -522,6 +522,7 @@ def disperse_star_psf(
     rel_y=None,
     chunk_size=2000,
     deposit="interp",
+    dispersed=None,
 ):
     """
     Disperse a single star through the Roman grism using wavelength-dependent PSFs.
@@ -564,6 +565,12 @@ def disperse_star_psf(
         it cheap in memory. See :func:`deposit_stack_native`.
     deposit : {"floor", "interp"}, optional
         Deposit scheme (default ``"interp"``; ``"floor"`` is the historical deposit); see :func:`deposit_binned`.
+    dispersed : (xsca_disp, ysca_disp), optional
+        Precomputed ``_compute_dispersed_positions(optical_payload,
+        xsca_star, ysca_star, wavelengths)``. The batch loop
+        (``pipeline.run_star_batch``) computes them outside its
+        ``lax.cond``, which keeps the positions bit-identical to the
+        unconditional evaluation.
 
     Returns
     -------
@@ -635,9 +642,11 @@ def disperse_star_psf(
         binned = bin_stack_phases(psfs_grid, oversample)
 
     # Step 2: Compute ALL dispersed positions (cheap, vectorized)
-    xsca_disp, ysca_disp = _compute_dispersed_positions(
-        optical_payload, xsca_star, ysca_star, wavelengths
-    )  # [N_wl] each
+    if dispersed is None:
+        dispersed = _compute_dispersed_positions(
+            optical_payload, xsca_star, ysca_star, wavelengths
+        )
+    xsca_disp, ysca_disp = dispersed  # [N_wl] each
 
     # Step 3: Native-resolution chunked deposit
     return deposit_binned(
