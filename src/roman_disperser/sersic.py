@@ -21,9 +21,9 @@ import jax.numpy as jnp
 _BN_N_GRID = np.linspace(0.01, 10.0, 2000).astype(np.float32)
 _BN_VALUES = gammaincinv(2.0 * _BN_N_GRID, 0.5).astype(np.float32)
 
-# Convert to JAX arrays for use in jnp.interp
-_BN_N_GRID_JNP = jnp.array(_BN_N_GRID)
-_BN_VALUES_JNP = jnp.array(_BN_VALUES)
+# Kept as NumPy: creating JAX arrays here would initialise the JAX backend
+# at package import (on a GPU node: preallocating GPU memory), before any
+# worker processes are started. jnp.interp converts them when traced.
 
 
 def compute_bn(n):
@@ -41,7 +41,7 @@ def compute_bn(n):
     -------
     b_n : same shape as n
     """
-    return jnp.interp(n, _BN_N_GRID_JNP, _BN_VALUES_JNP)
+    return jnp.interp(n, _BN_N_GRID, _BN_VALUES)
 
 
 def _sersic_kernel(r_eff_pix, n, ba, theta, y_grid, x_grid):
