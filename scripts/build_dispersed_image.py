@@ -1082,10 +1082,11 @@ def process_pointing(
             dtype=jnp.float32,
         )
         for order in element.orders:
-            star_fori_fns[order](
+            # run_*_batch donate `output`: rebind the accumulator.
+            warmup_output = star_fori_fns[order](
                 1, warmup_spec, warmup_x, warmup_y, warmup_output,
             ).block_until_ready()
-            galaxy_fori_fns[order](
+            warmup_output = galaxy_fori_fns[order](
                 1, warmup_gspec, warmup_gx, warmup_gy,
                 warmup_imgs, warmup_output,
             ).block_until_ready()
@@ -1858,10 +1859,11 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
             dtype=jnp.float32,
         )
         for order in element.orders:
-            star_fori_fns[order](
+            # run_*_batch donate `output`: rebind the accumulator.
+            warmup_output = star_fori_fns[order](
                 1, warmup_spec, warmup_x, warmup_y, warmup_output,
             ).block_until_ready()
-            galaxy_fori_fns[order](
+            warmup_output = galaxy_fori_fns[order](
                 1, warmup_gspec, warmup_gx, warmup_gy,
                 warmup_imgs, warmup_output,
             ).block_until_ready()
