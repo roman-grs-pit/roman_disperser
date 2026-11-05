@@ -19,6 +19,15 @@ Options:
     --detectors DETS    Comma-separated detectors (default: all 18)
     --workers N         Number of parallel workers (default: 1)
     --no-skip           Regenerate even if cache exists
+    --add-ipc           Put IPC in the PSFs (default off). romanisim >= 0.16.0
+                        applies IPC in make_l1, so wrapped images would count
+                        it twice. The pinned v0.15.0 applies none because of a
+                        bug (romanisim #383), so with the default wrapped
+                        products contain no IPC until romanisim is upgraded.
+
+Requires STPSF >= psf_model.TARGET_STPSF_VERSION and STPSF_PATH set to its data
+package (see INSTALL.md). Files are named ..._os4_stpsf<version>.npz, with _ipc
+added for --add-ipc.
 """
 
 import argparse
@@ -71,6 +80,14 @@ def main():
         '--no-skip', action='store_true',
         help='Regenerate even if cache exists'
     )
+    parser.add_argument(
+        '--add-ipc', action=argparse.BooleanOptionalAction, default=False,
+        help='Put IPC in the PSFs (default: off). romanisim >= 0.16.0 applies '
+             'IPC in make_l1, so wrapped images would count it twice. The '
+             'pinned v0.15.0 applies none because of a bug (romanisim #383), '
+             'so with the default wrapped products contain no IPC until '
+             'romanisim is upgraded.'
+    )
 
     args = parser.parse_args()
 
@@ -108,19 +125,32 @@ def main():
     print(f"Detectors: {detectors or 'all 18'}")
     print(f"Workers: {args.workers}")
     print(f"Skip existing: {not args.no_skip}")
+    print(f"Target STPSF: {psf_model.TARGET_STPSF_VERSION}")
+    print(f"Add IPC: {args.add_ipc}")
     print("=" * 60)
     print()
 
-    results = psf_model.generate_all_psf_caches(
-        cache_dir=args.cache_dir,
-        orders=orders,
-        detectors=detectors,
-        wavelengths=wavelengths,
-        stpsf_filters=element.stpsf_filters,
-        skip_existing=not args.no_skip,
-        n_workers=args.workers,
-        verbose=True,
-    )
+    if args.add_ipc:
+        print("WARNING: --add-ipc puts IPC in the PSFs. romanisim >= 0.16.0 "
+              "applies IPC in make_l1, so images wrapped with it would count "
+              "IPC twice. (The pinned v0.15.0 applies none because of a bug, "
+              "romanisim #383.)")
+        print()
+
+    try:
+        results = psf_model.generate_all_psf_caches(
+            cache_dir=args.cache_dir,
+            orders=orders,
+            detectors=detectors,
+            wavelengths=wavelengths,
+            stpsf_filters=element.stpsf_filters,
+            skip_existing=not args.no_skip,
+            n_workers=args.workers,
+            verbose=True,
+            add_ipc=args.add_ipc,
+        )
+    except RuntimeError as e:
+        sys.exit(f"ERROR: {e}")
 
     # Summary
     print()

@@ -12,10 +12,14 @@ Each real cache `psf_WFI{sca}_{GRISM0|GRISM1}_...npz` is copied verbatim except
 `psf_grid`, which is replaced by a centred 2-D Gaussian (fixed FWHM in native px,
 normalized to unit sum) at every (spatial, wavelength) slot. Only the SCAs you
 pass are built (a single-SCA sim needs that SCA's GRISM0 + GRISM1).
+
+The output is not an STPSF product: it has `psf_source = gaussian`, no STPSF
+version or add_ipc field, and the unversioned filename. The loader skips the
+STPSF version checks for it and gives one notice per file instead. The real
+cache is only a template here, so its own version does not matter.
 """
 
 import argparse
-import glob
 import os
 from pathlib import Path
 
@@ -43,16 +47,22 @@ def main():
     p.add_argument("--out-dir", required=True)
     args = p.parse_args()
 
+    from roman_disperser import psf_model
     from roman_disperser.paths import data_dir
-    src = str(data_dir() / "psf_cache")
+    src = data_dir() / "psf_cache"
     out = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
     for sca in args.scas:
         for order in ("GRISM0", "GRISM1"):
-            f = glob.glob(f"{src}/psf_WFI{sca:02d}_{order}*.npz")[0]
+            f = psf_model.find_psf_cache_file(
+                src, f"WFI{sca:02d}", order, warn=False)
             d = dict(np.load(f))
             ov = int(d["oversample"])
             d["psf_grid"] = gaussian_grid(d["psf_grid"].shape, ov, args.fwhm_native)
-            dest = out / Path(f).name
+            d["psf_source"] = np.array("gaussian", dtype="S")
+            d.pop("stpsf_version", None)
+            d.pop("add_ipc", None)
+            stem = psf_model._parse_cache_filename(f.name)[0]
+            dest = out / f"{stem}.npz"
             np.savez(dest, **d)
             print(f"wrote {dest.name}  (FWHM {args.fwhm_native} px, os {ov})")
 

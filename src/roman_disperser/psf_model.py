@@ -38,8 +38,12 @@ See Also:
     docs/star_dispersion.md : Design requirements
 """
 
+import importlib.metadata
+import os
+import re
 import time
 import warnings
+import zipfile
 from pathlib import Path
 import numpy as np
 import jax.numpy as jnp
@@ -52,6 +56,117 @@ from .psf_utils import sca_to_stpsf_position, stpsf_to_sca_position
 # explicitly — the per-element mapping lives on
 # ``roman_disperser.elements.DispersingElement.stpsf_filters``.
 GRISM_FILTERS = {'0': 'GRISM0', '1': 'GRISM1'}
+
+# The STPSF version PSF caches are made with. Generation refuses anything
+# older, and lookups prefer the file carrying this version in its name.
+TARGET_STPSF_VERSION = "2.3.0"
+
+# First STPSF whose OVERDIST extension has IPC on by default. Fixed history,
+# independent of the target: a file stamped older than this has no IPC in it.
+IPC_FIRST_STPSF_VERSION = "2.3.0"
+
+_REGENERATE_ADVICE = "Regenerate with scripts/generate_psf_caches.py."
+
+
+class PSFCacheVersionWarning(UserWarning):
+    """A PSF cache's STPSF version or IPC state is stale, unknown or inconsistent."""
+
+
+# Messages already shown in this process. A run reloads the same files (warm-up,
+# then once per SCA and pointing), so each distinct message appears once. The
+# message names the file, so a different file always gets its own warning, under
+# Python's default filter as well (it dedupes on the text).
+_warned_cache_messages = set()
+
+
+def _reset_cache_warnings():
+    """Forget which PSF cache warnings were shown (for tests)."""
+    _warned_cache_messages.clear()
+
+
+def _warn_once(message, category=PSFCacheVersionWarning, stacklevel=3):
+    if message not in _warned_cache_messages:
+        warnings.warn(message, category, stacklevel=stacklevel)
+        _warned_cache_messages.add(message)
+
+
+def _parse_version(version):
+    """``'2.3.0'`` -> ``(2, 3, 0, 0)``; None if there is no leading X.Y.
+
+    The last element orders pre-releases (``2.3.0rc1``, ``2.3.0.dev4``) before
+    the release. Local and post suffixes count as the release.
+    """
+    m = re.match(r"^v?(\d+)\.(\d+)(?:\.(\d+))?(.*)$", str(version or ""))
+    if m is None:
+        return None
+    pre = re.match(r"^[.\-_]?(a|b|c|rc|alpha|beta|dev|pre)", m.group(4))
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0),
+            -1 if pre else 0)
+
+
+def _installed_stpsf_version():
+    """Installed STPSF version, or None, without importing it.
+
+    Importing stpsf is slow and, with STPSF_PATH unset and no data at the
+    default location, downloads its data package to ~/data/stpsf-data. Reading
+    a cache must not do that.
+    """
+    try:
+        return importlib.metadata.version("stpsf")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _require_stpsf_for_generation():
+    """Return the installed STPSF version, or raise if it cannot make a cache."""
+    installed = _installed_stpsf_version()
+    if installed is None:
+        raise ModuleNotFoundError(
+            f"PSF generation needs STPSF >= {TARGET_STPSF_VERSION}, which is "
+            f"not installed. See INSTALL.md.")
+    parsed = _parse_version(installed)
+    target = _parse_version(TARGET_STPSF_VERSION)
+    if parsed is None or parsed < target:
+        raise RuntimeError(
+            f"PSF generation needs STPSF >= {TARGET_STPSF_VERSION}, but "
+            f"{installed} is installed. Upgrade STPSF and its data package "
+            f"(see INSTALL.md); no cache was written.")
+    if not os.environ.get("STPSF_PATH"):
+        raise RuntimeError(
+            "STPSF_PATH is not set. Point it at the unpacked "
+            f"stpsf-data-{TARGET_STPSF_VERSION} package (see INSTALL.md). "
+            "Without it STPSF falls back to ~/data/stpsf-data and downloads "
+            "its latest data there.")
+    if parsed > target:
+        warnings.warn(
+            f"Generating PSFs with STPSF {installed}, newer than the target "
+            f"{TARGET_STPSF_VERSION}. The file is labelled {installed}; bump "
+            f"psf_model.TARGET_STPSF_VERSION if this version is adopted.",
+            RuntimeWarning, stacklevel=2)
+    return installed
+
+
+def _filename_version():
+    """Version for the name of a file generated here: never a false label."""
+    installed = _parse_version(_installed_stpsf_version())
+    if installed is not None and installed > _parse_version(TARGET_STPSF_VERSION):
+        return _installed_stpsf_version()
+    return TARGET_STPSF_VERSION
+
+
+def _make_wfi(detector, order, stpsf_filter, add_ipc):
+    """STPSF WFI instrument set up for one cache."""
+    import stpsf.roman
+
+    wfi = stpsf.roman.WFI()
+    wfi.filter = resolve_stpsf_filter(order, stpsf_filter)
+    wfi.detector = detector
+    # STPSF >= 2.3.0 defaults to True. romanisim >= 0.16.0 applies IPC in
+    # make_l1, so a default cache must not contain it. The pinned v0.15.0
+    # applies none because of a bug (romanisim #383), so wrapped products have
+    # no IPC until romanisim is upgraded.
+    wfi.options['add_ipc'] = bool(add_ipc)
+    return wfi
 
 
 def resolve_stpsf_filter(order, stpsf_filter=None):
@@ -86,6 +201,8 @@ def get_cache_filename(
     fov_arcsec,
     oversample,
     stpsf_filter=None,
+    stpsf_version=None,
+    add_ipc=False,
 ):
     """
     Generate a standardized cache filename for a PSF payload.
@@ -107,6 +224,12 @@ def get_cache_filename(
         PSF field of view in arcseconds
     oversample : int
         Oversampling factor
+    stpsf_filter : str, optional
+        STPSF filter name (default: the grism mapping for ``order``)
+    stpsf_version : str, optional
+        STPSF version for the name (default: ``TARGET_STPSF_VERSION``)
+    add_ipc : bool, optional
+        Whether the PSFs contain IPC; adds ``_ipc`` to the name (default: False)
 
     Returns
     -------
@@ -118,8 +241,17 @@ def get_cache_filename(
     >>> wavelengths = np.arange(0.9, 2.01, 0.02)  # microns
     >>> spatial_grid = {'x': np.linspace(1, 4088, 4), 'y': np.linspace(1, 4088, 4)}
     >>> get_cache_filename('WFI05', '1', wavelengths, spatial_grid, 5.0, 4)
-    'psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4.npz'
+    'psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4_stpsf2.3.0.npz'
     """
+    stem = _cache_stem(detector, order, wavelengths, spatial_grid, fov_arcsec,
+                       oversample, stpsf_filter)
+    version = stpsf_version or TARGET_STPSF_VERSION
+    return f"{stem}_stpsf{version}{'_ipc' if add_ipc else ''}.npz"
+
+
+def _cache_stem(detector, order, wavelengths, spatial_grid, fov_arcsec,
+                oversample, stpsf_filter=None):
+    """Filename part naming the configuration; alone, it is the legacy name."""
     wavelengths = np.asarray(wavelengths)
     x_grid = np.asarray(spatial_grid['x'])
     y_grid = np.asarray(spatial_grid['y'])
@@ -135,12 +267,210 @@ def get_cache_filename(
     wl_min = wavelengths.min()
     wl_max = wavelengths.max()
 
-    filename = (
+    return (
         f"psf_{detector}_{filter_name}_{n_y}x{n_x}x{n_wl}_"
-        f"{wl_min:.2f}-{wl_max:.2f}um_fov{fov_arcsec:.1f}_os{oversample}.npz"
+        f"{wl_min:.2f}-{wl_max:.2f}um_fov{fov_arcsec:.1f}_os{oversample}"
     )
 
-    return filename
+
+_CACHE_NAME_RE = re.compile(
+    r"^(?P<stem>psf_.+_os\d+)(?:_stpsf(?P<version>[^_]+))?(?P<ipc>_ipc)?\.npz$")
+
+
+def _parse_cache_filename(name):
+    """Split a cache filename into ``(stem, version, ipc)``.
+
+    ``stem`` is None for a name outside the standard form.
+    """
+    m = _CACHE_NAME_RE.match(name)
+    if m is None:
+        return None, None, False
+    return m.group("stem"), m.group("version"), m.group("ipc") is not None
+
+
+def _decode_label(val):
+    """Decode a numpy byte-string scalar to a Python str."""
+    if hasattr(val, 'item'):
+        val = val.item()
+    return val.decode('utf-8') if isinstance(val, bytes) else str(val)
+
+
+def _header_from_npz(data):
+    """Version and IPC metadata of an open cache; None where it is absent."""
+    version = None
+    if 'stpsf_version' in data:
+        version = _decode_label(data['stpsf_version'])
+        if version in ('', 'unknown'):
+            version = None
+    return {
+        'version': version,
+        'add_ipc': bool(data['add_ipc']) if 'add_ipc' in data else None,
+        'psf_source': (_decode_label(data['psf_source'])
+                       if 'psf_source' in data else 'stpsf'),
+    }
+
+
+def _read_cache_header(path):
+    """Metadata of a cache file without reading its PSF grid; None if unreadable."""
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            return _header_from_npz(data)
+    except (ValueError, KeyError, OSError, EOFError, zipfile.BadZipFile):
+        return None
+
+
+def _cache_ipc_state(name, header):
+    """Is IPC in this file, for matching a request? True, False, or None if unknown.
+
+    Metadata wins, then the filename: a versioned name without ``_ipc`` declares
+    IPC off. A legacy name says nothing, so it depends on the stamped version.
+    STPSF before 2.3.0 has no IPC in OVERDIST. A legacy name with no version at
+    all predates 2.3.0 too, so it counts as off. A legacy name stamped >= 2.3.0
+    came from the old code under the new STPSF, whose default is IPC on, unless
+    the caller overrode it: unknown.
+    """
+    _, name_version, name_ipc = _parse_cache_filename(name)
+    if header is not None and header['psf_source'] != 'stpsf':
+        return None
+    if header is not None and header['add_ipc'] is not None:
+        return header['add_ipc']
+    if name_ipc:
+        return True
+    if name_version is not None:
+        return False
+    parsed = _parse_version(header['version']) if header is not None else None
+    if parsed is None or parsed < _parse_version(IPC_FIRST_STPSF_VERSION):
+        return False
+    return None
+
+
+def _rank_cache_candidates(paths, add_ipc):
+    """Order cache files for a request; drop those with the wrong IPC state.
+
+    Returns ``(usable, ignored)``. ``usable`` has the exact target file first,
+    then the newest STPSF version; at equal version a known IPC state beats an
+    unknown one and a versioned name beats a legacy one. A file with an
+    unreadable header stays in, so that the loader reports what is wrong with it.
+    """
+    ranked = []
+    ignored = []
+    for path in paths:
+        _, name_version, name_ipc = _parse_cache_filename(path.name)
+        header = _read_cache_header(path)
+        state = _cache_ipc_state(path.name, header)
+        if state is not None and state != bool(add_ipc):
+            ignored.append(path.name)
+            continue
+        version = (header['version'] if header is not None else None) or name_version
+        exact = (name_version == TARGET_STPSF_VERSION
+                 and name_ipc == bool(add_ipc))
+        key = (exact, _parse_version(version) or (), state is not None,
+               name_version is not None, path.name)
+        ranked.append((key, path))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [path for _, path in ranked], sorted(ignored)
+
+
+def _cache_issues(path, header, fallback_for=None):
+    """Everything wrong with a cache's version or IPC labels, as clauses."""
+    _, name_version, name_ipc = _parse_cache_filename(path.name)
+    issues = []
+    if fallback_for is not None:
+        issues.append(f"used in place of {fallback_for}, which is missing or "
+                      f"not usable in this directory")
+
+    meta_version = header['version']
+    name_parsed = _parse_version(name_version)
+    meta_parsed = _parse_version(meta_version)
+    if meta_version and name_version and meta_parsed != name_parsed:
+        issues.append(f"its filename says STPSF {name_version} but its metadata "
+                      f"says {meta_version} (the metadata is used)")
+
+    version = meta_version or name_version
+    parsed = _parse_version(version)
+    target = _parse_version(TARGET_STPSF_VERSION)
+    if parsed is None:
+        what = (f"an unreadable STPSF version ({version})" if version
+                else "no STPSF version in its metadata or filename")
+        issues.append(f"it has {what}, so the PSF model behind it is unknown")
+    else:
+        if parsed < target:
+            issues.append(f"it was generated with STPSF {version}, older than "
+                          f"the target {TARGET_STPSF_VERSION}, and its PSF "
+                          f"shapes differ")
+        if meta_version is None:
+            issues.append(f"its metadata has no STPSF version, so the filename's "
+                          f"{name_version} is unconfirmed")
+        if (header['add_ipc'] is None
+                and parsed >= _parse_version(IPC_FIRST_STPSF_VERSION)):
+            issues.append("it has no add_ipc metadata, so whether IPC is in the "
+                          "PSF is unknown (STPSF >= 2.3.0 defaults to on, and "
+                          "romanisim >= 0.16.0 applies IPC again when wrapping)")
+
+    if (header['add_ipc'] is not None and name_version is not None
+            and header['add_ipc'] != name_ipc):
+        issues.append(f"its filename says IPC {'on' if name_ipc else 'off'} but "
+                      f"its metadata says add_ipc={header['add_ipc']} (the "
+                      f"metadata is used)")
+
+    installed = _installed_stpsf_version()
+    if (parsed is not None and installed is not None
+            and _parse_version(installed) != parsed):
+        issues.append(f"the installed STPSF is {installed}, not {version}, so "
+                      f"PSF shapes may differ from a fresh generation")
+    return issues
+
+
+def _warn_on_cache(path, header, fallback_for=None, stacklevel=4):
+    """Give at most one warning for a cache, once per message per process."""
+    if header['psf_source'] != 'stpsf':
+        _warn_once(f"PSF cache {path} holds {header['psf_source']} PSFs, not "
+                   f"STPSF ones; STPSF version checks do not apply.",
+                   UserWarning, stacklevel=stacklevel)
+        return
+    issues = _cache_issues(path, header, fallback_for)
+    if issues:
+        _warn_once(f"PSF cache {path}: {'; '.join(issues)}. "
+                   f"{_REGENERATE_ADVICE}", stacklevel=stacklevel)
+
+
+def check_psf_cache_file(path):
+    """Give the load-time version and IPC warning for a file read some other way.
+
+    For scripts that read the npz directly instead of using `load_psf_payload`.
+    """
+    path = Path(path)
+    header = _read_cache_header(path)
+    if header is not None:
+        _warn_on_cache(path, header)
+
+
+def find_psf_cache_file(cache_dir, detector, stpsf_filter, add_ipc=False,
+                        warn=True):
+    """Best cache file for a detector and filter, whatever its grid.
+
+    For scripts that know the SCA and filter but not the wavelength grid. The
+    order is that of `get_or_make_psf_payload`: exact target version first, then
+    the newest, and never a file with the wrong IPC state.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no file matches.
+    """
+    cache_dir = Path(cache_dir)
+    prefix = f"psf_{detector}_{stpsf_filter}_"
+    paths = [p for p in sorted(cache_dir.glob(f"{prefix}*.npz"))
+             if _parse_cache_filename(p.name)[0] is not None]
+    usable, ignored = _rank_cache_candidates(paths, add_ipc)
+    if not usable:
+        extra = f" (wrong IPC state: {ignored})" if ignored else ""
+        raise FileNotFoundError(
+            f"No PSF cache {prefix}*.npz with add_ipc={bool(add_ipc)} in "
+            f"{cache_dir}{extra}.")
+    if warn:
+        check_psf_cache_file(usable[0])
+    return usable[0]
 
 
 def save_psf_payload(payload, filepath, verbose=True):
@@ -163,18 +493,19 @@ def save_psf_payload(payload, filepath, verbose=True):
     The saved file includes:
     - PSF grid data (as float32 for space efficiency)
     - All grid parameters (wavelengths, spatial grids, fov, oversample)
-    - Metadata (detector, order, STPSF version, generation timestamp)
+    - Metadata (detector, order, STPSF version, add_ipc, generation timestamp)
 
     See Also
     --------
     load_psf_payload : Load cached payload
     get_or_make_psf_payload : Convenience function with auto-caching
     """
-    try:
-        import stpsf
-        stpsf_version = stpsf.__version__
-    except ModuleNotFoundError:
-        stpsf_version = "unknown"
+    # The payload knows what made it; the installed STPSF is only a fallback
+    # for a payload that does not carry a version.
+    if 'stpsf_version' in payload:
+        stpsf_version = payload['stpsf_version'] or "unknown"
+    else:
+        stpsf_version = _installed_stpsf_version() or "unknown"
 
     filepath = Path(filepath)
 
@@ -204,6 +535,12 @@ def save_psf_payload(payload, filepath, verbose=True):
         'save_timestamp': np.array(time.time()),
     }
 
+    # Absent means unknown, which the loader warns about; never guess here.
+    if payload.get('add_ipc') is not None:
+        save_dict['add_ipc'] = np.array(bool(payload['add_ipc']))
+    if payload.get('psf_source', 'stpsf') != 'stpsf':
+        save_dict['psf_source'] = np.array(payload['psf_source'], dtype='S')
+
     # Save timing info if available
     if 'timing' in payload:
         save_dict['timing_total_time'] = np.array(payload['timing'].get('total_time', 0))
@@ -217,11 +554,12 @@ def save_psf_payload(payload, filepath, verbose=True):
         print(f"  Size: {size_mb:.1f} MB (compressed)")
 
 
-def load_psf_payload(filepath, verbose=True):
+def load_psf_payload(filepath, verbose=True, fallback_for=None):
     """
     Load a cached PSF payload from disk.
 
-    Validates metadata and warns if STPSF version differs from current.
+    Validates metadata and warns about the STPSF version and IPC state, whether
+    or not STPSF is installed.
 
     Parameters
     ----------
@@ -229,11 +567,16 @@ def load_psf_payload(filepath, verbose=True):
         Path to the cache file (.npz format)
     verbose : bool, optional
         Print load information (default: True)
+    fallback_for : str, optional
+        Name of the file this one stands in for; added to the warning.
 
     Returns
     -------
     payload : dict
-        PSF payload compatible with interpolate_psf()
+        PSF payload compatible with interpolate_psf(). Besides the arrays it
+        holds the labels ``stpsf_version`` (str or None), ``add_ipc`` (True,
+        False, or None if unknown) and ``psf_source``. Labels never reach
+        jitted code (see ``jit_payload``).
 
     Raises
     ------
@@ -244,8 +587,11 @@ def load_psf_payload(filepath, verbose=True):
 
     Notes
     -----
-    Warns (but does not error) if the STPSF version used to generate the cache
-    differs from the currently installed version.
+    Gives one `PSFCacheVersionWarning`, which combines every problem found, if
+    the file is older than ``TARGET_STPSF_VERSION``, has no version, has filename
+    and metadata that disagree, has version >= 2.3.0 and no add_ipc metadata, or
+    differs from the installed STPSF. The same message is shown once per process,
+    however often the file is reloaded.
 
     See Also
     --------
@@ -266,30 +612,19 @@ def load_psf_payload(filepath, verbose=True):
             if field not in data:
                 raise ValueError(f"Cache file missing required field: {field}")
 
-        # Helper to decode numpy byte strings
-        def decode_bytes(val):
-            """Decode numpy byte string to Python str."""
-            if hasattr(val, 'tobytes'):
-                return val.tobytes().decode('utf-8')
-            elif isinstance(val, bytes):
-                return val.decode('utf-8')
-            return str(val)
-
-        # Check STPSF version (if stpsf is available)
-        if 'stpsf_version' in data:
-            cached_version = decode_bytes(data['stpsf_version'])
-            try:
-                import stpsf
-                current_version = stpsf.__version__
-                if cached_version != current_version:
-                    warnings.warn(
-                        f"PSF cache was generated with STPSF {cached_version}, "
-                        f"but current version is {current_version}. "
-                        f"PSF shapes may differ slightly.",
-                        UserWarning
-                    )
-            except ModuleNotFoundError:
-                pass  # stpsf not installed; skip version check
+        header = _header_from_npz(data)
+        _warn_on_cache(filepath, header, fallback_for)
+        _, name_version, name_ipc = _parse_cache_filename(filepath.name)
+        version = header['version'] or name_version
+        parsed = _parse_version(version)
+        # What the file can vouch for: a name alone does not settle IPC for
+        # STPSF >= 2.3.0, and that case has just been warned about.
+        if header['add_ipc'] is not None:
+            add_ipc = header['add_ipc']
+        elif parsed is None or parsed < _parse_version(IPC_FIRST_STPSF_VERSION):
+            add_ipc = name_ipc
+        else:
+            add_ipc = None
 
         # Reconstruct payload with JAX arrays. Every float leaf is float32
         # explicitly: with jax_enable_x64 on, an untyped jnp.array of the
@@ -304,11 +639,14 @@ def load_psf_payload(filepath, verbose=True):
             'psf_fov_pixels': int(data['psf_grid'].shape[-1]),
             'pixel_scale': float(data.get('pixel_scale', 0.11)),
             'oversample': int(data['oversample']),
-            'detector': decode_bytes(data['detector']),
-            'order': decode_bytes(data['order']),
+            'detector': _decode_label(data['detector']),
+            'order': _decode_label(data['order']),
             # Caches from before prism support have no stpsf_filter field
-            'stpsf_filter': (decode_bytes(data['stpsf_filter'])
+            'stpsf_filter': (_decode_label(data['stpsf_filter'])
                              if 'stpsf_filter' in data else 'unknown'),
+            'stpsf_version': version,
+            'add_ipc': add_ipc,
+            'psf_source': header['psf_source'],
         }
 
         # Optional timing info
@@ -322,6 +660,7 @@ def load_psf_payload(filepath, verbose=True):
     if verbose:
         print(f"Loaded PSF cache: {filepath}")
         print(f"  Detector: {payload['detector']}, Order: {payload['order']}")
+        print(f"  STPSF: {payload['stpsf_version']}, add_ipc: {payload['add_ipc']}")
         print(f"  Grid shape: {payload['psf_grid'].shape}")
         print(f"  Memory: {payload['psf_grid'].nbytes / 1e6:.1f} MB")
 
@@ -349,7 +688,8 @@ def _generate_single_cache(args):
     Parameters
     ----------
     args : tuple
-        (detector, order, cache_path, wavelengths, spatial_grid, fov_arcsec, oversample)
+        (detector, order, cache_path, wavelengths, spatial_grid, fov_arcsec,
+        oversample, stpsf_filter, add_ipc)
 
     Returns
     -------
@@ -367,7 +707,7 @@ def _generate_single_cache(args):
     warnings.filterwarnings('ignore', message='.*clipping to closest.*')
 
     (detector, order, cache_path, wavelengths, spatial_grid,
-     fov_arcsec, oversample, stpsf_filter) = args
+     fov_arcsec, oversample, stpsf_filter, add_ipc) = args
 
     # Get shared counter if available (set by _init_worker)
     try:
@@ -385,6 +725,7 @@ def _generate_single_cache(args):
             oversample=oversample,
             stpsf_filter=stpsf_filter,
             progress_counter=counter,
+            add_ipc=add_ipc,
         )
         save_psf_payload(payload, cache_path, verbose=False)
         return (detector, order, 'generated', str(cache_path))
@@ -394,13 +735,14 @@ def _generate_single_cache(args):
 
 def _make_psf_payload_with_progress(
     detector, order, wavelengths, spatial_grid, fov_arcsec, oversample,
-    stpsf_filter=None, progress_counter=None
+    stpsf_filter=None, progress_counter=None, add_ipc=False
 ):
     """
     Internal version of make_psf_payload that updates a shared progress counter.
     """
     import logging
-    import stpsf.roman
+
+    stpsf_version = _require_stpsf_for_generation()
 
     # Suppress noisy STPSF messages
     logging.getLogger('stpsf').setLevel(logging.ERROR)
@@ -408,9 +750,7 @@ def _make_psf_payload_with_progress(
     warnings.filterwarnings('ignore', message='.*Attempted to get aberrations.*')
     warnings.filterwarnings('ignore', message='.*outside the range.*')
 
-    wfi = stpsf.roman.WFI()
-    wfi.filter = resolve_stpsf_filter(order, stpsf_filter)
-    wfi.detector = detector
+    wfi = _make_wfi(detector, order, stpsf_filter, add_ipc)
 
     x_grid = np.asarray(spatial_grid['x'])
     y_grid = np.asarray(spatial_grid['y'])
@@ -444,6 +784,9 @@ def _make_psf_payload_with_progress(
     return {
         'detector': detector,
         'order': order,
+        'stpsf_filter': resolve_stpsf_filter(order, stpsf_filter),
+        'stpsf_version': stpsf_version,
+        'add_ipc': bool(add_ipc),
         'wavelengths': jnp.array(wavelengths, dtype=jnp.float32),
         'wl_grid': jnp.array(wavelengths, dtype=jnp.float32),
         'spatial_x': jnp.array(x_grid, dtype=jnp.float32),
@@ -468,6 +811,7 @@ def generate_all_psf_caches(
     n_workers=1,
     stpsf_filters=None,
     verbose=True,
+    add_ipc=False,
 ):
     """
     Generate PSF caches for all detectors and orders.
@@ -505,6 +849,11 @@ def generate_all_psf_caches(
         for maximum parallelism, or fewer if memory-constrained.
     verbose : bool, optional
         Print progress information (default: True)
+    add_ipc : bool, optional
+        Put IPC in the PSFs (default: False). romanisim >= 0.16.0 applies IPC
+        in make_l1, so images it wraps would count it twice. The pinned v0.15.0
+        applies none because of a bug (romanisim #383), so with the default
+        wrapped products contain no IPC until romanisim is upgraded.
 
     Returns
     -------
@@ -549,6 +898,7 @@ def generate_all_psf_caches(
     # Build list of tasks (detector, order, cache_path)
     tasks = []
     skipped = []
+    stpsf_version = _filename_version()
 
     for detector in detectors:
         for order in orders:
@@ -558,6 +908,7 @@ def generate_all_psf_caches(
             filename = get_cache_filename(
                 detector, order, wavelengths, spatial_grid, fov_arcsec,
                 oversample, stpsf_filter=stpsf_filter,
+                stpsf_version=stpsf_version, add_ipc=add_ipc,
             )
             cache_path = cache_dir / filename
 
@@ -567,8 +918,13 @@ def generate_all_psf_caches(
                 tasks.append((
                     detector, order, str(cache_path),
                     wavelengths, spatial_grid, fov_arcsec, oversample,
-                    stpsf_filter,
+                    stpsf_filter, add_ipc,
                 ))
+
+    # Fail once, before any work, rather than once per task. A missing STPSF
+    # is still reported per task, as it always was.
+    if tasks and _installed_stpsf_version() is not None:
+        _require_stpsf_for_generation()
 
     total_combinations = len(detectors) * len(orders)
     n_to_generate = len(tasks)
@@ -619,6 +975,7 @@ def generate_all_psf_caches(
                     fov_arcsec=task[5],
                     oversample=task[6],
                     stpsf_filter=task[7],
+                    add_ipc=task[8],
                     verbose=verbose,  # Show inner progress bar
                 )
                 save_psf_payload(payload, cache_path, verbose=False)
@@ -740,6 +1097,7 @@ def get_or_make_psf_payload(
     stpsf_filter=None,
     verbose=True,
     element=None,
+    add_ipc=False,
 ):
     """
     Get a PSF payload, loading from cache if available or generating if not.
@@ -753,6 +1111,16 @@ def get_or_make_psf_payload(
     cache, which is the bug the guard below refuses. Rather than keeping
     them consistent by hand, pass ``element=``: the dispersing element
     derives both, so the wrong combination cannot be expressed.
+
+    Within ``cache_dir`` the exact file for ``TARGET_STPSF_VERSION`` and
+    ``add_ipc`` comes first. Failing that, the newest file of the same
+    configuration (another version, or the legacy unversioned name) is loaded
+    with a `PSFCacheVersionWarning`, rather than launching a regeneration of
+    hours. A file known to have the other IPC state is never used. A legacy name
+    stamped < 2.3.0, or with no version at all, counts as IPC off; a legacy name
+    stamped >= 2.3.0 with no add_ipc metadata is unknown, so it can serve either
+    request, with a warning saying so. Generation happens only if nothing is
+    left.
 
     Parameters
     ----------
@@ -785,6 +1153,12 @@ def get_or_make_psf_payload(
         Low-level knob — prefer ``element=``.
     verbose : bool, optional
         Print progress information (default: True)
+    add_ipc : bool, optional
+        Whether the PSFs should contain IPC (default: False). romanisim >=
+        0.16.0 applies IPC in make_l1, so images it wraps would count it twice.
+        The pinned v0.15.0 applies none because of a bug (romanisim #383), so
+        with the default wrapped products contain no IPC until romanisim is
+        upgraded.
 
     Returns
     -------
@@ -867,28 +1241,39 @@ def get_or_make_psf_payload(
             oversample=oversample,
             stpsf_filter=stpsf_filter,
             verbose=verbose,
+            add_ipc=add_ipc,
         )
 
     # Generate cache filepath
     cache_dir = Path(cache_dir)
     filename = get_cache_filename(
         detector, order, wavelengths, spatial_grid, fov_arcsec, oversample,
-        stpsf_filter=stpsf_filter,
+        stpsf_filter=stpsf_filter, add_ipc=add_ipc,
     )
     cache_path = cache_dir / filename
 
-    # Try to load from cache
-    if cache_path.exists() and not force_regenerate:
-        if verbose:
-            print(f"Loading PSF payload from cache: {cache_path}")
-        try:
-            return load_psf_payload(cache_path, verbose=verbose)
-        except (ValueError, KeyError) as e:
-            warnings.warn(
-                f"PSF cache {cache_path} is invalid ({e}); regenerating "
-                f"with the locally installed STPSF.",
-                RuntimeWarning, stacklevel=2,
-            )
+    # Try to load from cache: the exact file, else the newest that fits
+    ignored = []
+    if not force_regenerate and cache_dir.is_dir():
+        stem = _cache_stem(detector, order, wavelengths, spatial_grid,
+                           fov_arcsec, oversample, stpsf_filter)
+        same_config = [p for p in sorted(cache_dir.iterdir())
+                       if _parse_cache_filename(p.name)[0] == stem]
+        usable, ignored = _rank_cache_candidates(same_config, add_ipc)
+        for candidate in usable:
+            if verbose:
+                print(f"Loading PSF payload from cache: {candidate}")
+            try:
+                if candidate.name == filename:
+                    return load_psf_payload(candidate, verbose=verbose)
+                return load_psf_payload(candidate, verbose=verbose,
+                                        fallback_for=filename)
+            except (ValueError, KeyError, EOFError, zipfile.BadZipFile) as e:
+                warnings.warn(
+                    f"PSF cache {candidate} is invalid ({e}); trying the next "
+                    f"match, then the locally installed STPSF.",
+                    RuntimeWarning, stacklevel=2,
+                )
 
     # Generate fresh payload
     if not force_regenerate:
@@ -897,10 +1282,12 @@ def get_or_make_psf_payload(
             raise FileNotFoundError(
                 f"PSF cache {cache_path} missing or invalid and "
                 f"ROMAN_DISPERSER_REQUIRE_PSF_CACHE is set."
+                + (f" Ignored for their IPC state: {ignored}." if ignored else "")
             )
         warnings.warn(
             f"PSF cache {cache_path} not usable: generating a new PSF grid "
-            f"with the local STPSF (differs from the vendored caches).",
+            f"with the local STPSF (differs from the vendored caches)."
+            + (f" Ignored for their IPC state: {ignored}." if ignored else ""),
             RuntimeWarning, stacklevel=2,
         )
     if verbose:
@@ -918,6 +1305,15 @@ def get_or_make_psf_payload(
         oversample=oversample,
         stpsf_filter=stpsf_filter,
         verbose=verbose,
+        add_ipc=add_ipc,
+    )
+
+    # Name the file after the STPSF that made it, which can be newer than the
+    # target
+    cache_path = cache_dir / get_cache_filename(
+        detector, order, wavelengths, spatial_grid, fov_arcsec, oversample,
+        stpsf_filter=stpsf_filter,
+        stpsf_version=payload.get('stpsf_version'), add_ipc=add_ipc,
     )
 
     # Save to cache
@@ -942,6 +1338,7 @@ def make_psf_payload(
     oversample=4,
     stpsf_filter=None,
     verbose=True,
+    add_ipc=False,
 ):
     """
     Create PSF payload for star dispersion with timing benchmarks.
@@ -989,11 +1386,19 @@ def make_psf_payload(
     verbose : bool, optional
         Print timing and progress information (default: True)
 
+    add_ipc : bool, optional
+        Put IPC in the OVERDIST PSFs (default: False). romanisim >= 0.16.0
+        applies IPC in make_l1, so images it wraps would count it twice. The
+        pinned v0.15.0 applies none because of a bug (romanisim #383), so with
+        the default wrapped products contain no IPC until romanisim is upgraded.
+
     Returns
     -------
     payload : dict
         PSF payload with keys:
         - 'detector': str, detector name
+        - 'stpsf_version': str, STPSF version that made the grid (label)
+        - 'add_ipc': bool, whether IPC is in the PSFs (label)
         - 'wavelengths': jnp.ndarray [N_wl], wavelengths in **microns**
         - 'wl_grid': jnp.ndarray [N_wl], same as wavelengths (for consistency)
         - 'spatial_x': jnp.ndarray [N_x], SCA x-coordinates
@@ -1028,7 +1433,8 @@ def make_psf_payload(
     Notes
     -----
     - PSFs calculated using STPSF's OVERDIST extension (oversampled + detector effects)
-    - OVERDIST includes geometric distortion, charge diffusion, pixel sampling
+    - OVERDIST includes geometric distortion, charge diffusion, pixel sampling,
+      and IPC only if ``add_ipc`` is True
     - Oversampling (4×) is REQUIRED for sub-pixel positioning accuracy
     - PSF grid is stored as JAX arrays for GPU compatibility
     - Use JIT closure pattern for efficient disperser integration
@@ -1069,6 +1475,7 @@ def make_psf_payload(
     # Resolve the STPSF filter up front so an invalid order/filter pairing
     # fails before any (slow) STPSF work starts.
     stpsf_filter = resolve_stpsf_filter(order, stpsf_filter)
+    stpsf_version = _require_stpsf_for_generation()
 
     # Compute PSF grid with timing
     if verbose:
@@ -1081,7 +1488,7 @@ def make_psf_payload(
 
     psf_grid, timing = _compute_psf_grid_with_timing(
         detector, order, wavelengths, spatial_grid, fov_arcsec, oversample,
-        verbose, stpsf_filter=stpsf_filter,
+        verbose, stpsf_filter=stpsf_filter, add_ipc=add_ipc,
     )
 
     # Return JAX-compatible payload
@@ -1089,6 +1496,8 @@ def make_psf_payload(
         'detector': detector,
         'order': order,
         'stpsf_filter': stpsf_filter,
+        'stpsf_version': stpsf_version,
+        'add_ipc': bool(add_ipc),
         'wavelengths': jnp.array(wavelengths, dtype=jnp.float32),
         'wl_grid': jnp.array(wavelengths, dtype=jnp.float32),  # Alias for consistency with optical model
         'spatial_x': jnp.array(spatial_grid['x'], dtype=jnp.float32),
@@ -1117,7 +1526,7 @@ def make_psf_payload(
 
 def _compute_psf_grid_with_timing(
     detector, order, wavelengths, spatial_grid, fov_arcsec, oversample, verbose,
-    stpsf_filter=None,
+    stpsf_filter=None, add_ipc=False,
 ):
     """
     Compute PSF grid using STPSF with detailed timing information.
@@ -1140,6 +1549,8 @@ def _compute_psf_grid_with_timing(
         Use calc_datacube_fast() method
     verbose : bool
         Print progress information
+    add_ipc : bool
+        Put IPC in the PSFs
 
     Returns
     -------
@@ -1149,7 +1560,6 @@ def _compute_psf_grid_with_timing(
         {'total_time': float, 'per_psf_time': float, 'n_psfs': int}
     """
     import logging
-    import stpsf.roman
 
     # Suppress noisy STPSF messages
     logging.getLogger('stpsf').setLevel(logging.ERROR)
@@ -1159,9 +1569,7 @@ def _compute_psf_grid_with_timing(
 
     start_time = time.time()
 
-    wfi = stpsf.roman.WFI()
-    wfi.filter = resolve_stpsf_filter(order, stpsf_filter)
-    wfi.detector = detector
+    wfi = _make_wfi(detector, order, stpsf_filter, add_ipc)
 
     x_grid = spatial_grid['x']
     y_grid = spatial_grid['y']
