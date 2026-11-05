@@ -3,9 +3,9 @@
 **Purpose:** Comprehensive reference for STPSF (Space Telescope PSF) usage with Roman WFI, with emphasis on grism spectroscopy mode.
 
 **Version Information:**
-- STPSF: v2.2.0 (released Dec 23, 2025)
-- Roman Optical Model: Cycle 10 (Sept 2024, GSFC)
-- Last Updated: 2026-01-24
+- STPSF: written for v2.2.0 (released Dec 23, 2025) and not reviewed against v2.3.0, the version caches now target; see `docs/stpsf.md`
+- Roman Optical Model: Cycle 10 (Sept 2024, GSFC); v2.3.0 uses Phase C (Spring 2026)
+- Last Updated: 2026-01-24 (this header 2026-11-05)
 
 **Official Resources:**
 - Documentation: https://stpsf.readthedocs.io

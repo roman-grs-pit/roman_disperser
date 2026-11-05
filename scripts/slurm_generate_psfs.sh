@@ -38,6 +38,9 @@ export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OMP_NUM_THREADS=1
 
+# generate_psf_caches.py refuses to run without it; fail before launching 18.
+: "${STPSF_PATH:?STPSF_PATH must point at the stpsf-data-2.3.0 package (see INSTALL.md)}"
+
 # Shared vendored data dir if set, else the checkout's data/
 CACHE_DIR=${CACHE_DIR:-${ROMAN_DISPERSER_DATA:-data}/psf_cache}
 mkdir -p "$CACHE_DIR"
@@ -56,6 +59,7 @@ META=scripts/slurm-meta-psf/${SLURM_JOB_ID}.env
   echo "GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)"
   echo "TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "CACHE_DIR=${CACHE_DIR}"
+  echo "STPSF_PATH=${STPSF_PATH}"
 } > "$META"
 
 echo "Starting 18 parallel PSF cache generators (${ELEMENT}) on $(hostname)"

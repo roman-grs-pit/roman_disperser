@@ -189,7 +189,7 @@ Sizes below are decimal (1 GB = 10⁹ bytes); the full hydrate totals ~6.5 GB.
 | Synphot reference (F158/F184 + templates) | `synphot/` | 80 KB | `synphot-*` |
 | Source catalog | `catalogs/` | 163 MB | `catalog-*` |
 | PSF caches (both elements, 54 files) | `psf_cache/` | 6.4 GB | `psf-*`, `psf-prism-*` |
-| STPSF reference data | `~/data/stpsf-data` | 1-2 GB | (only for PSF regeneration) |
+| STPSF reference data | `$STPSF_PATH` | 296 MB (`stpsf-data-2.3.0`) | (only for PSF regeneration; not from a release here) |
 
 Grism-only work can skip the prism assets:
 `--only optical_model,sensitivities,synphot,psf,catalog` (~4.5 GB). Note the
@@ -295,11 +295,27 @@ Most users hydrate. To rebuild instead:
   pixi run python scripts/build_source_catalog.py --sims 1
   pixi run python scripts/verify_source_catalog.py   # validate the build
   ```
-- **PSF caches** — require STPSF and its reference data (in `~/data/stpsf-data`
-  by default, or set `STPSF_PATH`; ~2 hours):
+- **PSF caches** — require STPSF >= 2.3.0 (Python >= 3.12) and the data package
+  `stpsf-data-2.3.0` (about 184 MB tarball, 296 MB unpacked). `STPSF_PATH` must
+  point at the unpacked package; generation refuses to run without it, because
+  STPSF would otherwise fall back to `~/data/stpsf-data` and download its latest
+  data there. Generation also refuses an older STPSF. About 2 hours:
   ```bash
+  curl -L -o stpsf-data-2.3.0.tar.gz \
+    https://stsci.box.com/shared/static/6bddlzcocmty1fsvfgpxrbo2s836z90j.gz
+  mkdir -p ~/refdata/stpsf-2.3.0
+  tar -xzf stpsf-data-2.3.0.tar.gz -C ~/refdata/stpsf-2.3.0 --strip-components=1
+  export STPSF_PATH=~/refdata/stpsf-2.3.0
   pixi run python scripts/generate_psf_caches.py --workers 2
   ```
-  See [STPSF docs](https://stpsf.readthedocs.io) for the reference-data download.
+  Files are named `..._os4_stpsf2.3.0.npz`. Caches default to no IPC in the PSF.
+  With `--add-ipc` the PSF contains IPC and the file gets `_ipc` in its name.
+  romanisim >= 0.16.0 applies IPC in `make_l1`, so wrapped images would count it
+  twice. The pinned v0.15.0 applies none because of a bug (romanisim #383), so
+  with the default wrapped products contain no IPC until romanisim is upgraded.
+
+  The caches from `roman-disperser-hydrate` (`psf-v1`) were made with STPSF 2.1.0
+  and have the old unversioned names. They still load and give the same images
+  as before, with a `PSFCacheVersionWarning` per file.
 
 

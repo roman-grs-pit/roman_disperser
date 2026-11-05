@@ -3,9 +3,11 @@
 **Purpose:** Quick reference for STPSF usage with Roman WFI grism spectroscopy.
 
 **Version Information:**
-- STPSF: v2.2.0 (released Dec 23, 2025)
-- Roman Optical Model: Cycle 10 (Sept 2024, GSFC)
-- Last Updated: 2026-01-30
+- STPSF: caches target v2.3.0 (`psf_model.TARGET_STPSF_VERSION`), with data package `stpsf-data-2.3.0`. The vendored `psf-v1` caches were made with v2.1.0.
+- Roman Optical Model: Phase C (Spring 2026) in v2.3.0; Cycle 10 (Sept 2024, GSFC) before that
+- Last Updated: 2026-11-05. The sections below were written for v2.2.0 and have not been reviewed against v2.3.0.
+
+**IPC in v2.3.0:** `OVERDIST` contains IPC by default. `psf_model` sets `wfi.options['add_ipc']` from its `add_ipc` argument, default False. With `add_ipc=True` the PSF contains IPC. romanisim >= 0.16.0 applies IPC in `make_l1`, so wrapped images would count it twice. The pinned v0.15.0 applies none because of a bug (romanisim #383), so with the default `add_ipc=False` wrapped products contain no IPC until romanisim is upgraded.
 
 **Official Resources:**
 - Documentation: https://stpsf.readthedocs.io
