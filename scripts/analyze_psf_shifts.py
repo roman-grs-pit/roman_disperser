@@ -17,7 +17,6 @@ centroid offset / oversample).
 """
 
 import argparse
-import glob
 import os
 
 import numpy as np
@@ -59,12 +58,13 @@ def main():
     p.add_argument("--out", required=True, help="Output figure path.")
     args = p.parse_args()
 
+    from roman_disperser import psf_model
     from roman_disperser.paths import data_dir
-    psfdir = str(data_dir() / "psf_cache")
+    psfdir = data_dir() / "psf_cache"
     recs = []
     curves = {}
     for sca in range(1, 19):
-        f = glob.glob(f"{psfdir}/psf_WFI{sca:02d}_{args.order}*.npz")[0]
+        f = psf_model.find_psf_cache_file(psfdir, f"WFI{sca:02d}", args.order)
         wl, ox, oy = psf_centroid_offsets(f)
         curves[sca] = (wl, ox, oy)
         mid = len(wl) // 2

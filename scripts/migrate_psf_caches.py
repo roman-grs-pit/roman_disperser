@@ -23,6 +23,10 @@ from pathlib import Path
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+
+from roman_disperser import psf_model
+
 
 def detect_wavelength_units(wavelengths):
     """Detect whether wavelengths are in meters or microns.
@@ -64,6 +68,10 @@ def migrate_cache_file(filepath, dry_run=False):
     filepath = Path(filepath)
 
     try:
+        # This script keeps every field and the filename, so it never changes
+        # a file's version or IPC labels; report them as the loader would.
+        psf_model.check_psf_cache_file(filepath)
+
         # Load the cache file
         with np.load(filepath, allow_pickle=True) as data:
             # Get wavelengths

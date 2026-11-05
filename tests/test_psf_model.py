@@ -11,6 +11,8 @@ Tests cover:
 Note: All wavelength parameters are in **microns** (not meters).
 """
 
+import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -1017,7 +1019,7 @@ class TestPSFCaching:
         """
         monkeypatch.setattr(
             psf_model, 'load_psf_payload',
-            lambda path, verbose=True: ('loaded', Path(path).name))
+            lambda path, verbose=True, **kw: ('loaded', Path(path).name))
         expected = "psf_WFI05_PRISM_4x4x56_0.75-1.85um_fov5.0_os4.npz"
         (tmp_path / expected).write_bytes(b"placeholder")
         result = psf_model.get_or_make_psf_payload(
@@ -1215,3 +1217,697 @@ def test_parallel_cache_generation_spawns_workers(tmp_path, monkeypatch):
         n_workers=2, verbose=False)
     assert methods == ["spawn"]
     assert len(res["generated"]) + len(res["failed"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# STPSF version and IPC handling of PSF caches (fake caches; no STPSF needed)
+# ---------------------------------------------------------------------------
+
+_WL = np.array([1.0, 1.5])
+_GRID = {'x': np.array([1.0, 4088.0]), 'y': np.array([1.0, 4088.0])}
+_STEM = "psf_WFI05_GRISM1_2x2x2_1.00-1.50um_fov5.0_os4"
+_ABSENT = object()
+
+
+def _fake_cache(directory, name, version=_ABSENT, add_ipc=_ABSENT, marker=1.0,
+                **extra):
+    """Write a tiny cache; ``marker`` fills psf_grid to tell files apart."""
+    fields = dict(
+        psf_grid=np.full((2, 2, 2, 8, 8), marker, dtype=np.float32),
+        wavelengths=_WL, spatial_x=_GRID['x'], spatial_y=_GRID['y'],
+        oversample=np.array(4), pixel_scale=np.array(0.11),
+        fov_arcsec=np.array(5.0), detector=np.array('WFI05', dtype='S'),
+        order=np.array('1', dtype='S'),
+        stpsf_filter=np.array('GRISM1', dtype='S'))
+    if version is not _ABSENT:
+        fields['stpsf_version'] = np.array(version, dtype='S')
+    if add_ipc is not _ABSENT:
+        fields['add_ipc'] = np.array(add_ipc)
+    fields.update(extra)
+    path = Path(directory) / name
+    np.savez(path, **fields)
+    return path
+
+
+def _lookup(directory, **kw):
+    return psf_model.get_or_make_psf_payload(
+        detector='WFI05', order='1', wavelengths=_WL, spatial_grid=_GRID,
+        cache_dir=directory, verbose=False, **kw)
+
+
+def _marker(payload):
+    return float(payload['psf_grid'][0, 0, 0, 0, 0])
+
+
+def _version_warnings(record):
+    return [w for w in record
+            if issubclass(w.category, psf_model.PSFCacheVersionWarning)]
+
+
+def _load_warnings(path):
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        payload = psf_model.load_psf_payload(path, verbose=False)
+    return payload, _version_warnings(record)
+
+
+@pytest.fixture
+def no_stpsf(monkeypatch):
+    """Behave as if STPSF is not installed; any import of it fails."""
+    monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: None)
+    monkeypatch.setitem(sys.modules, 'stpsf', None)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cache_warnings():
+    psf_model._reset_cache_warnings()
+    yield
+    psf_model._reset_cache_warnings()
+
+
+class TestCacheFilename:
+    def test_defaults_to_target_version(self):
+        name = psf_model.get_cache_filename('WFI05', '1', _WL, _GRID, 5.0, 4)
+        assert name == f"{_STEM}_stpsf{psf_model.TARGET_STPSF_VERSION}.npz"
+
+    def test_documented_form(self):
+        wl = np.arange(0.9, 2.01, 0.02)
+        g = {'x': np.linspace(1, 4088, 4), 'y': np.linspace(1, 4088, 4)}
+        assert psf_model.TARGET_STPSF_VERSION == "2.3.0"
+        assert psf_model.get_cache_filename('WFI05', '1', wl, g, 5.0, 4) == (
+            "psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4_stpsf2.3.0.npz")
+
+    def test_ipc_name_cannot_collide(self):
+        off = psf_model.get_cache_filename('WFI05', '1', _WL, _GRID, 5.0, 4)
+        on = psf_model.get_cache_filename('WFI05', '1', _WL, _GRID, 5.0, 4,
+                                          add_ipc=True)
+        assert on == f"{_STEM}_stpsf2.3.0_ipc.npz" and on != off
+
+    def test_explicit_version(self):
+        name = psf_model.get_cache_filename(
+            'WFI05', '1', _WL, _GRID, 5.0, 4, stpsf_version="2.4.1")
+        assert name == f"{_STEM}_stpsf2.4.1.npz"
+
+    @pytest.mark.parametrize("name,expected", [
+        (f"{_STEM}.npz", (_STEM, None, False)),
+        (f"{_STEM}_stpsf2.3.0.npz", (_STEM, "2.3.0", False)),
+        (f"{_STEM}_stpsf2.3.0_ipc.npz", (_STEM, "2.3.0", True)),
+        (f"{_STEM}_stpsf2.3.1.dev4+gabc.npz", (_STEM, "2.3.1.dev4+gabc", False)),
+        ("test_payload.npz", (None, None, False)),
+    ])
+    def test_parse(self, name, expected):
+        assert psf_model._parse_cache_filename(name) == expected
+
+    @pytest.mark.parametrize("older,newer", [
+        ("2.1.0", "2.3.0"), ("2.3.0rc1", "2.3.0"), ("2.3.0.dev5+gabc", "2.3.0"),
+        ("2.3.0", "2.3.1.dev2"), ("2.9.0", "2.10.0"), ("2.3", "2.3.1"),
+    ])
+    def test_version_order(self, older, newer):
+        assert psf_model._parse_version(older) < psf_model._parse_version(newer)
+
+
+class TestCacheLookup:
+    def test_exact_target_beats_everything(self, tmp_path, no_stpsf):
+        _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0", marker=1.0)
+        _fake_cache(tmp_path, f"{_STEM}_stpsf2.9.0.npz", "2.9.0", False, marker=2.0)
+        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", False, marker=3.0)
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            payload = _lookup(tmp_path)
+        assert _marker(payload) == 3.0
+        assert _version_warnings(record) == []
+
+    def test_fallback_takes_newest_and_warns(self, tmp_path, no_stpsf):
+        _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0", marker=1.0)
+        _fake_cache(tmp_path, f"{_STEM}_stpsf2.2.0.npz", "2.2.0", marker=2.0)
+        with pytest.warns(psf_model.PSFCacheVersionWarning, match="stpsf2.2.0"):
+            assert _marker(_lookup(tmp_path)) == 2.0
+
+    def test_legacy_name_used_without_generating(self, tmp_path, no_stpsf,
+                                                 monkeypatch):
+        def no_generation(**kwargs):
+            raise AssertionError("must not generate")
+        monkeypatch.setattr(psf_model, 'make_psf_payload', no_generation)
+        _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
+        with pytest.warns(psf_model.PSFCacheVersionWarning):
+            payload = _lookup(tmp_path)
+        assert payload['stpsf_version'] == "2.1.0"
+        assert payload['add_ipc'] is False
+
+    def test_other_configuration_is_no_match(self, tmp_path, no_stpsf, monkeypatch):
+        generated = []
+
+        def fake_make(**kwargs):
+            generated.append(kwargs)
+            return {'detector': 'WFI05', 'order': '1',
+                    'psf_grid': np.ones((2, 2, 2, 8, 8)), 'wavelengths': _WL,
+                    'spatial_x': _GRID['x'], 'spatial_y': _GRID['y'],
+                    'oversample': 4, 'pixel_scale': 0.11}
+        monkeypatch.setattr(psf_model, 'make_psf_payload', fake_make)
+        other = _STEM.replace("os4", "os44")
+        _fake_cache(tmp_path, f"{other}.npz", "2.1.0")
+        _fake_cache(tmp_path, _STEM.replace("WFI05", "WFI06") + ".npz", "2.1.0")
+        with pytest.warns(RuntimeWarning, match="generating"):
+            _lookup(tmp_path)
+        assert len(generated) == 1
+
+    def test_generates_only_if_nothing_matches_and_names_target(
+            self, tmp_path, no_stpsf, monkeypatch):
+        def fake_make(**kwargs):
+            return {'detector': 'WFI05', 'order': '1',
+                    'psf_grid': np.ones((2, 2, 2, 8, 8)), 'wavelengths': _WL,
+                    'spatial_x': _GRID['x'], 'spatial_y': _GRID['y'],
+                    'oversample': 4, 'pixel_scale': 0.11,
+                    'stpsf_version': '2.3.0', 'add_ipc': kwargs['add_ipc']}
+        monkeypatch.setattr(psf_model, 'make_psf_payload', fake_make)
+        with pytest.warns(RuntimeWarning, match="generating"):
+            _lookup(tmp_path, add_ipc=True)
+        assert [p.name for p in tmp_path.iterdir()] == [
+            f"{_STEM}_stpsf2.3.0_ipc.npz"]
+
+    def test_require_cache_env_still_raises(self, tmp_path, no_stpsf, monkeypatch):
+        monkeypatch.setenv("ROMAN_DISPERSER_REQUIRE_PSF_CACHE", "1")
+        with pytest.raises(FileNotFoundError):
+            _lookup(tmp_path)
+
+    def test_invalid_candidate_falls_through(self, tmp_path, no_stpsf):
+        (tmp_path / f"{_STEM}_stpsf2.3.0.npz").write_bytes(b"not an npz")
+        _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0", marker=5.0)
+        with pytest.warns(RuntimeWarning, match="invalid"):
+            assert _marker(_lookup(tmp_path)) == 5.0
+
+    def test_force_regenerate_ignores_files(self, tmp_path, no_stpsf, monkeypatch):
+        calls = []
+
+        def fake_make(**kwargs):
+            calls.append(1)
+            return {'detector': 'WFI05', 'order': '1',
+                    'psf_grid': np.ones((2, 2, 2, 8, 8)), 'wavelengths': _WL,
+                    'spatial_x': _GRID['x'], 'spatial_y': _GRID['y'],
+                    'oversample': 4, 'pixel_scale': 0.11}
+        monkeypatch.setattr(psf_model, 'make_psf_payload', fake_make)
+        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", False)
+        _lookup(tmp_path, force_regenerate=True)
+        assert calls == [1]
+
+
+class TestIPCSeparation:
+    @pytest.fixture
+    def refuse_generation(self, monkeypatch):
+        def refuse(**kwargs):
+            raise LookupError("would generate")
+        monkeypatch.setattr(psf_model, 'make_psf_payload', refuse)
+
+    def test_off_request_skips_ipc_file(self, tmp_path, no_stpsf, refuse_generation):
+        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0_ipc.npz", "2.3.0", True)
+        with pytest.warns(RuntimeWarning, match="_ipc.npz"):
+            with pytest.raises(LookupError):
+                _lookup(tmp_path)
+
+    def test_on_request_skips_off_file(self, tmp_path, no_stpsf, refuse_generation):
+        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", False)
+        with pytest.warns(RuntimeWarning, match="generating"):
+            with pytest.raises(LookupError):
+                _lookup(tmp_path, add_ipc=True)
+
+    def test_each_request_gets_its_file(self, tmp_path, no_stpsf):
+        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", False, marker=1.0)
+        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0_ipc.npz", "2.3.0", True, marker=2.0)
+        assert _marker(_lookup(tmp_path)) == 1.0
+        assert _marker(_lookup(tmp_path, add_ipc=True)) == 2.0
+
+    def test_metadata_overrides_a_misleading_name(self, tmp_path, no_stpsf,
+                                                  refuse_generation):
+        """A renamed IPC-on file must not satisfy an IPC-off request."""
+        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", True)
+        with pytest.warns(RuntimeWarning, match="generating"):
+            with pytest.raises(LookupError):
+                _lookup(tmp_path)
+
+    @pytest.mark.parametrize("version", ["2.1.0", "2.2.0", _ABSENT, "unknown"])
+    def test_legacy_without_ipc_serves_only_off(self, tmp_path, no_stpsf,
+                                                refuse_generation, version):
+        _fake_cache(tmp_path, f"{_STEM}.npz", version)
+        with pytest.warns(psf_model.PSFCacheVersionWarning):
+            assert _lookup(tmp_path)['add_ipc'] is False
+        with pytest.warns(RuntimeWarning, match="generating"):
+            with pytest.raises(LookupError):
+                _lookup(tmp_path, add_ipc=True)
+
+    @pytest.mark.parametrize("add_ipc", [False, True])
+    def test_legacy_stamped_230_is_unknown_and_warns(self, tmp_path, no_stpsf,
+                                                     add_ipc):
+        """Old code under STPSF 2.3.0 wrote this; IPC may be in it either way."""
+        _fake_cache(tmp_path, f"{_STEM}.npz", "2.3.0")
+        with pytest.warns(psf_model.PSFCacheVersionWarning, match="IPC"):
+            assert _lookup(tmp_path, add_ipc=add_ipc)['add_ipc'] is None
+
+    def test_known_state_beats_unknown_at_same_version(self, tmp_path, no_stpsf):
+        _fake_cache(tmp_path, f"{_STEM}.npz", "2.3.0", marker=1.0)
+        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0_ipc.npz", "2.3.0", True, marker=2.0)
+        assert _marker(_lookup(tmp_path, add_ipc=True)) == 2.0
+
+
+class TestCacheWarnings:
+    def test_is_userwarning(self):
+        assert issubclass(psf_model.PSFCacheVersionWarning, UserWarning)
+
+    def _assert_one(self, record, path, *needles):
+        assert len(record) == 1, [str(w.message) for w in record]
+        message = str(record[0].message)
+        assert str(path) in message
+        assert "scripts/generate_psf_caches.py" in message
+        for needle in needles:
+            assert needle in message, message
+
+    def test_older_than_target(self, tmp_path, no_stpsf):
+        path = _fake_cache(tmp_path, f"{_STEM}_stpsf2.2.0.npz", "2.2.0")
+        self._assert_one(_load_warnings(path)[1], path, "2.2.0", "older")
+
+    def test_older_from_filename_alone(self, tmp_path, no_stpsf):
+        path = _fake_cache(tmp_path, f"{_STEM}_stpsf2.2.0.npz")
+        self._assert_one(_load_warnings(path)[1], path, "older", "unconfirmed")
+
+    @pytest.mark.parametrize("version", [_ABSENT, "unknown"])
+    def test_no_version_anywhere(self, tmp_path, no_stpsf, version):
+        path = _fake_cache(tmp_path, f"{_STEM}.npz", version)
+        payload, record = _load_warnings(path)
+        self._assert_one(record, path, "no STPSF version")
+        assert payload['stpsf_version'] is None
+
+    def test_filename_and_metadata_disagree(self, tmp_path, no_stpsf):
+        path = _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.1.0")
+        payload, record = _load_warnings(path)
+        self._assert_one(record, path, "metadata says 2.1.0")
+        assert payload['stpsf_version'] == "2.1.0"
+
+    def test_new_version_no_ipc_metadata(self, tmp_path, no_stpsf):
+        path = _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0")
+        payload, record = _load_warnings(path)
+        self._assert_one(record, path, "no add_ipc metadata")
+        assert payload['add_ipc'] is None
+
+    def test_ipc_filename_and_metadata_disagree(self, tmp_path, no_stpsf):
+        path = _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0_ipc.npz", "2.3.0", False)
+        self._assert_one(_load_warnings(path)[1], path, "add_ipc=False")
+
+    def test_installed_mismatch(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: "2.4.0")
+        path = _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", False)
+        self._assert_one(_load_warnings(path)[1], path, "installed STPSF is 2.4.0")
+
+    def test_clean_file_is_quiet(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: "2.3.0")
+        path = _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", False)
+        payload, record = _load_warnings(path)
+        assert record == []
+        assert payload['stpsf_version'] == "2.3.0" and payload['add_ipc'] is False
+
+    def test_no_stpsf_installed_path(self, tmp_path, no_stpsf):
+        """Warnings fire without STPSF, and loading never imports it."""
+        path = _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
+        payload, record = _load_warnings(path)
+        self._assert_one(record, path, "2.1.0", "older")
+        assert payload['detector'] == 'WFI05'
+
+    def test_load_does_not_import_stpsf(self, tmp_path, monkeypatch):
+        """Importing STPSF with STPSF_PATH unset can trigger a data download."""
+        monkeypatch.delitem(sys.modules, 'stpsf', raising=False)
+        path = _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
+        _load_warnings(path)
+        assert 'stpsf' not in sys.modules
+
+    def test_legacy_stamped_210_gets_one_warning(self, tmp_path, monkeypatch):
+        """Also with STPSF 2.3.0 installed, through the lookup."""
+        monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: "2.3.0")
+        path = _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            _lookup(tmp_path)
+        record = _version_warnings(record)
+        self._assert_one(record, path, "2.1.0", "older", "used in place of",
+                         "_stpsf2.3.0.npz")
+
+    def test_repeated_loads_warn_once_per_file(self, tmp_path, no_stpsf):
+        """As in warm-up plus per-SCA loops; 'always' would otherwise spam."""
+        a = _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
+        b = _fake_cache(tmp_path, _STEM.replace("WFI05", "WFI06") + ".npz", "2.1.0")
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            for _ in range(50):
+                psf_model.load_psf_payload(a, verbose=False)
+                psf_model.load_psf_payload(b, verbose=False)
+        messages = [str(w.message) for w in _version_warnings(record)]
+        assert len(messages) == 2
+        assert str(a) in messages[0] and str(b) in messages[1]
+
+    def test_default_filter_shows_each_file(self, tmp_path, no_stpsf):
+        """Python's default filter must not merge warnings of different files."""
+        paths = [_fake_cache(tmp_path, _STEM.replace("WFI05", f"WFI{i:02d}") + ".npz",
+                             "2.1.0") for i in range(1, 5)]
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("default")
+            for path in paths:
+                psf_model.load_psf_payload(path, verbose=False)
+        assert len(_version_warnings(record)) == 4
+
+    def test_gaussian_cache_has_no_version_warning(self, tmp_path, no_stpsf):
+        path = _fake_cache(tmp_path, f"{_STEM}.npz",
+                           psf_source=np.array("gaussian", dtype="S"))
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            payload = psf_model.load_psf_payload(path, verbose=False)
+        assert _version_warnings(record) == []
+        assert [str(path) in str(w.message) for w in record] == [True]
+        assert payload['psf_source'] == 'gaussian'
+
+    def test_labels_do_not_enter_jit_payloads(self, tmp_path, no_stpsf):
+        from roman_disperser import jit_payload
+        on = _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0_ipc.npz", "2.3.0", True)
+        off = _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
+        results = [jit_payload.split_payload(
+            psf_model.load_psf_payload(p, verbose=False),
+            jit_payload.PSF_STATIC_KEYS) for p in (on, off)]
+        for arrays, _ in results:
+            assert not {'add_ipc', 'stpsf_version', 'psf_source'} & set(arrays)
+        assert results[0][1] == results[1][1]
+        assert (jax.tree.structure(results[0][0])
+                == jax.tree.structure(results[1][0]))
+
+    def test_generated_metadata_round_trip(self, tmp_path, no_stpsf):
+        payload = psf_model.load_psf_payload(
+            _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0_ipc.npz", "2.3.0", True),
+            verbose=False)
+        assert payload['add_ipc'] is True
+        path = tmp_path / "again" / f"{_STEM}_stpsf2.3.0_ipc.npz"
+        psf_model.save_psf_payload(payload, path, verbose=False)
+        with np.load(path) as data:
+            assert bool(data['add_ipc']) is True
+            assert data['stpsf_version'].item() == b"2.3.0"
+
+    def test_save_does_not_invent_ipc_state(self, tmp_path, no_stpsf):
+        payload = psf_model.load_psf_payload(
+            _fake_cache(tmp_path, f"{_STEM}.npz", "2.3.0"), verbose=False)
+        path = tmp_path / "again.npz"
+        psf_model.save_psf_payload(payload, path, verbose=False)
+        with np.load(path) as data:
+            assert 'add_ipc' not in data
+
+
+class TestFindCacheFile:
+    def test_prefers_target_then_newest(self, tmp_path, no_stpsf):
+        _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
+        newer = _fake_cache(tmp_path, f"{_STEM}_stpsf2.2.0.npz", "2.2.0")
+        with pytest.warns(psf_model.PSFCacheVersionWarning):
+            assert psf_model.find_psf_cache_file(tmp_path, "WFI05", "GRISM1") == newer
+        target = _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", False)
+        assert psf_model.find_psf_cache_file(tmp_path, "WFI05", "GRISM1") == target
+
+    def test_respects_ipc_and_reports_absence(self, tmp_path, no_stpsf):
+        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0_ipc.npz", "2.3.0", True)
+        with pytest.raises(FileNotFoundError, match="IPC"):
+            psf_model.find_psf_cache_file(tmp_path, "WFI05", "GRISM1")
+        with pytest.raises(FileNotFoundError):
+            psf_model.find_psf_cache_file(tmp_path, "WFI06", "GRISM1")
+
+
+class _FakeWFI:
+    instances = []
+
+    def __init__(self):
+        self.options = {'add_ipc': True}  # STPSF 2.3.0's default
+        _FakeWFI.instances.append(self)
+
+    def calc_datacube(self, wavelengths, fov_arcsec, oversample):
+        import types
+        return {'OVERDIST': types.SimpleNamespace(
+            data=np.ones((len(wavelengths), 8, 8)))}
+
+
+@pytest.fixture
+def fake_stpsf(monkeypatch):
+    """A fake stpsf.roman at the target version, with STPSF_PATH set."""
+    import types
+    _FakeWFI.instances = []
+    roman = types.ModuleType('stpsf.roman')
+    roman.WFI = _FakeWFI
+    module = types.ModuleType('stpsf')
+    module.roman = roman
+    monkeypatch.setitem(sys.modules, 'stpsf', module)
+    monkeypatch.setitem(sys.modules, 'stpsf.roman', roman)
+    monkeypatch.setattr(psf_model, '_installed_stpsf_version',
+                        lambda: psf_model.TARGET_STPSF_VERSION)
+    monkeypatch.setenv('STPSF_PATH', '/fake/stpsf-data')
+    return _FakeWFI
+
+
+class TestGeneration:
+    @pytest.mark.parametrize("add_ipc", [False, True])
+    def test_make_psf_payload(self, fake_stpsf, add_ipc):
+        payload = psf_model.make_psf_payload(
+            wavelengths=_WL, spatial_grid=_GRID, verbose=False, add_ipc=add_ipc)
+        assert [w.options['add_ipc'] for w in fake_stpsf.instances] == [add_ipc]
+        assert payload['add_ipc'] is add_ipc
+        assert payload['stpsf_version'] == psf_model.TARGET_STPSF_VERSION
+
+    def test_defaults_off_everywhere(self, fake_stpsf, tmp_path):
+        psf_model.make_psf_payload(wavelengths=_WL, spatial_grid=_GRID, verbose=False)
+        psf_model._make_psf_payload_with_progress(
+            'WFI05', '1', _WL, _GRID, 5.0, 4)
+        psf_model.generate_all_psf_caches(
+            tmp_path / "a", orders=('1',), detectors=['WFI05'], wavelengths=_WL,
+            spatial_grid=_GRID, verbose=False)
+        with pytest.warns(RuntimeWarning, match="generating"):
+            _lookup(tmp_path / "b")
+        assert [w.options['add_ipc'] for w in fake_stpsf.instances] == [False] * 4
+
+    @pytest.mark.parametrize("add_ipc", [False, True])
+    def test_progress_variant(self, fake_stpsf, add_ipc):
+        payload = psf_model._make_psf_payload_with_progress(
+            'WFI05', '1', _WL, _GRID, 5.0, 4, stpsf_filter='GRISM1', add_ipc=add_ipc)
+        assert fake_stpsf.instances[0].options['add_ipc'] is add_ipc
+        assert payload['add_ipc'] is add_ipc
+        assert payload['stpsf_filter'] == 'GRISM1'
+
+    @pytest.mark.parametrize("add_ipc", [False, True])
+    def test_worker_args_tuple(self, fake_stpsf, tmp_path, add_ipc):
+        path = tmp_path / "out.npz"
+        result = psf_model._generate_single_cache(
+            ('WFI05', '1', str(path), _WL, _GRID, 5.0, 4, 'GRISM1', add_ipc))
+        assert result[2] == 'generated', result
+        assert fake_stpsf.instances[0].options['add_ipc'] is add_ipc
+        with np.load(path) as data:
+            assert bool(data['add_ipc']) is add_ipc
+
+    @pytest.mark.parametrize("add_ipc,suffix", [(False, ""), (True, "_ipc")])
+    def test_generate_all_sequential(self, fake_stpsf, tmp_path, add_ipc, suffix):
+        res = psf_model.generate_all_psf_caches(
+            tmp_path, orders=('1',), detectors=['WFI05'], wavelengths=_WL,
+            spatial_grid=_GRID, verbose=False, add_ipc=add_ipc)
+        assert res['failed'] == []
+        path = tmp_path / f"{_STEM}_stpsf2.3.0{suffix}.npz"
+        with np.load(path) as data:
+            assert bool(data['add_ipc']) is add_ipc
+            assert data['stpsf_version'].item() == b"2.3.0"
+            assert data['stpsf_filter'].item() == b"GRISM1"
+        assert fake_stpsf.instances[0].options['add_ipc'] is add_ipc
+
+    def test_generate_all_builds_worker_tuples_with_ipc(self, fake_stpsf, tmp_path,
+                                                        monkeypatch):
+        """The parallel branch hands the same tuple to its workers."""
+        import multiprocessing
+        sent = []
+
+        class Result:
+            def __init__(self, value):
+                self.value = value
+
+            def ready(self):
+                return True
+
+            def get(self):
+                return self.value
+
+        class Pool:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def apply_async(self, function, args):
+                sent.append(args[0])
+                return Result(function(args[0]))
+
+        class Context:
+            Value = staticmethod(multiprocessing.Value)
+
+            def Pool(self, *args, **kwargs):
+                return Pool()
+
+        monkeypatch.setattr(multiprocessing, 'get_context', lambda m: Context())
+        res = psf_model.generate_all_psf_caches(
+            tmp_path, orders=('1',), detectors=['WFI05'], wavelengths=_WL,
+            spatial_grid=_GRID, n_workers=2, verbose=False, add_ipc=True)
+        assert res['failed'] == []
+        assert sent[0][-1] is True
+        assert (tmp_path / f"{_STEM}_stpsf2.3.0_ipc.npz").exists()
+
+    def test_skip_existing_is_per_ipc_state(self, fake_stpsf, tmp_path):
+        kw = dict(orders=('1',), detectors=['WFI05'], wavelengths=_WL,
+                  spatial_grid=_GRID, verbose=False)
+        assert psf_model.generate_all_psf_caches(tmp_path, **kw)['generated']
+        assert psf_model.generate_all_psf_caches(tmp_path, **kw)['skipped']
+        assert psf_model.generate_all_psf_caches(
+            tmp_path, add_ipc=True, **kw)['generated']
+
+    def test_generate_ignores_legacy_file_for_skip(self, fake_stpsf, tmp_path):
+        _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
+        res = psf_model.generate_all_psf_caches(
+            tmp_path, orders=('1',), detectors=['WFI05'], wavelengths=_WL,
+            spatial_grid=_GRID, verbose=False)
+        assert res['generated'] == [('WFI05', '1')]
+
+    def test_get_or_make_threads_ipc(self, fake_stpsf, tmp_path):
+        with pytest.warns(RuntimeWarning, match="generating"):
+            payload = _lookup(tmp_path, add_ipc=True)
+        assert fake_stpsf.instances[0].options['add_ipc'] is True
+        assert payload['add_ipc'] is True
+        assert (tmp_path / f"{_STEM}_stpsf2.3.0_ipc.npz").exists()
+        fake_stpsf.instances.clear()
+        assert _lookup(tmp_path, add_ipc=True)['add_ipc'] is True
+        assert fake_stpsf.instances == []
+
+    def test_no_cache_dir_threads_ipc(self, fake_stpsf):
+        _lookup(None, add_ipc=True)
+        assert fake_stpsf.instances[0].options['add_ipc'] is True
+
+    @pytest.mark.parametrize("version", ["2.1.0", "2.2.0", "2.3.0rc1"])
+    def test_refuses_old_stpsf_everywhere(self, fake_stpsf, tmp_path, monkeypatch,
+                                          version):
+        monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: version)
+        with pytest.raises(RuntimeError, match=version):
+            psf_model.make_psf_payload(
+                wavelengths=_WL, spatial_grid=_GRID, verbose=False)
+        with pytest.raises(RuntimeError, match=version):
+            psf_model._make_psf_payload_with_progress(
+                'WFI05', '1', _WL, _GRID, 5.0, 4)
+        with pytest.raises(RuntimeError, match=version):
+            psf_model.generate_all_psf_caches(
+                tmp_path, orders=('1',), detectors=['WFI05'], wavelengths=_WL,
+                spatial_grid=_GRID, verbose=False)
+        with pytest.warns(RuntimeWarning, match="generating"):
+            with pytest.raises(RuntimeError, match=version):
+                _lookup(tmp_path)
+        result = psf_model._generate_single_cache(
+            ('WFI05', '1', str(tmp_path / "x.npz"), _WL, _GRID, 5.0, 4, 'GRISM1',
+             False))
+        assert result[2] == 'failed' and version in result[3]
+        assert fake_stpsf.instances == []
+        assert list(tmp_path.glob("*.npz")) == []
+
+    def test_old_stpsf_can_still_load_and_skip(self, fake_stpsf, tmp_path, monkeypatch):
+        monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: "2.1.0")
+        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", False)
+        res = psf_model.generate_all_psf_caches(
+            tmp_path, orders=('1',), detectors=['WFI05'], wavelengths=_WL,
+            spatial_grid=_GRID, verbose=False)
+        assert res['skipped'] == [('WFI05', '1')]
+
+    def test_refuses_without_stpsf_path(self, fake_stpsf, monkeypatch):
+        monkeypatch.delenv('STPSF_PATH')
+        with pytest.raises(RuntimeError, match="STPSF_PATH"):
+            psf_model.make_psf_payload(
+                wavelengths=_WL, spatial_grid=_GRID, verbose=False)
+        assert fake_stpsf.instances == []
+
+    def test_refuses_without_stpsf(self, tmp_path, no_stpsf):
+        with pytest.raises(ModuleNotFoundError, match="not installed"):
+            psf_model.make_psf_payload(
+                wavelengths=_WL, spatial_grid=_GRID, verbose=False)
+
+    def test_newer_stpsf_is_labelled_truthfully(self, fake_stpsf, tmp_path, monkeypatch):
+        monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: "2.4.0")
+        with pytest.warns(RuntimeWarning, match="newer than the target"):
+            psf_model.generate_all_psf_caches(
+                tmp_path, orders=('1',), detectors=['WFI05'], wavelengths=_WL,
+                spatial_grid=_GRID, verbose=False)
+        path = tmp_path / f"{_STEM}_stpsf2.4.0.npz"
+        with np.load(path) as data:
+            assert data['stpsf_version'].item() == b"2.4.0"
+
+
+def _load_script(name):
+    import importlib.util
+    path = Path(__file__).parent.parent / "scripts" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"_script_{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestScripts:
+    @pytest.mark.parametrize("flags,expected,warned", [
+        ([], False, False), (["--no-add-ipc"], False, False),
+        (["--add-ipc"], True, True),
+    ])
+    def test_generate_cli_flag(self, monkeypatch, capsys, tmp_path, flags, expected,
+                               warned):
+        script = _load_script("generate_psf_caches")
+        seen = {}
+
+        def fake(**kwargs):
+            seen.update(kwargs)
+            return {'failed': []}
+        monkeypatch.setattr(script.psf_model, 'generate_all_psf_caches', fake)
+        monkeypatch.setattr(sys, 'argv', ['x', '--cache-dir', str(tmp_path), *flags])
+        with pytest.raises(SystemExit) as stop:
+            script.main()
+        assert stop.value.code == 0
+        assert seen['add_ipc'] is expected
+        assert ("WARNING: --add-ipc" in capsys.readouterr().out) is warned
+
+    def test_generate_cli_old_stpsf_exits_clearly(self, monkeypatch, tmp_path, fake_stpsf):
+        script = _load_script("generate_psf_caches")
+        monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: "2.1.0")
+        monkeypatch.setattr(sys, 'argv', ['x', '--cache-dir', str(tmp_path),
+                                          '--detectors', 'WFI05', '--orders', '1'])
+        with pytest.raises(SystemExit) as stop:
+            script.main()
+        assert "2.1.0" in str(stop.value.code)
+        assert list(tmp_path.glob("*.npz")) == []
+
+    def test_gaussian_script_marks_output(self, monkeypatch, tmp_path, no_stpsf):
+        script = _load_script("make_gaussian_psf_cache")
+        cache = tmp_path / "data" / "psf_cache"
+        cache.mkdir(parents=True)
+        for order in ("GRISM0", "GRISM1"):
+            _fake_cache(cache, f"psf_WFI05_{order}_2x2x2_1.00-1.50um_fov5.0_os4"
+                               "_stpsf2.3.0.npz", "2.3.0", False)
+        monkeypatch.setenv("ROMAN_DISPERSER_DATA", str(tmp_path / "data"))
+        out = tmp_path / "gauss"
+        monkeypatch.setattr(sys, 'argv', ['x', '--out-dir', str(out)])
+        script.main()
+        path = out / f"{_STEM}.npz"
+        with np.load(path) as data:
+            assert data['psf_source'].item() == b"gaussian"
+            assert 'stpsf_version' not in data and 'add_ipc' not in data
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            payload = _lookup(out)
+        assert _version_warnings(record) == []
+        assert payload['psf_source'] == 'gaussian'
+
+    def test_migrate_script_warns(self, tmp_path, no_stpsf):
+        script = _load_script("migrate_psf_caches")
+        path = _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
+        with pytest.warns(psf_model.PSFCacheVersionWarning, match="older"):
+            status, _ = script.migrate_cache_file(path, dry_run=True)
+        assert status == 'skipped'
+
+    def test_hydrate_sca_filter_accepts_new_names(self):
+        from roman_disperser import hydrate
+        files = [(f"{_STEM}_stpsf2.3.0.npz", "u"),
+                 (f"{_STEM}_stpsf2.3.0_ipc.npz", "u"), (f"{_STEM}.npz", "u"),
+                 (_STEM.replace("WFI05", "WFI06") + "_stpsf2.3.0.npz", "u")]
+        assert len(hydrate._filter_sca(files, [5])) == 3
