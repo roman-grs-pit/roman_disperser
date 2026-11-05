@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**STPSF 2.3.0:** PSF caches now target STPSF 2.3.0
+(`psf_model.TARGET_STPSF_VERSION`). Runs on the vendored `psf-v1` caches (STPSF
+2.1.0) still work and render the same images, with a `PSFCacheVersionWarning`.
+Caches made with 2.3.0 change results: the PSF has charge diffusion, 6 mas jitter and the Phase C optical model.
+
+- Cache names carry the version, `..._os4_stpsf2.3.0.npz`, plus `_ipc` for caches
+  with IPC in the PSF. `get_or_make_psf_payload` takes the exact file first, then
+  the newest file of the same configuration with a warning, and generates only
+  if nothing fits. A file known to have the other IPC state is never used.
+- `add_ipc` on every generation path and `--add-ipc / --no-add-ipc` on
+  `generate_psf_caches.py`, default off, stored in the npz and returned as a
+  payload label. With `add_ipc=True` the PSF contains IPC. romanisim >= 0.16.0
+  applies IPC in `make_l1`, so wrapped images would count it twice. The pinned
+  v0.15.0 applies none because of a bug (romanisim #383), so with the default
+  wrapped products contain no IPC until romanisim is upgraded.
+- `PSFCacheVersionWarning` on load, whether or not STPSF is installed: older than
+  the target, no version, filename and metadata disagree, IPC state unknown, or
+  differing from the installed STPSF. One warning per file and message per process.
+- Loading a cache no longer imports STPSF.
+- Generation refuses an STPSF older than the target and an unset `STPSF_PATH`.
+- `make_gaussian_psf_cache.py` marks its output `psf_source = gaussian`.
+- Caches from parallel generation now record `stpsf_filter` (was `unknown`).
+
 **Results change by default:** the driver now runs the interpolating deposit
 with per-order count rebinning (40 / 4 / 2 Å in grism orders 0 / 1 / 2) and
 the star PSF hoist (see *Changed*). `--deposit floor --rebin-dlam none
