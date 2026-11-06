@@ -245,7 +245,29 @@ def _make_wfi(detector, order, stpsf_filter, add_ipc):
     # applies none because of a bug (romanisim #383), so wrapped products have
     # no IPC until romanisim is upgraded.
     wfi.options['add_ipc'] = bool(add_ipc)
+    _use_detector_hf_map(wfi, detector)
     return wfi
+
+
+def _hf_map_name(detector):
+    """Name of a detector's high-frequency wavefront map in the STPSF data."""
+    return f"RST_WFI{int(str(detector)[-2:])}_Z210_high_frequency_map.fits"
+
+
+def _use_detector_hf_map(wfi, detector):
+    """Give STPSF the detector's own high-frequency wavefront map.
+
+    STPSF 2.3.0 keeps WFI01's map on every detector, although its detector setter
+    says it updates it (stpsf/roman.py:804). Refuse to go on if STPSF has changed
+    so that this no longer gives the right map.
+    """
+    if hasattr(wfi, '_opd_file_dict'):
+        wfi._pupilopd = wfi._opd_file_dict[detector]
+    if hasattr(wfi, 'pupilopd'):
+        used = os.path.basename(str(wfi.pupilopd))
+        if used != _hf_map_name(detector):
+            raise RuntimeError(f"STPSF would use the high-frequency map {used} for "
+                               f"{detector}, not {_hf_map_name(detector)}.")
 
 
 def resolve_stpsf_filter(order, stpsf_filter=None):
@@ -419,6 +441,10 @@ def _header_from_npz(data):
         'add_ipc': bool(data['add_ipc']) if 'add_ipc' in data else None,
         'psf_source': (_decode_label(data['psf_source'])
                        if 'psf_source' in data else 'stpsf'),
+        'hf_map': (_decode_label(data['stpsf_hf_map'])
+                   if 'stpsf_hf_map' in data else None),
+        'detector': (_decode_label(data['detector'])
+                     if 'detector' in data else None),
     }
 
 
@@ -767,6 +793,15 @@ def _cache_issues(path, header, fallback_for=None):
             issues.append("it has no add_ipc metadata, so whether IPC is in the "
                           "PSF is unknown (STPSF >= 2.3.0 defaults to on, and "
                           "romanisim >= 0.16.0 applies IPC again when wrapping)")
+        if parsed >= _parse_version(IPC_FIRST_STPSF_VERSION):
+            if header['hf_map'] is None:
+                issues.append("it has no record of its high-frequency map, so it "
+                              "may have WFI01's on every detector, as plain STPSF "
+                              "2.3.0 does")
+            elif (header['detector'] is not None
+                  and header['hf_map'] != _hf_map_name(header['detector'])):
+                issues.append(f"it has the high-frequency map {header['hf_map']}, "
+                              f"not the one for {header['detector']}")
 
     if (header['add_ipc'] is not None and name_version is not None
             and header['add_ipc'] != name_ipc):
@@ -908,6 +943,8 @@ def save_psf_payload(payload, filepath, verbose=True):
     # Absent means unknown, which the loader warns about; never guess here.
     if payload.get('add_ipc') is not None:
         save_dict['add_ipc'] = np.array(bool(payload['add_ipc']))
+    if payload.get('stpsf_hf_map') is not None:
+        save_dict['stpsf_hf_map'] = np.array(payload['stpsf_hf_map'], dtype='S')
     if payload.get('psf_source', 'stpsf') != 'stpsf':
         save_dict['psf_source'] = np.array(payload['psf_source'], dtype='S')
 
@@ -1017,6 +1054,7 @@ def load_psf_payload(filepath, verbose=True, fallback_for=None):
             'stpsf_version': version,
             'add_ipc': add_ipc,
             'psf_source': header['psf_source'],
+            'stpsf_hf_map': header['hf_map'],
         }
 
         # Optional timing info
@@ -1157,6 +1195,7 @@ def _make_psf_payload_with_progress(
         'stpsf_filter': resolve_stpsf_filter(order, stpsf_filter),
         'stpsf_version': stpsf_version,
         'add_ipc': bool(add_ipc),
+        'stpsf_hf_map': _hf_map_name(detector),
         'wavelengths': jnp.array(wavelengths, dtype=jnp.float32),
         'wl_grid': jnp.array(wavelengths, dtype=jnp.float32),
         'spatial_x': jnp.array(x_grid, dtype=jnp.float32),
@@ -1785,6 +1824,7 @@ def make_psf_payload(
         - 'detector': str, detector name
         - 'stpsf_version': str, STPSF version that made the grid (label)
         - 'add_ipc': bool, whether IPC is in the PSFs (label)
+        - 'stpsf_hf_map': str, high-frequency wavefront map used (label)
         - 'wavelengths': jnp.ndarray [N_wl], wavelengths in **microns**
         - 'wl_grid': jnp.ndarray [N_wl], same as wavelengths (for consistency)
         - 'spatial_x': jnp.ndarray [N_x], SCA x-coordinates
@@ -1880,6 +1920,7 @@ def make_psf_payload(
         'stpsf_filter': stpsf_filter,
         'stpsf_version': stpsf_version,
         'add_ipc': bool(add_ipc),
+        'stpsf_hf_map': _hf_map_name(detector),
         'wavelengths': jnp.array(wavelengths, dtype=jnp.float32),
         'wl_grid': jnp.array(wavelengths, dtype=jnp.float32),  # Alias for consistency with optical model
         'spatial_x': jnp.array(spatial_grid['x'], dtype=jnp.float32),
