@@ -316,8 +316,10 @@ Most users hydrate. To rebuild instead:
 
   Other node grids: `--psf-grid NXxNY` (X then Y) and
   `--psf-grid-bounds XMIN,XMAX,YMIN,YMAX` (FITS SCA coordinates, uniform in
-  between, default `1,4088,1,4088`). A range other than the default goes in the
-  filename, e.g. `..._4x4x56_x16-4055_y187-4088_0.90-2.00um_...`. Runs select the
+  between, default `50,4050,202,4088`). The default keeps every node inside the
+  area where STPSF's grism and prism aberrations are defined, on all 18 SCAs. The
+  range goes in the filename, e.g. `..._4x4x56_x50-4050_y202-4088_0.90-2.00um_...`,
+  unless it is the full detector, `1,4088,1,4088`. Runs select the
   same grid with the same two options on `build_dispersed_image.py`, or the config
   keys `psf_grid` and `psf_grid_bounds`.
 

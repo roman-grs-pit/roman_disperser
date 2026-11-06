@@ -2112,7 +2112,7 @@ galaxy_npix: 30
 # -- PSF node grid (optional; defaults shown) ----------------------------------
 # Runs load the exact cache for this grid; see scripts/generate_psf_caches.py.
 # psf_grid: 4x4                         # NXxNY
-# psf_grid_bounds: [1, 4088, 1, 4088]   # XMIN, XMAX, YMIN, YMAX, FITS SCA coordinates
+# psf_grid_bounds: [50, 4050, 202, 4088]   # XMIN, XMAX, YMIN, YMAX, FITS SCA coordinates
 """
 
 
@@ -2619,7 +2619,7 @@ def main():
     parser.add_argument("--psf-grid-bounds", type=str, default=None,
                         metavar="XMIN,XMAX,YMIN,YMAX",
                         help="PSF node range, FITS SCA coordinates (default: "
-                             "1,4088,1,4088). Batch mode reads psf_grid_bounds "
+                             "50,4050,202,4088). Batch mode reads psf_grid_bounds "
                              "from the config instead.")
     parser.add_argument("--cone-radius", type=float, default=0.6,
                         help="Cone search radius in degrees (default: 0.6)")

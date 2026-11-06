@@ -10,7 +10,7 @@
 #   sbatch scripts/slurm_generate_psfs.sh
 #   sbatch --export=ALL,ELEMENT=prism scripts/slurm_generate_psfs.sh
 # Arguments go to generate_psf_caches.py, e.g. for another node grid:
-#   sbatch scripts/slurm_generate_psfs.sh --psf-grid 5x5 --psf-grid-bounds 16,4055,16,4055
+#   sbatch scripts/slurm_generate_psfs.sh --psf-grid 5x5 --psf-grid-bounds 50,4050,202,4088
 #
 # Ported from the prism branch (where it generated the 18 PRISM caches on
 # cpun-2xlg in ~35 min); made element-aware in the prism merge. The time

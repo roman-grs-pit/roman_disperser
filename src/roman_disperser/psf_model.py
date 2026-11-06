@@ -69,9 +69,17 @@ IPC_FIRST_STPSF_VERSION = "2.3.0"
 
 _REGENERATE_ADVICE = "Regenerate with scripts/generate_psf_caches.py."
 
-# Default PSF node grid: uniform over the full detector, in FITS SCA coordinates.
+# Detector range for PSF nodes, in FITS SCA coordinates. A filename without a
+# position tag means a uniform grid over this range.
+FULL_DETECTOR_BOUNDS = (1.0, 4088.0, 1.0, 4088.0)  # XMIN, XMAX, YMIN, YMAX
+
+# Default PSF node grid: uniform inside the area where STPSF has aberrations.
+# GRISM0, GRISM1 and PRISM take theirs from 5 field points per SCA, and outside
+# those points' hull STPSF's fallback jumps from place to place. This rectangle
+# is inside the hull on all 54 SCA and element pairs. A position outside it uses
+# the nearest edge of the grid.
 DEFAULT_PSF_GRID = (4, 4)  # (NX, NY)
-DEFAULT_PSF_GRID_BOUNDS = (1.0, 4088.0, 1.0, 4088.0)  # XMIN, XMAX, YMIN, YMAX
+DEFAULT_PSF_GRID_BOUNDS = (50.0, 4050.0, 202.0, 4088.0)
 
 # A stored float32 position at 4088 has a spacing of 5e-4 px.
 _NODE_TOLERANCE_PX = 5e-3
@@ -115,7 +123,7 @@ def parse_psf_grid_bounds(text):
         raise ValueError(
             f"PSF grid bounds {text!r} are not XMIN,XMAX,YMIN,YMAX")
     xmin, xmax, ymin, ymax = bounds
-    low, high = DEFAULT_PSF_GRID_BOUNDS[:2]
+    low, high = FULL_DETECTOR_BOUNDS[:2]
     if not (xmin < xmax and ymin < ymax):
         raise ValueError(f"PSF grid bounds {text!r} are not ordered: need "
                          f"XMIN < XMAX and YMIN < YMAX")
@@ -133,7 +141,8 @@ def make_spatial_grid(psf_grid=None, psf_grid_bounds=None):
     psf_grid : str or pair, optional
         ``'NXxNY'`` or ``(NX, NY)``. Default: 4x4.
     psf_grid_bounds : str or sequence, optional
-        XMIN, XMAX, YMIN, YMAX in FITS SCA coordinates. Default: full detector.
+        XMIN, XMAX, YMIN, YMAX in FITS SCA coordinates. Default:
+        ``DEFAULT_PSF_GRID_BOUNDS``.
     """
     nx, ny = parse_psf_grid(DEFAULT_PSF_GRID if psf_grid is None else psf_grid)
     xmin, xmax, ymin, ymax = parse_psf_grid_bounds(
@@ -279,7 +288,8 @@ def get_cache_filename(
 
     The filename encodes key parameters to avoid collisions between different
     configurations. Node positions appear whenever they are not uniform over
-    the full detector, e.g. ``..._4x4x56_x16-4055_y187-4088_0.90-2.00um_...``.
+    the full detector, as with the default grid:
+    ``..._4x4x56_x50-4050_y202-4088_0.90-2.00um_...``.
 
     Parameters
     ----------
@@ -365,7 +375,7 @@ def _grid_tag(x_grid, y_grid):
     tag = (f"x{_format_position(x_grid[0])}-{_format_position(x_grid[-1])}_"
            f"y{_format_position(y_grid[0])}-{_format_position(y_grid[-1])}")
     uniform = _is_uniform(x_grid) and _is_uniform(y_grid)
-    low, high = DEFAULT_PSF_GRID_BOUNDS[:2]
+    low, high = FULL_DETECTOR_BOUNDS[:2]
     default = (f"x{low:g}-{high:g}_y{low:g}-{high:g}")
     if uniform and tag == default:
         return ""
@@ -587,12 +597,42 @@ def _cache_request(detector, stpsf_filter, wavelengths, spatial_grid, fov_arcsec
                 fov_arcsec=fov_arcsec, oversample=oversample, add_ipc=bool(add_ipc))
 
 
+def _full_detector_request(request):
+    """A request on the default bounds restated over the full detector, or None."""
+    x_grid, y_grid = request['spatial_grid']['x'], request['spatial_grid']['y']
+    if len(x_grid) < 2 or len(y_grid) < 2:
+        return None
+    counts = (len(x_grid), len(y_grid))
+    default = make_spatial_grid(counts)
+    if not (_same_positions(np.asarray(x_grid), default['x'])
+            and _same_positions(np.asarray(y_grid), default['y'])):
+        return None
+    return dict(request, spatial_grid=make_spatial_grid(counts, FULL_DETECTOR_BOUNDS))
+
+
+def _request_stem(request):
+    return _cache_stem(request['detector'], '1', request['wavelengths'],
+                       request['spatial_grid'], request['fov_arcsec'],
+                       request['oversample'], request['stpsf_filter'])
+
+
 def _non_stpsf_stand_in(cache_dir, stem, request):
     """A deliberate non-STPSF cache (Gaussian) under the bare configuration name.
 
     It has no STPSF version to put in a name, so it cannot be the exact file. It
-    has no IPC either, so it serves only an add_ipc=False request.
+    has no IPC either, so it serves only an add_ipc=False request. A Gaussian
+    does not change across the field, so one made over the full detector serves
+    a request on the default bounds as well.
     """
+    full = _full_detector_request(request)
+    if full is not None:
+        stand_in = _non_stpsf_stand_in_at(cache_dir, _request_stem(full), full)
+        if stand_in is not None:
+            return stand_in
+    return _non_stpsf_stand_in_at(cache_dir, stem, request)
+
+
+def _non_stpsf_stand_in_at(cache_dir, stem, request):
     path = cache_dir / f"{stem}.npz"
     if request['add_ipc'] or not path.exists():
         return None
@@ -640,9 +680,19 @@ def _fallback_cache_files(cache_dir, stem, request):
     legacy one. Dropped: a file with the wrong IPC state, or stored nodes,
     wavelengths or other settings that differ from the request. A file with an
     unreadable header stays in, so that the loader reports what is wrong with it.
+    A request on the default bounds also takes full-detector files, last, since
+    those are the only ones that exist today.
     """
     if os.environ.get(ALLOW_FALLBACK_ENV) != "1" or not cache_dir.is_dir():
         return []
+    ranked = _ranked_fallback_files(cache_dir, stem, request)
+    full = _full_detector_request(request)
+    if full is not None:
+        ranked += _ranked_fallback_files(cache_dir, _request_stem(full), full)
+    return ranked
+
+
+def _ranked_fallback_files(cache_dir, stem, request):
     ranked = []
     for path in cache_dir.iterdir():
         stem_of_file, name_version, name_ipc = _parse_cache_filename(path.name)
@@ -763,7 +813,7 @@ def find_psf_cache_file(cache_dir, detector, stpsf_filter, add_ipc=False,
 
     For scripts that read the npz directly, and for checking before expensive
     work. The rule is the same: the exact file, or `PSFCacheNotFoundError`.
-    Defaults are the 4x4 full-detector grid and, for grism filters, the grism band.
+    Defaults are the default node grid and, for grism filters, the grism band.
 
     Parameters
     ----------
@@ -1211,9 +1261,7 @@ def generate_all_psf_caches(
     wavelengths = np.asarray(wavelengths)
 
     if spatial_grid is None:
-        x_grid = np.linspace(1, 4088, 4)
-        y_grid = np.linspace(1, 4088, 4)
-        spatial_grid = {'x': x_grid, 'y': y_grid}
+        spatial_grid = make_spatial_grid()
 
     # Build list of tasks (detector, order, cache_path)
     tasks = []
@@ -1562,9 +1610,7 @@ def get_or_make_psf_payload(
     wavelengths = np.asarray(wavelengths)
 
     if spatial_grid is None:
-        x_grid = np.linspace(1, 4088, 4)
-        y_grid = np.linspace(1, 4088, 4)
-        spatial_grid = {'x': x_grid, 'y': y_grid}
+        spatial_grid = make_spatial_grid()
 
     # Without a cache_dir there is nothing to look up
     if cache_dir is None:
@@ -1615,7 +1661,13 @@ def get_or_make_psf_payload(
                               RuntimeWarning, stacklevel=2)
                 problems = [f"it is invalid ({e})"] if exact else problems
                 continue
-            _check_loaded_nodes(payload, spatial_grid, candidate)
+            # A stand-in or fallback on the default bounds can be a full-detector file
+            full = None if exact else _full_detector_request(request)
+            if (full is not None and
+                    _parse_cache_filename(candidate.name)[0] == _request_stem(full)):
+                _check_loaded_nodes(payload, full['spatial_grid'], candidate)
+            else:
+                _check_loaded_nodes(payload, spatial_grid, candidate)
             return payload
         if not allow_generate:
             raise _not_found_error(request, cache_path, problems)
@@ -1705,8 +1757,7 @@ def make_psf_payload(
     spatial_grid : dict, optional
         Spatial grid specification: {'x': x_array, 'y': y_array}
         x_array, y_array in SCA coordinates (1-indexed FITS, range 1-4088)
-        Default: 4×4 grid from pixel 1 to 4088 (full detector range)
-        4×4 is sufficient for PSF core accuracy; coarser grids degrade core
+        Default: ``make_spatial_grid()``, 4×4 inside the aberration hull
 
     fov_arcsec : float, optional
         PSF field of view in arcseconds (default: 5.0)
@@ -1793,11 +1844,7 @@ def make_psf_payload(
 
     # Setup default spatial grid
     if spatial_grid is None:
-        # 4×4 grid across full detector range (1 to 4088)
-        # 4×4 is sufficient for PSF core accuracy; STPSF handles edge extrapolation
-        x_grid = np.linspace(1, 4088, 4)
-        y_grid = np.linspace(1, 4088, 4)
-        spatial_grid = {'x': x_grid, 'y': y_grid}
+        spatial_grid = make_spatial_grid()
 
     # Validate spatial grids are strictly increasing
     x_grid = np.asarray(spatial_grid['x'])

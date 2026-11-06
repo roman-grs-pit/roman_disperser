@@ -11,6 +11,8 @@ Tests cover:
 Note: All wavelength parameters are in **microns** (not meters).
 """
 
+import csv
+import os
 import sys
 import warnings
 from pathlib import Path
@@ -1020,7 +1022,7 @@ class TestPSFCaching:
         legacy name, so it takes the temporary fallback.
         """
         monkeypatch.setenv(psf_model.ALLOW_FALLBACK_ENV, "1")
-        grid = psf_model.make_spatial_grid()
+        grid = psf_model.make_spatial_grid("4x4", psf_model.FULL_DETECTOR_BOUNDS)
         monkeypatch.setattr(
             psf_model, 'load_psf_payload',
             lambda path, verbose=True, **kw: {
@@ -1593,6 +1595,45 @@ class TestStrictLookup:
         assert _lookup_grid(tmp_path, grid)['psf_grid'].shape[0] == 4
 
 
+class TestNodeBoundsLookup:
+    """The rule for the default bounds without the temporary fallback."""
+
+    @pytest.fixture(autouse=True)
+    def _no_fallback(self, monkeypatch):
+        monkeypatch.delenv(psf_model.ALLOW_FALLBACK_ENV, raising=False)
+
+    def _write_full(self, directory, name, version=_ABSENT, **kw):
+        grid = psf_model.make_spatial_grid("2x2", psf_model.FULL_DETECTOR_BOUNDS)
+        return _fake_cache(directory, name, version,
+                           spatial_x=grid['x'].astype(np.float32),
+                           spatial_y=grid['y'].astype(np.float32), **kw)
+
+    def test_full_detector_stpsf_file_does_not_serve_default(self, tmp_path, no_stpsf):
+        self._write_full(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", add_ipc=False)
+        with pytest.raises(psf_model.PSFCacheNotFoundError) as info:
+            _lookup_grid(tmp_path, psf_model.make_spatial_grid("2x2"))
+        assert "x50-4050_y202-4088" in str(info.value)
+
+    def test_full_detector_gaussian_serves_default(self, tmp_path, no_stpsf):
+        self._write_full(tmp_path, f"{_STEM}.npz",
+                         psf_source=np.array("gaussian", dtype="S"))
+        with pytest.warns(UserWarning, match="gaussian"):
+            payload = _lookup_grid(tmp_path, psf_model.make_spatial_grid("2x2"))
+        assert payload['psf_source'] == 'gaussian'
+        np.testing.assert_allclose(payload['spatial_x'], [1, 4088])
+
+    def test_command_for_full_detector_names_its_bounds(self, tmp_path, no_stpsf):
+        grid = psf_model.make_spatial_grid("4x4", psf_model.FULL_DETECTOR_BOUNDS)
+        with pytest.raises(psf_model.PSFCacheNotFoundError) as info:
+            psf_model.find_psf_cache_file(tmp_path, 'WFI05', 'GRISM1', spatial_grid=grid)
+        assert "--psf-grid-bounds 1,4088,1,4088" in str(info.value)
+
+    def test_command_for_default_has_no_bounds(self, tmp_path, no_stpsf):
+        with pytest.raises(psf_model.PSFCacheNotFoundError) as info:
+            psf_model.find_psf_cache_file(tmp_path, 'WFI05', 'GRISM1')
+        assert "--psf-grid-bounds" not in str(info.value)
+
+
 class TestFallbackLookup:
     """TEMPORARY: remove once the 54 caches are regenerated on the cluster."""
 
@@ -1654,6 +1695,36 @@ class TestFallbackLookup:
                     spatial_x=np.array([16.0, 4055.0]))
         with pytest.raises(psf_model.PSFCacheNotFoundError):
             _lookup(tmp_path)
+
+    def _full_detector_legacy(self, directory, **kw):
+        grid = psf_model.make_spatial_grid("2x2", psf_model.FULL_DETECTOR_BOUNDS)
+        return _fake_cache(directory, f"{_STEM}.npz", "2.1.0",
+                           spatial_x=grid['x'].astype(np.float32),
+                           spatial_y=grid['y'].astype(np.float32), **kw)
+
+    def test_default_bounds_use_a_full_detector_file(self, tmp_path, no_stpsf):
+        """Today's files have the old nodes; they keep them, with a warning."""
+        self._full_detector_legacy(tmp_path)
+        grid = psf_model.make_spatial_grid("2x2")
+        with pytest.warns(psf_model.PSFCacheVersionWarning, match="used in place of"):
+            payload = _lookup_grid(tmp_path, grid)
+        np.testing.assert_allclose(payload['spatial_x'], [1, 4088])
+
+    def test_default_bounds_prefer_their_own_file(self, tmp_path, no_stpsf):
+        self._full_detector_legacy(tmp_path, marker=1.0)
+        grid = psf_model.make_spatial_grid("2x2")
+        name = psf_model.get_cache_filename(
+            'WFI05', '1', _WL, grid, 5.0, 4, stpsf_filter='GRISM1')
+        _fake_cache(tmp_path, name, "2.3.0", False, marker=2.0,
+                    spatial_x=grid['x'].astype(np.float32),
+                    spatial_y=grid['y'].astype(np.float32))
+        assert _marker(_lookup_grid(tmp_path, grid)) == 2.0
+
+    def test_other_bounds_do_not_use_a_full_detector_file(self, tmp_path, no_stpsf):
+        self._full_detector_legacy(tmp_path)
+        grid = psf_model.make_spatial_grid("2x2", "16,4055,187,4088")
+        with pytest.raises(psf_model.PSFCacheNotFoundError):
+            _lookup_grid(tmp_path, grid)
 
     def test_invalid_candidate_falls_through(self, tmp_path, no_stpsf):
         (tmp_path / f"{_STEM}_stpsf2.2.0.npz").write_bytes(b"not an npz")
@@ -1920,10 +1991,31 @@ class TestGridOption:
         with pytest.raises(ValueError):
             psf_model.parse_psf_grid_bounds(text)
 
-    def test_default_grid_equals_historic_default(self):
+    def test_default_grid_is_inside_the_aberration_hull(self):
         grid = psf_model.make_spatial_grid()
-        np.testing.assert_array_equal(grid['x'], np.linspace(1, 4088, 4))
-        np.testing.assert_array_equal(grid['y'], np.linspace(1, 4088, 4))
+        np.testing.assert_array_equal(grid['x'], np.linspace(50, 4050, 4))
+        np.testing.assert_array_equal(grid['y'], np.linspace(202, 4088, 4))
+
+    @pytest.mark.parametrize("element", ["GRISM0", "GRISM1", "PRISM"])
+    def test_default_bounds_inside_every_field_point_hull(self, element):
+        """No default node may be in STPSF's fallback, on any SCA."""
+        interpolate = pytest.importorskip("scipy.interpolate")
+        table = Path(os.environ.get("STPSF_PATH", "")) / (
+            f"WFI/aberrations/{element}_5fields_zernike_Z45_multiwavelength.csv")
+        if not table.is_file():
+            pytest.skip("needs the STPSF 2.3.0 data package")
+        with open(table, encoding="utf-8-sig") as handle:
+            rows = list(csv.DictReader(handle))
+        xmin, xmax, ymin, ymax = psf_model.DEFAULT_PSF_GRID_BOUNDS
+        # STPSF science coordinates are FITS SCA coordinates + 3
+        corners = [(x + 3, y + 3) for x in (xmin, xmax) for y in (ymin, ymax)]
+        for sca in range(1, 19):
+            points = sorted({(float(r['SCI_X']), float(r['SCI_Y']))
+                             for r in rows if int(float(r['sca'])) == sca})
+            assert len(points) == 5
+            values = interpolate.griddata(points, np.arange(5.0), corners,
+                                          method='linear')
+            assert np.all(np.isfinite(values)), f"SCA {sca}"
 
     def test_uniform_spacing_and_axes(self):
         grid = psf_model.make_spatial_grid("3x5", "100,300,1000,2000")
@@ -1935,16 +2027,25 @@ class TestGridOption:
     def _name(self, grid, **kw):
         return psf_model.get_cache_filename('WFI05', '1', self.WL, grid, 5.0, 4, **kw)
 
-    def test_default_range_name_unchanged(self):
+    def test_default_range_in_name(self):
         assert self._name(psf_model.make_spatial_grid()) == (
-            "psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4_stpsf2.3.0.npz")
+            "psf_WFI05_GRISM1_4x4x56_x50-4050_y202-4088_0.90-2.00um_fov5.0_os4"
+            "_stpsf2.3.0.npz")
         assert self._name(psf_model.make_spatial_grid("5x5")) == (
-            "psf_WFI05_GRISM1_5x5x56_0.90-2.00um_fov5.0_os4_stpsf2.3.0.npz")
+            "psf_WFI05_GRISM1_5x5x56_x50-4050_y202-4088_0.90-2.00um_fov5.0_os4"
+            "_stpsf2.3.0.npz")
 
     def test_default_range_in_float32_name_unchanged(self):
         grid = psf_model.make_spatial_grid()
-        grid = {k: v.astype(np.float32) for k, v in grid.items()}
-        assert "_4x4x56_0.90" in self._name(grid)
+        as_float32 = {k: v.astype(np.float32) for k, v in grid.items()}
+        assert self._name(as_float32) == self._name(grid)
+
+    def test_full_detector_has_no_tag(self):
+        grid = psf_model.make_spatial_grid("4x4", psf_model.FULL_DETECTOR_BOUNDS)
+        assert self._name(grid) == (
+            "psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4_stpsf2.3.0.npz")
+        as_float32 = {k: v.astype(np.float32) for k, v in grid.items()}
+        assert "_4x4x56_0.90" in self._name(as_float32)
 
     def test_bounds_in_name(self):
         grid = psf_model.make_spatial_grid("4x4", "16,4055,187,4088")
@@ -2284,7 +2385,8 @@ class TestScripts:
         monkeypatch.setattr(sys, 'argv', ['x', '--cache-dir', str(tmp_path)])
         with pytest.raises(SystemExit):
             script.main()
-        np.testing.assert_array_equal(seen['spatial_grid']['x'], np.linspace(1, 4088, 4))
+        np.testing.assert_array_equal(seen['spatial_grid']['x'], np.linspace(50, 4050, 4))
+        np.testing.assert_array_equal(seen['spatial_grid']['y'], np.linspace(202, 4088, 4))
 
     @pytest.mark.parametrize("flags", [
         ['--psf-grid', '5'], ['--psf-grid', '1x5'],
@@ -2322,7 +2424,8 @@ class TestScripts:
         for order in ("GRISM0", "GRISM1"):
             self._default_cache(cache, order)
         script.main()
-        path = out / "psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4.npz"
+        path = out / ("psf_WFI05_GRISM1_4x4x56_x50-4050_y202-4088_0.90-2.00um"
+                      "_fov5.0_os4.npz")
         with np.load(path) as data:
             assert data['psf_source'].item() == b"gaussian"
             assert 'stpsf_version' not in data and 'add_ipc' not in data
@@ -2422,7 +2525,8 @@ class TestDriverGrid:
         with pytest.raises(psf_model.PSFCacheNotFoundError) as info:
             bdi.setup_pipeline([5], psf_cache_dir=paths_only)
         message = str(info.value)
-        assert "psf_WFI05_GRISM0_4x4x56_0.90-2.00um_fov5.0_os4_stpsf2.3.0.npz" in message
+        assert ("psf_WFI05_GRISM0_4x4x56_x50-4050_y202-4088_0.90-2.00um_fov5.0_os4"
+                "_stpsf2.3.0.npz") in message
         assert "--detectors WFI05 --orders 0" in message
 
     def test_setup_passes_grid_to_the_check(self, bdi, paths_only):

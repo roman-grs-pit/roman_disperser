@@ -22,7 +22,8 @@ Options:
     --psf-grid NXxNY    Spatial nodes per axis (default: 4x4)
     --psf-grid-bounds XMIN,XMAX,YMIN,YMAX
                         Node range, FITS SCA coordinates, uniform in between
-                        (default: 1,4088,1,4088). Other ranges go in the filename.
+                        (default: 50,4050,202,4088). The range goes in the
+                        filename unless it is the full detector, 1,4088,1,4088.
     --add-ipc           Put IPC in the PSFs (default off). romanisim >= 0.16.0
                         applies IPC in make_l1, so wrapped images would count
                         it twice. The pinned v0.15.0 applies none because of a
@@ -104,7 +105,9 @@ def main():
         '--psf-grid-bounds', type=_arg(psf_model.parse_psf_grid_bounds),
         default=None, metavar='XMIN,XMAX,YMIN,YMAX',
         help='Node range in FITS SCA coordinates, uniform in between (default: '
-             '1,4088,1,4088). Other ranges go in the filename.'
+             '50,4050,202,4088, inside the area where STPSF has aberrations). '
+             'The range goes in the filename unless it is the full detector, '
+             '1,4088,1,4088.'
     )
     parser.add_argument(
         '--add-ipc', action=argparse.BooleanOptionalAction, default=False,
