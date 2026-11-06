@@ -29,7 +29,7 @@ Usage:
     >>> # With caching (recommended for repeated use):
     >>> payload = psf_model.get_or_make_psf_payload(
     ...     detector='WFI05', order='1', cache_dir='data/psf_cache'
-    ... )
+    ... )  # exact file or PSFCacheNotFoundError; see scripts/generate_psf_caches.py
 
 Note: All wavelength parameters are in **microns** (consistent with optical model).
 
@@ -41,9 +41,11 @@ See Also:
 import importlib.metadata
 import os
 import re
+import shlex
 import time
 import warnings
 import zipfile
+import zlib
 from pathlib import Path
 import numpy as np
 import jax.numpy as jnp
@@ -67,9 +69,76 @@ IPC_FIRST_STPSF_VERSION = "2.3.0"
 
 _REGENERATE_ADVICE = "Regenerate with scripts/generate_psf_caches.py."
 
+# Default PSF node grid: uniform over the full detector, in FITS SCA coordinates.
+DEFAULT_PSF_GRID = (4, 4)  # (NX, NY)
+DEFAULT_PSF_GRID_BOUNDS = (1.0, 4088.0, 1.0, 4088.0)  # XMIN, XMAX, YMIN, YMAX
+
+# A stored float32 position at 4088 has a spacing of 5e-4 px.
+_NODE_TOLERANCE_PX = 5e-3
+# A stored float32 wavelength at 2 um has a spacing of 2.4e-7 um.
+_WAVELENGTH_TOLERANCE_UM = 1e-5
+
+# TEMPORARY: remove once the 54 caches are regenerated on the cluster
+ALLOW_FALLBACK_ENV = "ROMAN_DISPERSER_ALLOW_PSF_FALLBACK"
+
 
 class PSFCacheVersionWarning(UserWarning):
     """A PSF cache's STPSF version or IPC state is stale, unknown or inconsistent."""
+
+
+class PSFCacheNotFoundError(FileNotFoundError):
+    """The exact PSF cache for a request is missing or is not what its name says."""
+
+
+def parse_psf_grid(text):
+    """``'5x4'`` -> ``(5, 4)``, meaning (NX, NY). Accepts a pair as well."""
+    if isinstance(text, str):
+        m = re.fullmatch(r"\s*(\d+)\s*[xX]\s*(\d+)\s*", text)
+        if m is None:
+            raise ValueError(f"PSF grid {text!r} is not of the form NXxNY, e.g. 5x5")
+        nx, ny = int(m.group(1)), int(m.group(2))
+    else:
+        nx, ny = (int(n) for n in text)
+    if nx < 2 or ny < 2:
+        raise ValueError(f"PSF grid needs at least 2 nodes per axis, got {nx}x{ny}")
+    return nx, ny
+
+
+def parse_psf_grid_bounds(text):
+    """``'16,4055,187,4088'`` -> XMIN, XMAX, YMIN, YMAX; validated. Accepts a sequence."""
+    parts = text.split(",") if isinstance(text, str) else text
+    try:
+        bounds = tuple(float(v) for v in parts)
+    except (TypeError, ValueError):
+        raise ValueError(f"PSF grid bounds {text!r} are not numbers") from None
+    if len(bounds) != 4:
+        raise ValueError(
+            f"PSF grid bounds {text!r} are not XMIN,XMAX,YMIN,YMAX")
+    xmin, xmax, ymin, ymax = bounds
+    low, high = DEFAULT_PSF_GRID_BOUNDS[:2]
+    if not (xmin < xmax and ymin < ymax):
+        raise ValueError(f"PSF grid bounds {text!r} are not ordered: need "
+                         f"XMIN < XMAX and YMIN < YMAX")
+    if min(bounds) < low or max(bounds) > high:
+        raise ValueError(f"PSF grid bounds {text!r} leave the detector: FITS SCA "
+                         f"coordinates run from {low:g} to {high:g}")
+    return bounds
+
+
+def make_spatial_grid(psf_grid=None, psf_grid_bounds=None):
+    """Uniform node positions ``{'x', 'y'}`` from node counts and bounds.
+
+    Parameters
+    ----------
+    psf_grid : str or pair, optional
+        ``'NXxNY'`` or ``(NX, NY)``. Default: 4x4.
+    psf_grid_bounds : str or sequence, optional
+        XMIN, XMAX, YMIN, YMAX in FITS SCA coordinates. Default: full detector.
+    """
+    nx, ny = parse_psf_grid(DEFAULT_PSF_GRID if psf_grid is None else psf_grid)
+    xmin, xmax, ymin, ymax = parse_psf_grid_bounds(
+        DEFAULT_PSF_GRID_BOUNDS if psf_grid_bounds is None else psf_grid_bounds)
+    return {'x': np.linspace(xmin, xmax, nx), 'y': np.linspace(ymin, ymax, ny)}
 
 
 # Messages already shown in this process. A run reloads the same files (warm-up,
@@ -140,8 +209,9 @@ def _require_stpsf_for_generation():
     if parsed > target:
         warnings.warn(
             f"Generating PSFs with STPSF {installed}, newer than the target "
-            f"{TARGET_STPSF_VERSION}. The file is labelled {installed}; bump "
-            f"psf_model.TARGET_STPSF_VERSION if this version is adopted.",
+            f"{TARGET_STPSF_VERSION}. The file is labelled {installed}, and "
+            f"runs will not use it until psf_model.TARGET_STPSF_VERSION is "
+            f"bumped to that version.",
             RuntimeWarning, stacklevel=2)
     return installed
 
@@ -208,7 +278,8 @@ def get_cache_filename(
     Generate a standardized cache filename for a PSF payload.
 
     The filename encodes key parameters to avoid collisions between different
-    configurations.
+    configurations. Node positions appear whenever they are not uniform over
+    the full detector, e.g. ``..._4x4x56_x16-4055_y187-4088_0.90-2.00um_...``.
 
     Parameters
     ----------
@@ -269,8 +340,39 @@ def _cache_stem(detector, order, wavelengths, spatial_grid, fov_arcsec,
 
     return (
         f"psf_{detector}_{filter_name}_{n_y}x{n_x}x{n_wl}_"
+        f"{_grid_tag(x_grid, y_grid)}"
         f"{wl_min:.2f}-{wl_max:.2f}um_fov{fov_arcsec:.1f}_os{oversample}"
     )
+
+
+def _format_position(value):
+    """Position for a filename: 2 decimals, no trailing zeros."""
+    return f"{float(value):.2f}".rstrip("0").rstrip(".")
+
+
+def _is_uniform(values):
+    steps = np.diff(values)
+    return len(steps) < 2 or bool(np.allclose(steps, steps[0], atol=0.01, rtol=0))
+
+
+def _grid_tag(x_grid, y_grid):
+    """Filename part for node positions; empty for uniform over the full detector.
+
+    Bounds and count fix a uniform grid. A non-uniform one adds a checksum of its
+    positions, since its bounds and count do not fix it. Positions closer than the
+    rounding share a name; the check of stored positions on load catches that.
+    """
+    tag = (f"x{_format_position(x_grid[0])}-{_format_position(x_grid[-1])}_"
+           f"y{_format_position(y_grid[0])}-{_format_position(y_grid[-1])}")
+    uniform = _is_uniform(x_grid) and _is_uniform(y_grid)
+    low, high = DEFAULT_PSF_GRID_BOUNDS[:2]
+    default = (f"x{low:g}-{high:g}_y{low:g}-{high:g}")
+    if uniform and tag == default:
+        return ""
+    if not uniform:
+        rounded = np.round(np.concatenate([x_grid, y_grid]), 2).astype(np.float64)
+        tag += f"_nu{zlib.crc32(rounded.tobytes()):08x}"
+    return tag + "_"
 
 
 _CACHE_NAME_RE = re.compile(
@@ -319,6 +421,192 @@ def _read_cache_header(path):
         return None
 
 
+def _read_cache_config(path):
+    """What a cache file says about itself; None if it cannot be read."""
+    required = ('psf_grid', 'wavelengths', 'spatial_x', 'spatial_y', 'oversample',
+                'detector', 'order')
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            config = _header_from_npz(data)
+            config['missing'] = [k for k in required if k not in data]
+            if config['missing']:
+                return config
+            config['spatial_x'] = np.asarray(data['spatial_x'], dtype=np.float64)
+            config['spatial_y'] = np.asarray(data['spatial_y'], dtype=np.float64)
+            config['wavelengths'] = np.asarray(data['wavelengths'], dtype=np.float64)
+            config['oversample'] = int(data['oversample'])
+            config['fov_arcsec'] = (float(data['fov_arcsec'])
+                                    if 'fov_arcsec' in data else None)
+            config['detector'] = _decode_label(data['detector'])
+            config['stpsf_filter'] = (_decode_label(data['stpsf_filter'])
+                                      if 'stpsf_filter' in data else 'unknown')
+            return config
+    except (ValueError, KeyError, OSError, EOFError, zipfile.BadZipFile):
+        return None
+
+
+def _same_positions(stored, requested):
+    requested = np.asarray(requested, dtype=np.float64)
+    return (stored.shape == requested.shape
+            and bool(np.allclose(stored, requested, atol=_NODE_TOLERANCE_PX, rtol=0)))
+
+
+def _config_mismatches(config, request):
+    """How a file's stored configuration differs from a request."""
+    problems = []
+    if config['missing']:
+        return [f"it lacks the fields {config['missing']}"]
+    if not _same_positions(config['spatial_x'], request['spatial_grid']['x']):
+        problems.append(f"its stored x nodes are {config['spatial_x'].tolist()}, "
+                        f"not {np.asarray(request['spatial_grid']['x']).tolist()}")
+    if not _same_positions(config['spatial_y'], request['spatial_grid']['y']):
+        problems.append(f"its stored y nodes are {config['spatial_y'].tolist()}, "
+                        f"not {np.asarray(request['spatial_grid']['y']).tolist()}")
+    requested_wl = np.asarray(request['wavelengths'], dtype=np.float64)
+    if (config['wavelengths'].shape != requested_wl.shape
+            or not np.allclose(config['wavelengths'], requested_wl,
+                               atol=_WAVELENGTH_TOLERANCE_UM, rtol=0)):
+        problems.append("its stored wavelengths differ from the request")
+    if config['oversample'] != request['oversample']:
+        problems.append(f"its stored oversample is {config['oversample']}")
+    if (config['fov_arcsec'] is not None
+            and abs(config['fov_arcsec'] - request['fov_arcsec']) > 1e-3):
+        problems.append(f"its stored fov_arcsec is {config['fov_arcsec']:g}")
+    if config['detector'] != request['detector']:
+        problems.append(f"its stored detector is {config['detector']}")
+    if config['stpsf_filter'] not in ('unknown', request['stpsf_filter']):
+        problems.append(f"its stored STPSF filter is {config['stpsf_filter']}")
+    return problems
+
+
+def _exact_file_problems(path, request):
+    """Why an exact-named file is not the right file; empty if it is."""
+    config = _read_cache_config(path)
+    if config is None:
+        return ["it cannot be read as a PSF cache"]
+    problems = _config_mismatches(config, request)
+    _, name_version, name_ipc = _parse_cache_filename(path.name)
+    if config['version'] is None:
+        problems.append("its metadata has no STPSF version")
+    elif _parse_version(config['version']) != _parse_version(name_version):
+        problems.append(f"its filename says STPSF {name_version} but its metadata "
+                        f"says {config['version']}")
+    if config['add_ipc'] is None:
+        problems.append("it has no add_ipc metadata")
+    elif config['add_ipc'] != name_ipc:
+        problems.append(f"its filename says IPC {'on' if name_ipc else 'off'} but "
+                        f"its metadata says add_ipc={config['add_ipc']}")
+    return problems
+
+
+def _generation_command(request, cache_path, exists):
+    """The command that makes the requested file, or how to do it if none can."""
+    from roman_disperser.elements import GRISM, PRISM, psf_cache_wavelengths
+
+    x_grid = np.asarray(request['spatial_grid']['x'], dtype=np.float64)
+    y_grid = np.asarray(request['spatial_grid']['y'], dtype=np.float64)
+    wavelengths = np.asarray(request['wavelengths'], dtype=np.float64)
+    for element in (GRISM, PRISM):
+        orders = [o for o, f in element.stpsf_filters.items()
+                  if f == request['stpsf_filter']]
+        if orders:
+            break
+    else:
+        orders, element = [], None
+    if element is not None:
+        band = np.asarray(psf_cache_wavelengths(element), dtype=np.float64)
+    if (element is None or band.shape != wavelengths.shape
+            or not np.allclose(band, wavelengths, atol=_WAVELENGTH_TOLERANCE_UM, rtol=0)
+            or request['fov_arcsec'] != 5.0 or request['oversample'] != 4
+            or not (_is_uniform(x_grid) and _is_uniform(y_grid))):
+        return ("psf_model.generate_all_psf_caches(...) with this configuration; "
+                "scripts/generate_psf_caches.py makes only uniform grids of the "
+                "element's band at fov 5.0 and oversample 4")
+    command = ["python", "scripts/generate_psf_caches.py",
+               "--cache-dir", shlex.quote(str(cache_path.parent)),
+               "--element", element.name.lower(),
+               "--detectors", request['detector'], "--orders", orders[0]]
+    if (len(x_grid), len(y_grid)) != DEFAULT_PSF_GRID:
+        command += ["--psf-grid", f"{len(x_grid)}x{len(y_grid)}"]
+    bounds = (x_grid[0], x_grid[-1], y_grid[0], y_grid[-1])
+    if not np.allclose(bounds, DEFAULT_PSF_GRID_BOUNDS, atol=_NODE_TOLERANCE_PX, rtol=0):
+        command += ["--psf-grid-bounds", ",".join(f"{v:.10g}" for v in bounds)]
+    if request['add_ipc']:
+        command.append("--add-ipc")
+    if exists:
+        command.append("--no-skip")
+    return " ".join(command)
+
+
+def _describe_other_files(cache_dir, request, exclude):
+    """One line per other cache of the same detector and filter."""
+    prefix = f"psf_{request['detector']}_{request['stpsf_filter']}_"
+    lines = []
+    for path in sorted(cache_dir.glob(f"{prefix}*.npz")) if cache_dir.is_dir() else []:
+        if path.name == exclude:
+            continue
+        config = _read_cache_config(path)
+        if config is None or config['missing']:
+            lines.append(f"    {path.name} (not readable as a PSF cache)")
+            continue
+        version = config['version'] or 'none recorded'
+        ipc = 'unknown' if config['add_ipc'] is None else config['add_ipc']
+        lines.append(f"    {path.name} (STPSF {version}, add_ipc {ipc}, "
+                     f"{config['spatial_x'].size}x{config['spatial_y'].size} nodes)")
+    return lines
+
+
+def _not_found_error(request, cache_path, problems=None):
+    """Error naming the missing file, the command for it, and what is there."""
+    exists = cache_path.exists()
+    lines = [f"PSF cache not usable: {cache_path}"]
+    if problems:
+        lines.append("  The file exists, but it is not the right file: "
+                     + "; ".join(problems) + ".")
+    else:
+        lines.append("  The file does not exist. No other file is used in its "
+                     "place, and nothing is generated.")
+    lines.append("  Generate it with STPSF "
+                 f"{TARGET_STPSF_VERSION} and STPSF_PATH set (see INSTALL.md):")
+    lines.append("    " + _generation_command(request, cache_path, exists))
+    others = _describe_other_files(cache_path.parent, request, cache_path.name)
+    if others:
+        lines.append(f"  Other files for {request['detector']} "
+                     f"{request['stpsf_filter']} in this directory, not used:")
+        lines.extend(others)
+        # TEMPORARY: remove once the 54 caches are regenerated on the cluster
+        lines.append(f"  To use the best file of the same configuration for now, "
+                     f"with a warning, set {ALLOW_FALLBACK_ENV}=1.")
+    return PSFCacheNotFoundError("\n".join(lines))
+
+
+def _cache_request(detector, stpsf_filter, wavelengths, spatial_grid, fov_arcsec,
+                   oversample, add_ipc):
+    return dict(detector=detector, stpsf_filter=stpsf_filter,
+                wavelengths=np.asarray(wavelengths), spatial_grid=spatial_grid,
+                fov_arcsec=fov_arcsec, oversample=oversample, add_ipc=bool(add_ipc))
+
+
+def _non_stpsf_stand_in(cache_dir, stem, request):
+    """A deliberate non-STPSF cache (Gaussian) under the bare configuration name.
+
+    It has no STPSF version to put in a name, so it cannot be the exact file. It
+    has no IPC either, so it serves only an add_ipc=False request.
+    """
+    path = cache_dir / f"{stem}.npz"
+    if request['add_ipc'] or not path.exists():
+        return None
+    config = _read_cache_config(path)
+    if (config is None or config['psf_source'] == 'stpsf'
+            or _config_mismatches(config, request)):
+        return None
+    return path
+
+
+# ---- TEMPORARY: remove once the 54 caches are regenerated on the cluster ----
+# Everything down to the END marker, the ALLOW_FALLBACK_ENV constant, its use in
+# _resolve_cache_files, the hint in _not_found_error, and the fallback_for
+# argument of load_psf_payload and _cache_issues.
 def _cache_ipc_state(name, header):
     """Is IPC in this file, for matching a request? True, False, or None if unknown.
 
@@ -344,31 +632,54 @@ def _cache_ipc_state(name, header):
     return None
 
 
-def _rank_cache_candidates(paths, add_ipc):
-    """Order cache files for a request; drop those with the wrong IPC state.
+def _fallback_cache_files(cache_dir, stem, request):
+    """Files of the same configuration, best first, if the environment allows it.
 
-    Returns ``(usable, ignored)``. ``usable`` has the exact target file first,
-    then the newest STPSF version; at equal version a known IPC state beats an
-    unknown one and a versioned name beats a legacy one. A file with an
+    The exact target file comes first, then the newest STPSF version; at equal
+    version a known IPC state beats an unknown one and a versioned name beats a
+    legacy one. Dropped: a file with the wrong IPC state, or stored nodes,
+    wavelengths or other settings that differ from the request. A file with an
     unreadable header stays in, so that the loader reports what is wrong with it.
     """
+    if os.environ.get(ALLOW_FALLBACK_ENV) != "1" or not cache_dir.is_dir():
+        return []
     ranked = []
-    ignored = []
-    for path in paths:
-        _, name_version, name_ipc = _parse_cache_filename(path.name)
-        header = _read_cache_header(path)
-        state = _cache_ipc_state(path.name, header)
-        if state is not None and state != bool(add_ipc):
-            ignored.append(path.name)
+    for path in cache_dir.iterdir():
+        stem_of_file, name_version, name_ipc = _parse_cache_filename(path.name)
+        if stem_of_file != stem:
             continue
-        version = (header['version'] if header is not None else None) or name_version
+        config = _read_cache_config(path)
+        if config is not None and _config_mismatches(config, request):
+            continue
+        state = _cache_ipc_state(path.name, config)
+        if state is not None and state != request['add_ipc']:
+            continue
+        version = (config['version'] if config is not None else None) or name_version
         exact = (name_version == TARGET_STPSF_VERSION
-                 and name_ipc == bool(add_ipc))
+                 and name_ipc == request['add_ipc'])
         key = (exact, _parse_version(version) or (), state is not None,
                name_version is not None, path.name)
         ranked.append((key, path))
     ranked.sort(key=lambda item: item[0], reverse=True)
-    return [path for _, path in ranked], sorted(ignored)
+    return [path for _, path in ranked]
+# ---- END TEMPORARY ----------------------------------------------------------
+
+
+def _resolve_cache_files(cache_dir, filename, stem, request):
+    """Files that may serve a request, best first, and the exact file's problems.
+
+    Strictly this is the exact file or nothing.
+    """
+    exact = cache_dir / filename
+    problems = None
+    if exact.exists():
+        problems = _exact_file_problems(exact, request)
+        if not problems:
+            return [exact], None
+    stand_in = _non_stpsf_stand_in(cache_dir, stem, request)
+    if stand_in is not None:
+        return [stand_in], None
+    return _fallback_cache_files(cache_dir, stem, request), problems
 
 
 def _cache_issues(path, header, fallback_for=None):
@@ -446,28 +757,37 @@ def check_psf_cache_file(path):
 
 
 def find_psf_cache_file(cache_dir, detector, stpsf_filter, add_ipc=False,
-                        warn=True):
-    """Best cache file for a detector and filter, whatever its grid.
+                        wavelengths=None, spatial_grid=None, fov_arcsec=5.0,
+                        oversample=4, warn=True):
+    """Path of the cache `get_or_make_psf_payload` would load for this request.
 
-    For scripts that know the SCA and filter but not the wavelength grid. The
-    order is that of `get_or_make_psf_payload`: exact target version first, then
-    the newest, and never a file with the wrong IPC state.
+    For scripts that read the npz directly, and for checking before expensive
+    work. The rule is the same: the exact file, or `PSFCacheNotFoundError`.
+    Defaults are the 4x4 full-detector grid and, for grism filters, the grism band.
 
-    Raises
-    ------
-    FileNotFoundError
-        If no file matches.
+    Parameters
+    ----------
+    warn : bool, optional
+        Give the load-time version and IPC warning for the file found.
     """
+    if wavelengths is None:
+        if not str(stpsf_filter).startswith("GRISM"):
+            raise ValueError(f"stpsf_filter={stpsf_filter!r} needs wavelengths: "
+                             f"the default is the grism band.")
+        wavelengths = np.arange(0.9, 2.01, 0.02)
+    if spatial_grid is None:
+        spatial_grid = make_spatial_grid()
     cache_dir = Path(cache_dir)
-    prefix = f"psf_{detector}_{stpsf_filter}_"
-    paths = [p for p in sorted(cache_dir.glob(f"{prefix}*.npz"))
-             if _parse_cache_filename(p.name)[0] is not None]
-    usable, ignored = _rank_cache_candidates(paths, add_ipc)
+    request = _cache_request(detector, stpsf_filter, wavelengths, spatial_grid,
+                             fov_arcsec, oversample, add_ipc)
+    filename = get_cache_filename(detector, '1', wavelengths, spatial_grid,
+                                  fov_arcsec, oversample, stpsf_filter=stpsf_filter,
+                                  add_ipc=add_ipc)
+    stem = _cache_stem(detector, '1', wavelengths, spatial_grid, fov_arcsec,
+                       oversample, stpsf_filter)
+    usable, problems = _resolve_cache_files(cache_dir, filename, stem, request)
     if not usable:
-        extra = f" (wrong IPC state: {ignored})" if ignored else ""
-        raise FileNotFoundError(
-            f"No PSF cache {prefix}*.npz with add_ipc={bool(add_ipc)} in "
-            f"{cache_dir}{extra}.")
+        raise _not_found_error(request, cache_dir / filename, problems)
     if warn:
         check_psf_cache_file(usable[0])
     return usable[0]
@@ -1085,6 +1405,17 @@ def generate_all_psf_caches(
     }
 
 
+def _check_loaded_nodes(payload, spatial_grid, path):
+    """Refuse a payload whose node positions are not the requested ones."""
+    for axis, key in (('x', 'spatial_x'), ('y', 'spatial_y')):
+        if not _same_positions(np.asarray(payload[key], dtype=np.float64),
+                               spatial_grid[axis]):
+            raise ValueError(
+                f"PSF cache {path} has {axis} nodes "
+                f"{np.asarray(payload[key]).tolist()}, but "
+                f"{np.asarray(spatial_grid[axis]).tolist()} were requested.")
+
+
 def get_or_make_psf_payload(
     detector='WFI05',
     order='1',
@@ -1098,12 +1429,12 @@ def get_or_make_psf_payload(
     verbose=True,
     element=None,
     add_ipc=False,
+    allow_generate=False,
 ):
     """
-    Get a PSF payload, loading from cache if available or generating if not.
+    Load the exact PSF cache for a request, and generate only if told to.
 
-    This is the recommended function for typical usage. It automatically
-    handles caching to avoid regenerating PSF grids on every run.
+    This is the recommended function for typical usage.
 
     The PSF cache is selected by ``(detector, stpsf_filter, wavelengths,
     grid config)``, and ``stpsf_filter`` + ``wavelengths`` must describe the
@@ -1112,15 +1443,18 @@ def get_or_make_psf_payload(
     them consistent by hand, pass ``element=``: the dispersing element
     derives both, so the wrong combination cannot be expressed.
 
-    Within ``cache_dir`` the exact file for ``TARGET_STPSF_VERSION`` and
-    ``add_ipc`` comes first. Failing that, the newest file of the same
-    configuration (another version, or the legacy unversioned name) is loaded
-    with a `PSFCacheVersionWarning`, rather than launching a regeneration of
-    hours. A file known to have the other IPC state is never used. A legacy name
-    stamped < 2.3.0, or with no version at all, counts as IPC off; a legacy name
-    stamped >= 2.3.0 with no add_ipc metadata is unknown, so it can serve either
-    request, with a warning saying so. Generation happens only if nothing is
-    left.
+    The request (detector, filter, wavelengths, node positions, FOV, oversample,
+    ``TARGET_STPSF_VERSION``, ``add_ipc``) fixes one filename in ``cache_dir``. That
+    file must exist and its metadata must agree with the request: version, add_ipc
+    and node positions. Otherwise this raises `PSFCacheNotFoundError`, which gives
+    the command that makes the file. No other file is used and nothing is generated
+    unless ``allow_generate`` or ``force_regenerate`` says so.
+
+    One exception is a file marked non-STPSF (``make_gaussian_psf_cache.py``) under
+    the bare configuration name, used for add_ipc=False with a notice. A temporary
+    exception: with ``ROMAN_DISPERSER_ALLOW_PSF_FALLBACK=1`` the best file of the
+    same configuration is loaded with a `PSFCacheVersionWarning`; that never
+    generates either.
 
     Parameters
     ----------
@@ -1144,10 +1478,13 @@ def get_or_make_psf_payload(
     oversample : int, optional
         Oversampling factor (default: 4)
     cache_dir : str or Path, optional
-        Directory for cache files. If None, caching is disabled and PSF
-        grid is always generated fresh.
+        Directory for cache files. If None, there is nothing to look up: this
+        needs ``allow_generate`` or ``force_regenerate``, and saves nothing.
     force_regenerate : bool, optional
-        If True, regenerate even if cache exists (default: False)
+        If True, generate and overwrite without looking up (default: False)
+    allow_generate : bool, optional
+        If True, generate and save when the exact file is not usable (default:
+        False). For tests and library users; runs use scripts/generate_psf_caches.py.
     stpsf_filter : str, optional
         STPSF filter name (default: the grism mapping for ``order``).
         Low-level knob — prefer ``element=``.
@@ -1173,9 +1510,10 @@ def get_or_make_psf_payload(
     ...     detector='WFI05', order='1', element=PRISM,
     ...     cache_dir='data/psf_cache'
     ... )
-    >>> # First call generates and caches (~5-6 min); second loads (~1 sec)
+    >>> # Generate if missing (~5-6 min), then load (~1 sec)
     >>> payload = get_or_make_psf_payload(
-    ...     detector='WFI05', order='1', cache_dir='data/psf_cache'
+    ...     detector='WFI05', order='1', cache_dir='data/psf_cache',
+    ...     allow_generate=True,
     ... )
 
     See Also
@@ -1228,8 +1566,12 @@ def get_or_make_psf_payload(
         y_grid = np.linspace(1, 4088, 4)
         spatial_grid = {'x': x_grid, 'y': y_grid}
 
-    # If no cache_dir, just generate
+    # Without a cache_dir there is nothing to look up
     if cache_dir is None:
+        if not (allow_generate or force_regenerate):
+            raise PSFCacheNotFoundError(
+                "get_or_make_psf_payload needs a cache_dir, or allow_generate=True "
+                "to generate a PSF grid without saving it.")
         if verbose:
             print("No cache_dir specified, generating PSF grid...")
         return make_psf_payload(
@@ -1252,49 +1594,42 @@ def get_or_make_psf_payload(
     )
     cache_path = cache_dir / filename
 
-    # Try to load from cache: the exact file, else the newest that fits
-    ignored = []
-    if not force_regenerate and cache_dir.is_dir():
+    # Load the exact file. Only the temporary fallback can offer anything else.
+    if not force_regenerate:
+        resolved_filter = resolve_stpsf_filter(order, stpsf_filter)
+        request = _cache_request(detector, resolved_filter, wavelengths,
+                                 spatial_grid, fov_arcsec, oversample, add_ipc)
         stem = _cache_stem(detector, order, wavelengths, spatial_grid,
                            fov_arcsec, oversample, stpsf_filter)
-        same_config = [p for p in sorted(cache_dir.iterdir())
-                       if _parse_cache_filename(p.name)[0] == stem]
-        usable, ignored = _rank_cache_candidates(same_config, add_ipc)
+        usable, problems = _resolve_cache_files(cache_dir, filename, stem, request)
         for candidate in usable:
             if verbose:
                 print(f"Loading PSF payload from cache: {candidate}")
+            exact = candidate.name == filename
             try:
-                if candidate.name == filename:
-                    return load_psf_payload(candidate, verbose=verbose)
-                return load_psf_payload(candidate, verbose=verbose,
-                                        fallback_for=filename)
+                payload = load_psf_payload(
+                    candidate, verbose=verbose,
+                    fallback_for=None if exact else filename)
             except (ValueError, KeyError, EOFError, zipfile.BadZipFile) as e:
-                warnings.warn(
-                    f"PSF cache {candidate} is invalid ({e}); trying the next "
-                    f"match, then the locally installed STPSF.",
-                    RuntimeWarning, stacklevel=2,
-                )
-
-    # Generate fresh payload
-    if not force_regenerate:
-        import os
-        if os.environ.get("ROMAN_DISPERSER_REQUIRE_PSF_CACHE"):
-            raise FileNotFoundError(
-                f"PSF cache {cache_path} missing or invalid and "
-                f"ROMAN_DISPERSER_REQUIRE_PSF_CACHE is set."
-                + (f" Ignored for their IPC state: {ignored}." if ignored else "")
-            )
+                warnings.warn(f"PSF cache {candidate} is invalid ({e}).",
+                              RuntimeWarning, stacklevel=2)
+                problems = [f"it is invalid ({e})"] if exact else problems
+                continue
+            _check_loaded_nodes(payload, spatial_grid, candidate)
+            return payload
+        if not allow_generate:
+            raise _not_found_error(request, cache_path, problems)
         warnings.warn(
-            f"PSF cache {cache_path} not usable: generating a new PSF grid "
-            f"with the local STPSF (differs from the vendored caches)."
-            + (f" Ignored for their IPC state: {ignored}." if ignored else ""),
+            f"PSF cache {cache_path} not usable: generating a new PSF grid with "
+            f"the local STPSF, as allow_generate=True asks.",
             RuntimeWarning, stacklevel=2,
         )
+
     if verbose:
         if force_regenerate:
             print("Force regenerate requested, generating PSF grid...")
         else:
-            print(f"Cache not found, generating PSF grid...")
+            print("Cache not usable, generating PSF grid...")
 
     payload = make_psf_payload(
         detector=detector,

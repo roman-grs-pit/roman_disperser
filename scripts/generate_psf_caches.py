@@ -19,6 +19,10 @@ Options:
     --detectors DETS    Comma-separated detectors (default: all 18)
     --workers N         Number of parallel workers (default: 1)
     --no-skip           Regenerate even if cache exists
+    --psf-grid NXxNY    Spatial nodes per axis (default: 4x4)
+    --psf-grid-bounds XMIN,XMAX,YMIN,YMAX
+                        Node range, FITS SCA coordinates, uniform in between
+                        (default: 1,4088,1,4088). Other ranges go in the filename.
     --add-ipc           Put IPC in the PSFs (default off). romanisim >= 0.16.0
                         applies IPC in make_l1, so wrapped images would count
                         it twice. The pinned v0.15.0 applies none because of a
@@ -51,6 +55,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 from roman_disperser import elements, psf_model
 
 
+def _arg(parse):
+    """Turn a parser's ValueError into a clean argparse error."""
+    def convert(text):
+        try:
+            return parse(text)
+        except ValueError as e:
+            raise argparse.ArgumentTypeError(str(e))
+    return convert
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Generate PSF caches for Roman grism disperser'
@@ -79,6 +93,18 @@ def main():
     parser.add_argument(
         '--no-skip', action='store_true',
         help='Regenerate even if cache exists'
+    )
+    parser.add_argument(
+        '--psf-grid', type=_arg(psf_model.parse_psf_grid), default=None,
+        metavar='NXxNY',
+        help='Spatial nodes per axis, X then Y (default: 4x4). The filename '
+             'keeps its NYxNXxNWL order. Runs must ask for the same grid.'
+    )
+    parser.add_argument(
+        '--psf-grid-bounds', type=_arg(psf_model.parse_psf_grid_bounds),
+        default=None, metavar='XMIN,XMAX,YMIN,YMAX',
+        help='Node range in FITS SCA coordinates, uniform in between (default: '
+             '1,4088,1,4088). Other ranges go in the filename.'
     )
     parser.add_argument(
         '--add-ipc', action=argparse.BooleanOptionalAction, default=False,
@@ -110,6 +136,8 @@ def main():
     # cache filenames; see elements.PSF_WL_STEP_UM)
     wavelengths = elements.psf_cache_wavelengths(element)
 
+    spatial_grid = psf_model.make_spatial_grid(args.psf_grid, args.psf_grid_bounds)
+
     # Parse detectors
     detectors = None
     if args.detectors:
@@ -123,6 +151,7 @@ def main():
     print(f"Orders: {orders} "
           f"(filters {[element.stpsf_filters[o] for o in orders]})")
     print(f"Detectors: {detectors or 'all 18'}")
+    print(f"Nodes: x {spatial_grid['x'].tolist()}, y {spatial_grid['y'].tolist()}")
     print(f"Workers: {args.workers}")
     print(f"Skip existing: {not args.no_skip}")
     print(f"Target STPSF: {psf_model.TARGET_STPSF_VERSION}")
@@ -143,6 +172,7 @@ def main():
             orders=orders,
             detectors=detectors,
             wavelengths=wavelengths,
+            spatial_grid=spatial_grid,
             stpsf_filters=element.stpsf_filters,
             skip_existing=not args.no_skip,
             n_workers=args.workers,

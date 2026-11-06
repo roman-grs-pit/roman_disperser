@@ -159,6 +159,8 @@ def main():
         sensitivity_dir=config["sensitivity_dir"],
         optical_model_path=config["optical_model"],
         psf_cache_dir=config["psf_cache_dir"],
+        psf_grid=config.get("psf_grid"),
+        psf_grid_bounds=config.get("psf_grid_bounds"),
         star_batch_size=config.get("star_batch_size", 1000),
         galaxy_batch_size=config.get("galaxy_batch_size", 100),
         galaxy_npix=config.get("galaxy_npix", 30),
@@ -180,6 +182,7 @@ def main():
     for psf_order in ["0", "1"]:
         psf_payloads[psf_order] = psf_model.get_or_make_psf_payload(
             detector=detector_name, order=psf_order,
+            spatial_grid=pipeline["psf_spatial_grid"],
             cache_dir=pipeline["psf_cache_dir"], verbose=False,
         )
     psf_payloads["2"] = psf_payloads["1"]
