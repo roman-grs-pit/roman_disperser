@@ -1262,6 +1262,8 @@ def _fake_cache(directory, name, version=_ABSENT, add_ipc=_ABSENT, marker=1.0,
         stpsf_filter=np.array('GRISM1', dtype='S'))
     if version is not _ABSENT:
         fields['stpsf_version'] = np.array(version, dtype='S')
+        fields['stpsf_hf_map'] = np.array(
+            "RST_WFI5_Z210_high_frequency_map.fits", dtype='S')
     if add_ipc is not _ABSENT:
         fields['add_ipc'] = np.array(add_ipc)
     fields.update(extra)
@@ -1593,6 +1595,67 @@ class TestStrictLookup:
                     spatial_x=grid['x'].astype(np.float32),
                     spatial_y=grid['y'].astype(np.float32))
         assert _lookup_grid(tmp_path, grid)['psf_grid'].shape[0] == 4
+
+
+class TestHighFrequencyMap:
+    """STPSF 2.3.0 leaves WFI01's map on every detector; caches must not."""
+
+    class _WFI:
+        """Just the parts of STPSF 2.3.0 that matter here."""
+        _opd_file_dict = {'WFI01': '/d/RST_WFI1_Z210_high_frequency_map.fits',
+                          'WFI18': '/d/RST_WFI18_Z210_high_frequency_map.fits'}
+        _pupilopd = '/d/RST_WFI1_Z210_high_frequency_map.fits'
+
+        @property
+        def pupilopd(self):
+            return self._pupilopd
+
+    def test_generator_takes_the_detector_map(self):
+        wfi = self._WFI()
+        psf_model._use_detector_hf_map(wfi, 'WFI18')
+        assert wfi.pupilopd.endswith('RST_WFI18_Z210_high_frequency_map.fits')
+
+    def test_refuses_if_stpsf_no_longer_gives_it(self):
+        changed = type('Changed', (), {'pupilopd': '/d/RST_WFI1_Z210_high_frequency_map.fits'})()
+        with pytest.raises(RuntimeError, match="RST_WFI1_"):
+            psf_model._use_detector_hf_map(changed, 'WFI18')
+
+    def test_save_and_load_keep_the_label(self, tmp_path, no_stpsf):
+        path = _good_file(tmp_path)
+        payload = psf_model.load_psf_payload(path, verbose=False)
+        assert payload['stpsf_hf_map'] == "RST_WFI5_Z210_high_frequency_map.fits"
+        out = tmp_path / "copy.npz"
+        psf_model.save_psf_payload(payload, out, verbose=False)
+        with np.load(out) as data:
+            assert data['stpsf_hf_map'].item() == b"RST_WFI5_Z210_high_frequency_map.fits"
+
+    def _rewrite(self, path, value):
+        fields = dict(np.load(path))
+        if value is None:
+            del fields['stpsf_hf_map']
+        else:
+            fields['stpsf_hf_map'] = np.array(value, dtype='S')
+        with open(path, 'wb') as handle:
+            np.savez(handle, **fields)
+
+    def test_warns_if_no_record(self, tmp_path, no_stpsf):
+        path = _good_file(tmp_path)
+        self._rewrite(path, None)
+        with pytest.warns(psf_model.PSFCacheVersionWarning, match="no record of its high"):
+            psf_model.load_psf_payload(path, verbose=False)
+
+    def test_warns_if_wrong_map(self, tmp_path, no_stpsf):
+        path = _good_file(tmp_path)
+        self._rewrite(path, "RST_WFI1_Z210_high_frequency_map.fits")
+        with pytest.warns(psf_model.PSFCacheVersionWarning, match="RST_WFI1_"):
+            psf_model.load_psf_payload(path, verbose=False)
+
+    def test_old_version_is_not_asked_for_a_record(self, tmp_path, no_stpsf):
+        path = _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
+        self._rewrite(path, None)
+        with pytest.warns(psf_model.PSFCacheVersionWarning) as record:
+            psf_model.load_psf_payload(path, verbose=False)
+        assert "high-frequency" not in str(record[0].message)
 
 
 class TestNodeBoundsLookup:
