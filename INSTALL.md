@@ -314,8 +314,28 @@ Most users hydrate. To rebuild instead:
   twice. The pinned v0.15.0 applies none because of a bug (romanisim #383), so
   with the default wrapped products contain no IPC until romanisim is upgraded.
 
-  The caches from `roman-disperser-hydrate` (`psf-v1`) were made with STPSF 2.1.0
-  and have the old unversioned names. They still load and give the same images
-  as before, with a `PSFCacheVersionWarning` per file.
+  Other node grids: `--psf-grid NXxNY` (X then Y) and
+  `--psf-grid-bounds XMIN,XMAX,YMIN,YMAX` (FITS SCA coordinates, uniform in
+  between, default `1,4088,1,4088`). A range other than the default goes in the
+  filename, e.g. `..._4x4x56_x16-4055_y187-4088_0.90-2.00um_...`. Runs select the
+  same grid with the same two options on `build_dispersed_image.py`, or the config
+  keys `psf_grid` and `psf_grid_bounds`.
+
+  **Runs need the exact file.** A run looks for one filename, fixed by detector,
+  filter, node grid, wavelengths, FOV, oversample, target STPSF version and IPC
+  state, and checks the file's metadata against it. If the file is missing or
+  wrong the run stops before any expensive work, and the error gives the command
+  that makes it. No other file is used and nothing is generated. Library users can
+  pass `allow_generate=True` or `force_regenerate=True` to `get_or_make_psf_payload`.
+
+  **Temporary: the hydrated caches need an opt-in.** `roman-disperser-hydrate`
+  still delivers `psf-v1` and `psf-prism-v1`, made with STPSF 2.1.0 under the old
+  unversioned names, so a run on them fails until you set:
+  ```bash
+  export ROMAN_DISPERSER_ALLOW_PSF_FALLBACK=1
+  ```
+  Then the best file of the same configuration loads with a
+  `PSFCacheVersionWarning` per file, and the images are the same as before. This
+  never generates. It goes away once the caches are regenerated and released.
 
 

@@ -54,7 +54,7 @@ answer. This table is the record of which is which.
 |---|---|---|
 | Optical model | `Roman_grism_OpticalModel_v0.8.yaml` | `Roman_prism_OpticalModel_v0.8.yaml` |
 | Sensitivities | `<data>/sensitivities/` | `<data>/sensitivities_prism/` |
-| PSF caches | `<data>/psf_cache/psf_WFI*_GRISM{0,1}_*.npz` | `<data>/psf_cache/psf_WFI*_PRISM_*.npz` — same directory; the filenames carry the STPSF filter so they cannot collide |
+| PSF caches | `<data>/psf_cache/psf_WFI*_GRISM{0,1}_*.npz` | `<data>/psf_cache/psf_WFI*_PRISM_*.npz` — same directory; the filenames carry the STPSF filter so they cannot collide. A run needs the exact file for its request and stops with the command for it otherwise; see INSTALL.md |
 | Catalog | shared — `<data>/catalogs/` | shared, **but see below** |
 
 All three prism assets are **published** `roman_disperser_data` releases

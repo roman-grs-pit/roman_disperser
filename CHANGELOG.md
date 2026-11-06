@@ -7,15 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-**STPSF 2.3.0:** PSF caches now target STPSF 2.3.0
-(`psf_model.TARGET_STPSF_VERSION`). Runs on the vendored `psf-v1` caches (STPSF
-2.1.0) still work and render the same images, with a `PSFCacheVersionWarning`.
-Caches made with 2.3.0 change results: the PSF has charge diffusion, 6 mas jitter and the Phase C optical model.
+**STPSF 2.3.0 and exact PSF caches:** PSF caches now target STPSF 2.3.0
+(`psf_model.TARGET_STPSF_VERSION`), and a run needs the exact file. **The hydrated
+`psf-v1` and `psf-prism-v1` caches (STPSF 2.1.0) now fail without
+`ROMAN_DISPERSER_ALLOW_PSF_FALLBACK=1`**, a temporary opt-in with which they render
+the same images as before, with a `PSFCacheVersionWarning`. Caches made with 2.3.0
+change results: the PSF has charge diffusion, 6 mas jitter and the Phase C optical
+model.
 
 - Cache names carry the version, `..._os4_stpsf2.3.0.npz`, plus `_ipc` for caches
-  with IPC in the PSF. `get_or_make_psf_payload` takes the exact file first, then
-  the newest file of the same configuration with a warning, and generates only
-  if nothing fits. A file known to have the other IPC state is never used.
+  with IPC in the PSF, and the node range when it is not the full detector,
+  `..._4x4x56_x16-4055_y187-4088_0.90-2.00um_...`.
+- `get_or_make_psf_payload` loads the exact file or raises `PSFCacheNotFoundError`
+  (a `FileNotFoundError`) with the command that makes it and the other files found.
+  An exact-named file whose metadata disagrees (version, `add_ipc`, node positions,
+  wavelengths, oversample, FOV, detector, filter) counts as wrong. Files marked
+  non-STPSF under the bare configuration name still serve as stand-ins.
+- **Removed: implicit generation.** Generation needs `allow_generate=True` or
+  `force_regenerate=True`, also with `cache_dir=None`. `make_psf_payload` still
+  always generates. `ROMAN_DISPERSER_REQUIRE_PSF_CACHE` is gone: this is the default.
+- `--psf-grid NXxNY` and `--psf-grid-bounds XMIN,XMAX,YMIN,YMAX` on
+  `generate_psf_caches.py` and `build_dispersed_image.py`, and config keys
+  `psf_grid` and `psf_grid_bounds`. The driver checks all its caches exist before
+  loading the catalog, and loaded node positions are checked against the request.
+  `slurm_generate_psfs.sh` passes its arguments on.
 - `add_ipc` on every generation path and `--add-ipc / --no-add-ipc` on
   `generate_psf_caches.py`, default off, stored in the npz and returned as a
   payload label. With `add_ipc=True` the PSF contains IPC. romanisim >= 0.16.0
