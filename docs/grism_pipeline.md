@@ -244,7 +244,7 @@ and `scripts/example_prism_config.yaml`; regenerate the template with
 | `optical_model_version` | str | from lock | Delivery version (e.g. `v0.8`). Default: the delivery recorded in the data dir's `data-versions.lock` by hydrate — you get what you hydrated. See `docs/element_support.md` §Optical-model delivery resolution |
 | `psf_cache_dir` | str | `data/psf_cache` | Path to PSF cache directory |
 | `psf_grid` | str | `4x4` | PSF nodes per axis, `NXxNY`. The exact cache for this grid must exist |
-| `psf_grid_bounds` | list | `[1, 4088, 1, 4088]` | PSF node range XMIN, XMAX, YMIN, YMAX in FITS SCA coordinates, uniform in between |
+| `psf_grid_bounds` | list | `[50, 4050, 202, 4088]` | PSF node range XMIN, XMAX, YMIN, YMAX in FITS SCA coordinates, uniform in between |
 
 **Deprecated:** `batch_size` is accepted as an alias for `star_batch_size` with a warning.
 
