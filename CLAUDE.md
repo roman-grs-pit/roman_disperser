@@ -132,7 +132,8 @@ The PSF model uses STPSF to generate wavelength- and position-dependent PSF grid
 ```python
 from roman_disperser import psf_model
 
-# Load or generate PSF payload (cached to data/psf_cache/). Grism is the
+# Load the exact PSF cache from data/psf_cache/, or raise PSFCacheNotFoundError
+# with the generate_psf_caches.py command for it. Grism is the
 # default; element='prism' derives the PRISM filter and band together.
 psf_payload = psf_model.get_or_make_psf_payload(
     detector='WFI05', order='1', cache_dir='data/psf_cache'

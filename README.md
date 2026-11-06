@@ -72,6 +72,10 @@ psf_payload = psf_model.get_or_make_psf_payload(
     cache_dir=str(paths.psf_cache_dir()),
 )
 
+# This needs the exact cache for the target STPSF version; the error names the
+# command that makes it. The hydrated caches are still the older STPSF 2.1.0 ones:
+# use them with ROMAN_DISPERSER_ALLOW_PSF_FALLBACK=1 for now (see INSTALL.md).
+
 # Create a JIT-compiled star disperser
 disperse = star_disperser.make_star_disperser(psf_payload, optical_payload)
 
