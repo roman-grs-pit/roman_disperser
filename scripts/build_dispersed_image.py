@@ -881,6 +881,16 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
 # Pipeline setup
 # ---------------------------------------------------------------------------
 
+def check_psf_caches_exist(sca_list, element, psf_cache_dir, spatial_grid):
+    """Raise now, not after the catalog and compiles, if a PSF cache is missing."""
+    for sca in sca_list:
+        for fname in dict.fromkeys(element.stpsf_filters.values()):
+            psf_model.find_psf_cache_file(
+                psf_cache_dir, f"WFI{sca:02d}", fname,
+                wavelengths=elements.psf_cache_wavelengths(element),
+                spatial_grid=spatial_grid, warn=False)
+
+
 def setup_pipeline(
     sca_list,
     *,
@@ -888,6 +898,8 @@ def setup_pipeline(
     sensitivity_dir=None,
     optical_model_path=None,
     psf_cache_dir=None,
+    psf_grid=None,
+    psf_grid_bounds=None,
     element=None,
     optical_model_version=None,
     star_batch_size=1000,
@@ -1002,6 +1014,8 @@ def setup_pipeline(
         resolve_paths(catalog_dir, sensitivity_dir,
                       optical_model_path, psf_cache_dir, element=element,
                       optical_model_version=optical_model_version)
+    psf_spatial_grid = psf_model.make_spatial_grid(psf_grid, psf_grid_bounds)
+    check_psf_caches_exist(sca_list, element, psf_cache_dir, psf_spatial_grid)
 
     # -- Load & validate catalog ---------------------------------------------
     log("Loading catalog...")
@@ -1097,6 +1111,7 @@ def setup_pipeline(
         detector=f"WFI{sca_list[0]:02d}", order="1",
         wavelengths=elements.psf_cache_wavelengths(element),
         stpsf_filter=element.stpsf_filters["1"],
+        spatial_grid=psf_spatial_grid,
         cache_dir=str(psf_cache_dir), verbose=False,
     )
     oversample = int(first_psf["oversample"])
@@ -1142,6 +1157,7 @@ def setup_pipeline(
         "sca_list": sca_list,
         "sca_data": sca_data,
         "psf_cache_dir": str(psf_cache_dir),
+        "psf_spatial_grid": psf_spatial_grid,
         # Which delivery actually loaded -- provenance for header + meta
         "optical_model_file": Path(optical_model_path).name,
         "star_batch_size": star_batch_size,
@@ -1402,6 +1418,7 @@ def process_pointing(
                     detector=detector_name, order=order,
                     wavelengths=elements.psf_cache_wavelengths(element),
                     stpsf_filter=fname,
+                    spatial_grid=pipeline.get("psf_spatial_grid"),
                     cache_dir=psf_cache_dir, verbose=False,
                 )
             psf_payloads[order] = payloads_by_filter[fname]
@@ -1836,6 +1853,8 @@ def build_dispersed_image(
     sensitivity_dir=None,
     optical_model_path=None,
     psf_cache_dir=None,
+    psf_grid=None,
+    psf_grid_bounds=None,
     element=None,
     optical_model_version=None,
     cone_radius=0.6,
@@ -1914,6 +1933,8 @@ def build_dispersed_image(
         optical_model_path=optical_model_path,
         optical_model_version=optical_model_version,
         psf_cache_dir=psf_cache_dir,
+        psf_grid=psf_grid,
+        psf_grid_bounds=psf_grid_bounds,
         element=element,
         star_batch_size=star_batch_size,
         galaxy_batch_size=galaxy_batch_size,
@@ -2087,6 +2108,11 @@ galaxy_npix: 30
 # sensitivity_dir: data/sensitivities
 # optical_model: data/Roman_grism_OpticalModel_v0.8.yaml
 # psf_cache_dir: data/psf_cache
+
+# -- PSF node grid (optional; defaults shown) ----------------------------------
+# Runs load the exact cache for this grid; see scripts/generate_psf_caches.py.
+# psf_grid: 4x4                         # NXxNY
+# psf_grid_bounds: [1, 4088, 1, 4088]   # XMIN, XMAX, YMIN, YMAX, FITS SCA coordinates
 """
 
 
@@ -2171,6 +2197,9 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
                       cfg.get("optical_model"),
                       cfg.get("psf_cache_dir"), element=element,
                       optical_model_version=cfg.get("optical_model_version"))
+    psf_spatial_grid = psf_model.make_spatial_grid(
+        cfg.get("psf_grid"), cfg.get("psf_grid_bounds"))
+    check_psf_caches_exist(sca_list, element, psf_cache_dir, psf_spatial_grid)
 
     # Read wavelength grid from catalog (must match what setup_pipeline uses)
     store = zarr.open(str(Path(catalog_dir) / "seds.zarr"), mode="r")
@@ -2197,6 +2226,7 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
         detector=f"WFI{sca_list[0]:02d}", order="1",
         wavelengths=elements.psf_cache_wavelengths(element),
         stpsf_filter=element.stpsf_filters["1"],
+        spatial_grid=psf_spatial_grid,
         cache_dir=str(psf_cache_dir), verbose=False,
     )
     oversample = int(first_psf["oversample"])
@@ -2220,6 +2250,7 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
                     detector=detector_name, order=order,
                     wavelengths=elements.psf_cache_wavelengths(element),
                     stpsf_filter=fname,
+                    spatial_grid=psf_spatial_grid,
                     cache_dir=str(psf_cache_dir), verbose=False,
                 )
             psf_payloads[order] = payloads_by_filter[fname]
@@ -2343,7 +2374,8 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
     known_keys = {
         "output_dir", "seed", "element", "scas", "catalog_dir",
         "sensitivity_dir", "optical_model", "optical_model_version",
-        "psf_cache_dir", "cone_radius", "star_batch_size",
+        "psf_cache_dir", "psf_grid", "psf_grid_bounds", "cone_radius",
+        "star_batch_size",
         "galaxy_batch_size", "galaxy_npix", "source_cuts",
         "output_prefix", "cache_dir", "deposit", "rebin_dlam",
         "hoist_star_psf", "order_mag_limits",
@@ -2430,6 +2462,8 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         optical_model_path=cfg.get("optical_model"),
         optical_model_version=cfg.get("optical_model_version"),
         psf_cache_dir=cfg.get("psf_cache_dir"),
+        psf_grid=cfg.get("psf_grid"),
+        psf_grid_bounds=cfg.get("psf_grid_bounds"),
         element=element,
         star_batch_size=cfg.get("star_batch_size", 1000),
         galaxy_batch_size=cfg.get("galaxy_batch_size", 100),
@@ -2579,6 +2613,14 @@ def main():
                              "Batch mode reads it from the config instead.")
     parser.add_argument("--psf-cache-dir", type=str, default=None,
                         help="Path to PSF cache directory")
+    parser.add_argument("--psf-grid", type=str, default=None, metavar="NXxNY",
+                        help="PSF nodes per axis, X then Y (default: 4x4). Batch "
+                             "mode reads psf_grid from the config instead.")
+    parser.add_argument("--psf-grid-bounds", type=str, default=None,
+                        metavar="XMIN,XMAX,YMIN,YMAX",
+                        help="PSF node range, FITS SCA coordinates (default: "
+                             "1,4088,1,4088). Batch mode reads psf_grid_bounds "
+                             "from the config instead.")
     parser.add_argument("--cone-radius", type=float, default=0.6,
                         help="Cone search radius in degrees (default: 0.6)")
     parser.add_argument("--star-batch-size", type=int, default=1000,
@@ -2693,6 +2735,11 @@ def main():
         )
         return
 
+    try:
+        psf_model.make_spatial_grid(args.psf_grid, args.psf_grid_bounds)
+    except ValueError as e:
+        parser.error(str(e))
+
     # Warmup-only mode (requires --config)
     if args.warmup_only:
         if args.config is None:
@@ -2735,6 +2782,8 @@ def main():
         optical_model_path=args.optical_model,
         optical_model_version=args.optical_model_version,
         psf_cache_dir=args.psf_cache_dir,
+        psf_grid=args.psf_grid,
+        psf_grid_bounds=args.psf_grid_bounds,
         element=args.element,
         cone_radius=args.cone_radius,
         star_batch_size=args.star_batch_size,

@@ -61,6 +61,16 @@ def _reference_for_backend(element_name, order, tier):
         return ref, prov, ATOL_SCALE_CROSS, f"cpu (no {subdir} frames; loose gate)"
 
 
+@pytest.fixture(autouse=True)
+def _legacy_psf_caches(monkeypatch):
+    """The golden references were blessed with the hydrated psf-v1 caches.
+
+    TEMPORARY: remove once the 54 caches are regenerated on the cluster (and the
+    golden frames with them).
+    """
+    monkeypatch.setenv("ROMAN_DISPERSER_ALLOW_PSF_FALLBACK", "1")
+
+
 def _compare(element_name, order, tier, dlam_A):
     try:
         ref, prov, atol_scale, ref_desc = _reference_for_backend(

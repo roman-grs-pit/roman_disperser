@@ -250,6 +250,10 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
             got += 1
             print(f"    [{i}/{len(files)}] {name}")
     print(f"    {got} downloaded, {len(files) - got} already present -> {out}")
+    # TEMPORARY: remove once the 54 caches are regenerated on the cluster
+    if asset.key in ("psf", "psf_prism") and tag in ("psf-v1", "psf-prism-v1"):
+        print(f"    note: {tag} has old STPSF 2.1.0 files, which runs use only "
+              f"with ROMAN_DISPERSER_ALLOW_PSF_FALLBACK=1 (see INSTALL.md)")
 
 
 # ---------------------------------------------------------------------------
