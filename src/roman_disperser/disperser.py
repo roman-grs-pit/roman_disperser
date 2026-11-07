@@ -129,6 +129,9 @@ def _eval_ids_polynomial(wl_transformed, ids):
 
     # Polynomial evaluation via einsum
     # [N_wl, i] × [i, N_spatial] → [N_spatial, N_wl]
+    if omj._horner():
+        # dely[s, w] = sum_i ids[i, s] wl[w]^i
+        return omj._horner1d(wl_transformed[None, :], [c[:, None] for c in ids])
     if omj._elementwise():
         # [1, N_wl, i] * [N_spatial, 1, i] summed over i (see
         # optical_model_jax "Position contractions")
@@ -161,6 +164,8 @@ def _eval_crv_polynomial(dely, crv):
     # Polynomial evaluation via einsum
     # [N_spatial, N_wl, i] × [i, N_spatial] → [N_spatial, N_wl]
     # Need to be careful with indices - crv[i, s] applies to spatial point s
+    if omj._horner():
+        return omj._horner1d(dely, [c[:, None] for c in crv])
     if omj._elementwise():
         return jnp.sum(dely_powers * crv.T[:, None, :], axis=-1)
     return jnp.einsum("swi,is->sw", dely_powers, crv, precision='highest')

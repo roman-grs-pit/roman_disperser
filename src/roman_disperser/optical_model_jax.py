@@ -60,7 +60,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-POSITION_CONTRACTION_MODES = ("elementwise", "einsum")
+POSITION_CONTRACTION_MODES = ("elementwise", "horner", "einsum")
 POSITION_CONTRACTION = os.environ.get("ROMAN_DISPERSER_POSITION_CONTRACTION", "einsum")
 if POSITION_CONTRACTION not in POSITION_CONTRACTION_MODES:
     raise ValueError(
@@ -82,7 +82,30 @@ def set_position_contraction(mode):
 
 
 def _elementwise():
-    return POSITION_CONTRACTION == "elementwise"
+    """True for both GEMM-free modes ("elementwise" broadcast-sum, "horner")."""
+    return POSITION_CONTRACTION in ("elementwise", "horner")
+
+
+def _horner():
+    return POSITION_CONTRACTION == "horner"
+
+
+def _horner1d(t, coef):
+    """sum_i coef[i] t^i by Horner; coef is a static-length sequence of arrays broadcastable with t."""
+    p = coef[-1]
+    if len(coef) == 1:
+        return p + jnp.zeros_like(t)
+    for c in coef[-2::-1]:
+        p = p * t + c
+    return p
+
+
+def _horner2d(x, y, coef):
+    """sum_ij coef[..., i, j] x^i y^j by nested Horner (static i, j; unrolled into one fusion)."""
+    ni, nj = coef.shape[-2:]
+    rows = [_horner1d(y, [coef[..., i, j, None] if coef.ndim > 2 else coef[i, j]
+                          for j in range(nj)]) for i in range(ni)]
+    return _horner1d(x, rows)
 
 
 def _poly2d(x_powers, coef, y_powers):
@@ -939,6 +962,8 @@ def get_mpa_coords(payload, xfpa, yfpa):
     Y_ij = payload["poly"]["Y_ij"]
     
     # Evaluate 2D polynomials using einsum (more efficient than matmul + diagonal)
+    if _horner():
+        return _horner2d(xfpa, yfpa, X_ij), _horner2d(xfpa, yfpa, Y_ij)
     xmpa = _poly2d(x_powers, X_ij, y_powers)
     ympa = _poly2d(x_powers, Y_ij, y_powers)
     
@@ -968,6 +993,9 @@ def get_trace_coeffs(payload, xfpa, yfpa):
     # Compute crv[i, n] using einsum: sum over j,k for each i,n
     # Original: x @ C_ijk @ y.T -> [n,i,n], then diagonal(axis1=1,axis2=2) -> [n,i], then transpose -> [i,n]
     # Einsum: directly compute shape [i, n]
+    if _horner():
+        return (_horner2d(xfpa, yfpa, payload["poly"]["C_ijk"]),
+                _horner2d(xfpa, yfpa, payload["poly"]["D_ijk"]))
     crv = _poly2d_coeffs(x_powers_crv, C_ijk, y_powers_crv)
     
     # Inverse dispersion coefficients (D_ijk)
@@ -1020,6 +1048,10 @@ def trace_beam(payload, xfpa, yfpa, wavelength):
     # Compute dely: sum over i of ids[i] * wl^i
     ids_i = payload["poly"]["ids_i"]
     wl_powers = wl[:, jnp.newaxis] ** jnp.arange(ids_i)  # [n, i]
+    if _horner():
+        dely = _horner1d(wl, list(ids))
+        delx = _horner1d(dely, list(crv))
+        return xmpa_ref + delx, ympa_ref + dely
     dely = _poly1d(wl_powers, ids)
 
     # Compute delx: sum over i of crv[i] * dely^i
