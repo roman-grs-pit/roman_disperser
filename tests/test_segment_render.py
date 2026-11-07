@@ -322,11 +322,13 @@ class TestDriverOptions:
         n = bdi.AUTO_SEGMENT_NODES
         assert bdi.auto_backend_choice("cpu", 1) == (n, None, "cpu x1")
         assert bdi.auto_backend_choice("cpu", 4)[1] is None
-        assert bdi.auto_backend_choice("gpu", 1) == (n, "window", "gpu x1")
-        assert bdi.auto_backend_choice("gpu", 2) == (n, "tiled", "gpu x2")
+        # GPU: the production deposit and loop are the fastest (T91).
+        assert bdi.auto_backend_choice("gpu", 1) == (None, None, "gpu x1")
+        assert bdi.auto_backend_choice("gpu", 2) == (None, None, "gpu x2")
         nodes, mode, label = bdi.auto_backend_choice()
         assert label == f"{jax.default_backend()} x{jax.device_count()}"
-        assert mode in (None,) + tuple(bdi.accum.ACCUMULATE_MODES)
+        assert mode is None
+        assert nodes == (n if jax.default_backend() == "cpu" else None)
 
     def test_default_off(self, bdi):
         import inspect

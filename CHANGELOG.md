@@ -187,6 +187,12 @@ before the references can guard the default path.
 - Batch configs accept `segment_render`, `segment_psf_at` and `accumulate`
   (same values as the CLI flags); before, they were rejected as unknown keys.
   `--warmup-only` now checks the config keys too.
+- `--segment-render auto` / `--accumulate auto` pick the fastest measured
+  setting per backend: on GPU the production deposit and loop (7.7 s on an
+  L40S for BDI SCA 5, against 21-24 s for the former auto choice, 56-node
+  segments with windows); on CPU the 56-node segment render with the loop, as
+  before. `auto` asks for speed; pass `window` or `tiled` for a GPU frame sum
+  that is the same from run to run.
 
 ## [0.16.0] - 2026-10-27
 

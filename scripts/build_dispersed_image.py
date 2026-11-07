@@ -154,11 +154,30 @@ def parse_segment_render(text):
     return out
 
 
-# ``auto`` choices by backend: (segment_render, accumulate). The CPU keeps the
-# sequential scatter-add (already deterministic there and the fastest); GPUs
-# use per-source windows, several devices the tiled sum. 56 nodes reproduce
-# the production deposit to ~1e-6 of peak. The GPU rows are not yet measured
-# (T85-T87), so ``auto`` is opt-in.
+# ``auto`` choices by backend: (segment_render, accumulate), the fastest
+# choice measured on each backend. ``auto`` asks for speed, not determinism:
+# pass ``--accumulate window`` or ``tiled`` for a GPU frame sum that does not
+# change from run to run.
+#
+# Measured on BDI SCA 5 quick mode (cluster T85b/T91, 2026-11-06, jax 0.11.2):
+#
+#   ===============================  ==============  =================
+#   setting                          CPU, 16 cores   GPU, 1 x L40S
+#   ===============================  ==============  =================
+#   default (deposit, loop)          51 s            7.7 s
+#   --segment-render 12              22 s            10.4 s
+#   --segment-render 56 (CPU auto)   30 s            --
+#   --accumulate window              --              13.6-17.8 s
+#   seg 12 + window                  --              20.3 s
+#   seg 56 + window (old GPU auto)   --              21-24 s
+#   --accumulate tiled               113 s           30-45 s
+#   ===============================  ==============  =================
+#
+# The CPU takes the 56-node segment render (reproduces the production
+# deposit to ~1e-6 of peak) with the sequential loop, which is already
+# deterministic there. On GPUs the production deposit and loop are the
+# fastest; several GPUs are not measured yet (T87), and one tiled GPU is 4-6x
+# slower than the loop, so they get the same.
 AUTO_SEGMENT_NODES = 56
 
 
@@ -166,17 +185,16 @@ def auto_backend_choice(backend=None, n_devices=None):
     """``(segment_render, accumulate, label)`` for ``auto`` on this machine.
 
     ``backend`` and ``n_devices`` default to ``jax.default_backend()`` and
-    ``jax.device_count()``; ``label`` is e.g. ``"gpu x2"``.
+    ``jax.device_count()``; ``label`` is e.g. ``"gpu x2"``. ``None`` means
+    the production setting (deposit, sequential loop).
     """
     backend = jax.default_backend() if backend is None else backend
     n_devices = jax.device_count() if n_devices is None else n_devices
     if backend == "cpu":
-        accumulate = None
-    elif n_devices > 1:
-        accumulate = "tiled"
+        segment_render = AUTO_SEGMENT_NODES
     else:
-        accumulate = "window"
-    return AUTO_SEGMENT_NODES, accumulate, f"{backend} x{n_devices}"
+        segment_render = None
+    return segment_render, None, f"{backend} x{n_devices}"
 
 
 def resolve_segment_render(segment_render, orders, psf_at="source"):
@@ -1093,7 +1111,8 @@ def setup_pipeline(
         if accumulate == "auto":
             accumulate = auto_accum
         log(f"Auto selection for {auto_selection}: segment render "
-            f"{segment_render}, accumulation {accumulate or 'sequential'}")
+            f"{segment_render or 'off'}, accumulation "
+            f"{accumulate or 'sequential'}")
     segment = resolve_segment_render(segment_render, element.orders,
                                      segment_psf_at)
     if segment is not None:
@@ -2718,8 +2737,8 @@ def main():
                              "(prototype): wavelength nodes for every order "
                              "(e.g. 12) or per order (e.g. 0:6,1:12,2:28; "
                              "orders left out keep the deposit), or auto "
-                             "(56 nodes) (batch key segment_render; "
-                             "default: off)")
+                             "(the fastest: 56 nodes on CPU, off on GPU) "
+                             "(batch key segment_render; default: off)")
     parser.add_argument("--segment-psf-at", choices=("source", "landing"),
                         default="source",
                         help="PSF lookup position of the segment render: "
@@ -2733,8 +2752,8 @@ def main():
                              "its own window and add the windows in a fixed "
                              "order ('window': batches, vmapped; 'tiled': "
                              "8x8 detector tiles), deterministic on GPU; "
-                             "'auto': sequential on CPU, window on one GPU, "
-                             "tiled on several (batch key accumulate; "
+                             "'auto': the fastest, which is the sequential "
+                             "loop on CPU and GPU (batch key accumulate; "
                              "default: off = sequential scatter-add)")
     parser.add_argument("--seed", type=int, default=None,
                         help="RNG seed (required for quick mode)")
