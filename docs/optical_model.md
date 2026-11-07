@@ -49,48 +49,65 @@ These are standalone functions (no payload needed) for converting between sky co
 ### Basic Coordinate Transformation
 
 ```python
+import jax
+import jax.numpy as jnp
 import roman_disperser.optical_model_jax as omj
+from roman_disperser import paths
 from roman_disperser.optical_model import RomanOpticalModel
 
-# Load model
-model = RomanOpticalModel("data/Roman_grism_OpticalModel_v0.8.yaml")
+# Load the hydrated model (or pass the YAML path yourself)
+model = RomanOpticalModel(str(paths.optical_model_path()))
 
 # Create payload for SCA 1, order +1
 payload = omj.make_sca_payload(model, sca=1, order="1")
 
-# Transform FPA coords to MPA
-xfpa, yfpa = [0.5, 1.0], [0.0, 0.5]
+# Transform FPA coords to MPA (arrays, not Python lists)
+xfpa, yfpa = jnp.array([0.5, 1.0]), jnp.array([0.0, 0.5])
 xmpa, ympa = omj.fpa_to_mpa(payload, xfpa, yfpa)
 ```
 
 ### Spectral Trace Simulation
 
+`trace_beam` pairs positions and wavelengths element by element (shape
+`[n]`); one position with `M` wavelengths broadcasts to `[M]`. For `N`
+positions x `M` wavelengths, `vmap` over the positions:
+
 ```python
-import numpy as np
+# Traces of 10 FPA points at 20 wavelengths (microns)
+xfpa = jnp.linspace(-0.2, 0.2, 10)
+yfpa = jnp.zeros(10)
+wavelengths = jnp.linspace(1.0, 1.9, 20)
 
-# Generate traces for 10 FPA points across the wavelength grid
-xfpa = np.linspace(-1.0, 1.0, 10)
-yfpa = np.zeros(10)
-wavelengths = model.wl_grid  # Default wavelength array
-
-# Trace beam: (10 points) × (20 wavelengths) → 10×20 output
-xmpa, ympa = omj.trace_beam(payload, xfpa, yfpa, wavelengths)
-
-# Result shape: (10, 20)
+trace = jax.vmap(lambda x, y: omj.trace_beam(payload, x[None], y[None],
+                                             wavelengths))
+xmpa, ympa = trace(xfpa, yfpa)
+assert xmpa.shape == (10, 20)
 ```
 
-### Batch Processing with vmap
+The broadcast form agrees with the call on explicitly repeated positions
+to float32 rounding (~4e-6 px), not bit for bit.
+
+### Several SCAs
+
+A payload mixes arrays with Python ints and strings, so it is built on the
+host and cannot be created inside `jax.vmap`. Loop over the SCAs; with the
+payload as a jit argument (see `docs/jit_compilation.md`) one compile serves
+them all:
 
 ```python
-import jax
+from roman_disperser import jit_payload
 
-# Vectorize over multiple SCAs
-def trace_sca(sca):
-    payload = omj.make_sca_payload(model, sca=sca, order="1")
-    return omj.trace_beam(payload, xfpa, yfpa, wavelengths)
+def trace_arrays(arrays, xfpa, yfpa, wavelengths, static):
+    p = jit_payload.merge_payload(arrays, static)
+    return omj.trace_beam(p, xfpa, yfpa, wavelengths)
 
-scas = [1, 2, 5, 10]
-results = jax.vmap(trace_sca)(np.array(scas))
+trace_jit = jax.jit(trace_arrays, static_argnames="static")
+results = {}
+for sca in (1, 2, 5, 10):
+    p = omj.make_sca_payload(model, sca=sca, order="1")
+    arrays, static = jit_payload.split_payload(p, jit_payload.OPTICAL_STATIC_KEYS)
+    results[sca] = trace_jit(arrays, xfpa, yfpa, jnp.full(10, 1.5),
+                             static=static)
 ```
 
 ## Differentiable sky → detector transform (small perturbations)
@@ -102,9 +119,22 @@ pointing, evaluate the geometry once at the nominal pointing and perturb in
 JAX:
 
 ```python
-ref = omj.make_sky_reference(ra, dec, ra0, dec0, pa0, payload=payload)  # host f64
-x, y = omj.perturbed_sky_to_sca(ref, payload, d_xi, d_eta, d_ra, d_dec, d_pa)
-J = jax.jacfwd(lambda p: jnp.stack(omj.perturbed_sky_to_sca(ref, payload, *p)))(p0)
+import numpy as np
+
+ra0, dec0, pa0 = 10.195391, 0.102452, 60.0            # pointing, degrees
+ra = np.array([10.10, 10.12])                         # sources (float64)
+dec = np.array([0.20, 0.21])
+payload5 = omj.make_sca_payload(model, sca=5, order="1")
+ref = omj.make_sky_reference(ra, dec, ra0, dec0, pa0, payload=payload5)  # host f64
+
+d_xi = d_eta = jnp.zeros(2)                           # source offsets, degrees
+d_ra = d_dec = d_pa = 0.0                             # pointing offsets, degrees
+x, y = omj.perturbed_sky_to_sca(ref, payload5, d_xi, d_eta, d_ra, d_dec, d_pa)
+
+# Jacobian of the pixel positions w.r.t. the pointing (d_ra, d_dec, d_pa)
+p0 = jnp.zeros(3)
+J = jax.jacfwd(lambda p: jnp.stack(
+    omj.perturbed_sky_to_sca(ref, payload5, 0.0, 0.0, *p)))(p0)   # [2, 2, 3]
 ```
 
 All perturbations are in degrees (`d_xi`, `d_eta`: source offsets in the
