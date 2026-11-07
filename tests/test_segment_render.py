@@ -307,28 +307,79 @@ class TestDriverOptions:
         assert bdi.resolve_segment_render(None, orders) is None
         assert bdi.resolve_segment_render({"2": None}, orders) is None
         r = bdi.resolve_segment_render(12, orders, "landing")
-        assert r == {"nodes": {"0": 12, "1": 12, "2": 12}, "psf_at": "landing"}
+        both = {"0": 12, "1": 12, "2": 12}
+        assert r == {"nodes": {"star": both, "galaxy": both},
+                     "psf_at": "landing"}
         r = bdi.resolve_segment_render({0: 6}, orders)
-        assert r["nodes"] == {"0": 6, "1": None, "2": None}
-        for bad in ({"3": 6}, 1):
+        assert r["nodes"]["galaxy"] == {"0": 6, "1": None, "2": None}
+        assert bdi.segment_nodes_for(r, "star", "0") == 6
+        assert bdi.segment_nodes_for(r, "star", "1") is None
+        # the older per-order form still reads, for both kinds
+        assert bdi.segment_nodes_for({"nodes": {"1": 9}}, "galaxy", "1") == 9
+        for bad in ({"3": 6}, 1, {"galaxy": {"3": 6}}):
             with pytest.raises(ValueError):
                 bdi.resolve_segment_render(bad, orders)
         with pytest.raises(ValueError):
             bdi.resolve_segment_render(6, orders, "pupil")
 
+    def test_per_kind(self, bdi):
+        orders = ("0", "1", "2")
+        assert bdi.parse_segment_render("galaxy=12;star=none") == {
+            "galaxy": 12, "star": None}
+        assert bdi.parse_segment_render("galaxies=0:6,1:12") == {
+            "galaxy": {"0": 6, "1": 12}}
+        with pytest.raises(ValueError):
+            bdi.parse_segment_render("comet=12")
+        r = bdi.resolve_segment_render({"galaxy": 12}, orders)
+        assert r["nodes"]["star"] == {"0": None, "1": None, "2": None}
+        assert r["nodes"]["galaxy"] == {"0": 12, "1": 12, "2": 12}
+        assert bdi.resolve_segment_render({"star": None}, orders) is None
+        cards = bdi.segment_header_cards(r, orders)
+        assert cards["SEGGAL1"][0] == 12 and "SEGNODE1" not in cards
+        assert "SEGSTR1" not in cards
+        same = bdi.resolve_segment_render(12, orders)
+        assert bdi.segment_header_cards(same, orders)["SEGNODE0"][0] == 12
+        assert bdi.parse_accumulate("star=window") == {"star": "window"}
+        assert bdi.parse_accumulate("tiled") == "tiled"
+        assert bdi.parse_accumulate("none") is None
+        with pytest.raises(ValueError):
+            bdi.parse_accumulate("windows")
+        a = bdi.resolve_accumulate({"star": "window"}, orders)
+        assert a == {"star": "window", "galaxy": None}
+        assert bdi.accumulate_for(a, "galaxy") is None
+        assert bdi.accumulate_card(a) == "star:window,galaxy:none"
+        assert bdi.accumulate_card({"star": "tiled", "galaxy": "tiled"}) == "tiled"
+        assert bdi.resolve_accumulate({"galaxy": None}, orders) is None
+        cfg = bdi.render_options_from_config(
+            {"segment_render": {"galaxies": "auto", "stars": "none"},
+             "accumulate": {"star": "window"}})
+        assert cfg["segment_render"] == {"galaxy": "auto", "star": None}
+        assert cfg["accumulate"] == {"star": "window"}
+
     def test_auto(self, bdi):
+        from roman_disperser import render_strategy as rs
+        orders = ("0", "1", "2")
         assert bdi.parse_segment_render("auto") == "auto"
         assert bdi.parse_segment_render(" AUTO ") == "auto"
         n = bdi.AUTO_SEGMENT_NODES
-        assert bdi.auto_backend_choice("cpu", 1) == (n, None, "cpu x1")
-        assert bdi.auto_backend_choice("cpu", 4)[1] is None
-        # GPU: the production deposit and loop are the fastest (T91).
-        assert bdi.auto_backend_choice("gpu", 1) == (None, None, "gpu x1")
-        assert bdi.auto_backend_choice("gpu", 2) == (None, None, "gpu x2")
-        nodes, mode, label = bdi.auto_backend_choice()
-        assert label == f"{jax.default_backend()} x{jax.device_count()}"
-        assert mode is None
-        assert nodes == (n if jax.default_backend() == "cpu" else None)
+        cpu = bdi.resolve_segment_render("auto", orders, backend="cpu")
+        for kind in ("star", "galaxy"):
+            assert cpu["nodes"][kind] == {o: n for o in orders}
+        gpu = bdi.resolve_segment_render("auto", orders, backend="gpu")
+        assert gpu["nodes"]["star"] == {o: None for o in orders}
+        assert gpu["nodes"]["galaxy"] == {
+            o: rs.strategy("gpu", "galaxy", o).segment_nodes for o in orders}
+        assert all(m is not None for m in gpu["nodes"]["galaxy"].values())
+        # galaxies auto, stars kept on the deposit explicitly
+        g = bdi.resolve_segment_render({"galaxy": "auto"}, orders,
+                                       backend="cpu")
+        assert g["nodes"]["star"] == {o: None for o in orders}
+        for backend in ("cpu", "gpu"):
+            assert bdi.resolve_accumulate("auto", orders, backend) is None
+        for backend, kind, order in [("cpu", "star", "1"), ("gpu", "star", "0"),
+                                     ("cuda", "galaxy", "2")]:
+            st = rs.strategy(backend, kind, order)
+            assert st.accumulate is None
 
     def test_default_off(self, bdi):
         import inspect

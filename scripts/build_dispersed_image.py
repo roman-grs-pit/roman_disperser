@@ -81,6 +81,7 @@ from roman_disperser import (
 )
 import roman_disperser.segment_render as segrender
 import roman_disperser.accumulate as accum
+import roman_disperser.render_strategy as render_strategy
 from roman_disperser.optical_model import RomanOpticalModel
 from roman_disperser.pipeline import (
     DETECTOR_SIZE,
@@ -137,10 +138,31 @@ def resolve_rebin_dlam(rebin_dlam, orders, dlam_angstroms):
     return rebin_dlam
 
 
-def parse_segment_render(text):
-    """Parse ``--segment-render``: node count for every order (``"12"``) or
-    per order (``"0:6,1:12,2:28"``; ``none`` or a missing order keeps the
-    production deposit for that order). Returns None, an int or a dict."""
+# Source kinds the driver renders in separate batches; the render options
+# can differ per kind. Accepted spellings in --segment-render/--accumulate.
+_KIND_NAMES = {"star": "star", "stars": "star",
+               "galaxy": "galaxy", "galaxies": "galaxy"}
+
+
+def _split_kinds(text, parse_one):
+    """``"galaxy=12;star=none"`` -> ``{"galaxy": .., "star": ..}`` (parsed
+    with ``parse_one``), or None if ``text`` names no kind."""
+    if "=" not in text:
+        return None
+    out = {}
+    for item in text.split(";"):
+        if not item.strip():
+            continue
+        kind, _, value = item.partition("=")
+        name = _KIND_NAMES.get(kind.strip().lower())
+        if name is None:
+            raise ValueError(f"unknown source kind {kind.strip()!r} in "
+                             f"{text!r}; use star or galaxy")
+        out[name] = parse_one(value)
+    return out
+
+
+def _parse_segment_one(text):
     if text is None or text.strip().lower() == "none":
         return None
     if text.strip().lower() == "auto":
@@ -155,12 +177,56 @@ def parse_segment_render(text):
     return out
 
 
-# ``auto`` choices by backend: (segment_render, accumulate), the fastest
-# choice measured on each backend. ``auto`` asks for speed, not determinism:
-# pass ``--accumulate window`` or ``tiled`` for a GPU frame sum that does not
-# change from run to run.
+def parse_segment_render(text):
+    """Parse ``--segment-render``: node count for every order (``"12"``),
+    per order (``"0:6,1:12,2:28"``; ``none`` or a missing order keeps the
+    production deposit for that order), ``auto``, or any of these per source
+    kind, ``"galaxy=12;star=none"`` (a kind left out keeps the deposit).
+    Returns None, ``"auto"``, an int, ``{order: n}`` or ``{kind: ...}``."""
+    if text is None:
+        return None
+    by_kind = _split_kinds(text, _parse_segment_one)
+    return _parse_segment_one(text) if by_kind is None else by_kind
+
+
+def _parse_accumulate_one(text):
+    t = (text or "").strip().lower()
+    if t in ("", "none"):
+        return None
+    if t not in (*accum.ACCUMULATE_MODES, "auto"):
+        raise ValueError(f"accumulate must be one of "
+                         f"{(*accum.ACCUMULATE_MODES, 'auto', 'none')}, "
+                         f"got {text!r}")
+    return t
+
+
+def parse_accumulate(text):
+    """Parse ``--accumulate``: ``window``, ``tiled``, ``auto``, ``none``, or
+    per source kind, ``"star=window;galaxy=none"`` (a kind left out keeps
+    the sequential loop)."""
+    if text is None:
+        return None
+    by_kind = _split_kinds(text, _parse_accumulate_one)
+    return _parse_accumulate_one(text) if by_kind is None else by_kind
+
+
+def _argparse_type(parse):
+    def wrapped(text):
+        try:
+            return parse(text)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(str(exc)) from None
+    wrapped.__name__ = parse.__name__
+    return wrapped
+
+
+# ``auto``: the fastest measured choice per (backend, source kind, order),
+# from the table in ``roman_disperser.render_strategy`` (measurements are in
+# its docstring). ``auto`` asks for speed, not determinism: pass ``window``
+# or ``tiled`` for a GPU frame sum that does not change from run to run.
 #
-# Measured on BDI SCA 5 quick mode (cluster T85b/T91, 2026-11-06, jax 0.11.2):
+# End to end, BDI SCA 5 quick mode (cluster T85b/T91, 2026-11-06,
+# jax 0.11.2), before the per-kind table:
 #
 #   ===============================  ==============  =================
 #   setting                          CPU, 16 cores   GPU, 1 x L40S
@@ -173,59 +239,163 @@ def parse_segment_render(text):
 #   seg 56 + window (old GPU auto)   --              21-24 s
 #   --accumulate tiled               113 s           30-45 s
 #   ===============================  ==============  =================
-#
-# The CPU takes the 56-node segment render (reproduces the production
-# deposit to ~1e-6 of peak) with the sequential loop, which is already
-# deterministic there. On GPUs the production deposit and loop are the
-# fastest; several GPUs are not measured yet (T87), and one tiled GPU is 4-6x
-# slower than the loop, so they get the same.
-AUTO_SEGMENT_NODES = 56
+AUTO_SEGMENT_NODES = render_strategy.EXACT_SEGMENT_NODES
+
+# GPU run-to-run determinism (cluster T85b, newrd det_e2e, L40S, BDI SCA 5,
+# 3 repeats): the production loop's scatter-adds are atomics, MODEL differs
+# by <= 5e-7 of peak and ~35 ISIM pixels flip; window mode fixes the frame
+# sum, leaving only the galaxy shape warp (galaxy_disperser bilinear forward
+# scatter, duplicate indices): <= 2e-10 of peak, ISIM identical. With
+# XLA_FLAGS=--xla_gpu_deterministic_ops=true (set before jax starts) both are
+# bit-identical: default 11.6 -> 18.8 s, window 15.1 -> 14.5 s. The flag
+# also moves MODEL by 1.5e-4 of peak against a run without it (both modes).
+GPU_DETERMINISTIC_FLAG = "--xla_gpu_deterministic_ops=true"
 
 
-def auto_backend_choice(backend=None, n_devices=None):
-    """``(segment_render, accumulate, label)`` for ``auto`` on this machine.
+def _is_by_kind(value):
+    return isinstance(value, dict) and value and all(
+        k in render_strategy.KINDS for k in value)
 
-    ``backend`` and ``n_devices`` default to ``jax.default_backend()`` and
-    ``jax.device_count()``; ``label`` is e.g. ``"gpu x2"``. ``None`` means
-    the production setting (deposit, sequential loop).
-    """
-    backend = jax.default_backend() if backend is None else backend
-    n_devices = jax.device_count() if n_devices is None else n_devices
-    if backend == "cpu":
-        segment_render = AUTO_SEGMENT_NODES
+
+def _per_kind(value):
+    """``{kind: value}``: a kind-keyed dict as is (absent kinds None),
+    anything else the same for both kinds."""
+    if _is_by_kind(value):
+        return {k: value.get(k) for k in render_strategy.KINDS}
+    return {k: value for k in render_strategy.KINDS}
+
+
+def _nodes_by_order(spec, orders, kind):
+    if spec is None:
+        return {str(o): None for o in orders}
+    if isinstance(spec, dict):
+        by_order = {str(k): v for k, v in spec.items()}
+        unknown = sorted(set(by_order) - {str(o) for o in orders})
+        if unknown:
+            raise ValueError(f"segment_render ({kind}) has orders {unknown} "
+                             f"not in {list(orders)}")
+        nodes = {str(o): (None if by_order.get(str(o)) is None
+                          else int(by_order[str(o)])) for o in orders}
     else:
-        segment_render = None
-    return segment_render, None, f"{backend} x{n_devices}"
+        nodes = {str(o): int(spec) for o in orders}
+    for o, m in nodes.items():
+        if m is not None and m < 2:
+            raise ValueError(f"segment_render ({kind}) order {o}: need >= 2 "
+                             f"nodes")
+    return nodes
 
 
-def resolve_segment_render(segment_render, orders, psf_at="source"):
-    """``{"nodes": {order: n_nodes or None}, "psf_at": ...}`` or None.
+def resolve_segment_render(segment_render, orders, psf_at="source",
+                           backend=None):
+    """``{"nodes": {kind: {order: n_nodes or None}}, "psf_at": ...}`` or None.
 
     ``segment_render`` is None (production deposit everywhere), one node
-    count for every order, or ``{order: n_nodes or None}``. See
-    ``roman_disperser.segment_render``.
+    count for every order, ``{order: n_nodes or None}``, ``"auto"`` (the
+    ``render_strategy`` table for ``backend``, default this machine's), or
+    ``{kind: any of these}`` per source kind (``"star"``, ``"galaxy"``; a
+    kind left out keeps the deposit). See ``roman_disperser.segment_render``.
     """
     if segment_render is None:
         return None
     if psf_at not in segrender.PSF_AT_MODES:
         raise ValueError(f"segment psf_at must be one of "
                          f"{segrender.PSF_AT_MODES}, got {psf_at!r}")
-    if isinstance(segment_render, dict):
-        by_order = {str(k): v for k, v in segment_render.items()}
-        unknown = sorted(set(by_order) - {str(o) for o in orders})
-        if unknown:
-            raise ValueError(f"segment_render has orders {unknown} not in "
-                             f"{list(orders)}")
-        nodes = {str(o): (None if by_order.get(str(o)) is None
-                          else int(by_order[str(o)])) for o in orders}
-    else:
-        nodes = {str(o): int(segment_render) for o in orders}
-    for o, m in nodes.items():
-        if m is not None and m < 2:
-            raise ValueError(f"segment_render order {o}: need >= 2 nodes")
-    if all(m is None for m in nodes.values()):
+    backend = jax.default_backend() if backend is None else backend
+    nodes = {}
+    for kind, spec in _per_kind(segment_render).items():
+        if spec == "auto":
+            spec = {str(o): render_strategy.strategy(
+                backend, kind, o).segment_nodes for o in orders}
+        nodes[kind] = _nodes_by_order(spec, orders, kind)
+    if all(m is None for by in nodes.values() for m in by.values()):
         return None
     return {"nodes": nodes, "psf_at": psf_at}
+
+
+def resolve_accumulate(accumulate, orders, backend=None):
+    """``{kind: mode or None}`` or None (the sequential loop everywhere).
+
+    ``accumulate`` is None, ``"window"``, ``"tiled"``, ``"auto"`` (the
+    ``render_strategy`` table) or ``{kind: any of these}``.
+    """
+    if accumulate is None:
+        return None
+    backend = jax.default_backend() if backend is None else backend
+    out = {}
+    for kind, mode in _per_kind(accumulate).items():
+        if mode == "auto":
+            modes = {render_strategy.strategy(backend, kind, o).accumulate
+                     for o in orders}
+            if len(modes) != 1:
+                raise ValueError(f"render_strategy table gives {kind} "
+                                 f"different accumulate modes per order "
+                                 f"{sorted(map(str, modes))}; the driver "
+                                 f"takes one per kind")
+            mode = modes.pop()
+        if mode is not None and mode not in accum.ACCUMULATE_MODES:
+            raise ValueError(f"accumulate must be one of "
+                             f"{accum.ACCUMULATE_MODES}, got {mode!r}")
+        out[kind] = mode
+    return out if any(m is not None for m in out.values()) else None
+
+
+def segment_nodes_for(segment, kind, order):
+    """Node count for one (kind, order) from a resolved ``segment`` (also
+    the older ``{"nodes": {order: n}}`` form, same for both kinds)."""
+    if segment is None:
+        return None
+    nodes = segment["nodes"]
+    if _is_by_kind(nodes):
+        nodes = nodes.get(kind) or {}
+    return nodes.get(str(order))
+
+
+def accumulate_for(accumulate, kind):
+    """Mode for one kind from a resolved ``accumulate`` (or a plain mode)."""
+    if isinstance(accumulate, dict):
+        return accumulate.get(kind)
+    return accumulate
+
+
+def segment_header_cards(segment, orders):
+    """``SEGNODE<o>`` when stars and galaxies use the same node count in an
+    order, else ``SEGSTR<o>`` / ``SEGGAL<o>``; absent = the deposit."""
+    cards = {}
+    for o in orders:
+        star = segment_nodes_for(segment, "star", o)
+        gal = segment_nodes_for(segment, "galaxy", o)
+        if star == gal:
+            if star is not None:
+                cards[f"SEGNODE{o}"] = (star, f"Segment render nodes, order {o}")
+            continue
+        if star is not None:
+            cards[f"SEGSTR{o}"] = (star, f"Segment render nodes, stars, order {o}")
+        if gal is not None:
+            cards[f"SEGGAL{o}"] = (gal, f"Segment render nodes, galaxies, order {o}")
+    return cards
+
+
+def accumulate_card(accumulate):
+    """``ACCUM`` value: the mode, or ``star:window,galaxy:none`` if per kind."""
+    if not isinstance(accumulate, dict):
+        return accumulate
+    modes = set(accumulate.values())
+    if len(modes) == 1:
+        return modes.pop()
+    return ",".join(f"{k}:{m or 'none'}" for k, m in accumulate.items())
+
+
+def describe_render(segment, accumulate, orders):
+    """One line per kind: ``star: deposit+loop (0,1,2); galaxy: seg 12 ...``."""
+    parts = []
+    for kind in render_strategy.KINDS:
+        nodes = [segment_nodes_for(segment, kind, o) for o in orders]
+        seg = ("deposit" if all(m is None for m in nodes) else
+               "segment " + "/".join("-" if m is None else str(m)
+                                     for m in nodes))
+        acc = accumulate_for(accumulate, kind) or "loop"
+        parts.append(f"{kind}: {seg}, {acc}")
+    return "; ".join(parts) + f" (orders {'/'.join(map(str, orders))})"
 
 
 def render_options_from_config(cfg):
@@ -234,21 +404,36 @@ def render_options_from_config(cfg):
     The values are those of the CLI flags: ``segment_render`` is a node
     count, ``{order: n_nodes}``, ``"auto"``, ``"none"`` or the flag's string
     form (``"0:6,1:12"``); ``accumulate`` is ``window``, ``tiled``, ``auto``
-    or ``none``; ``segment_psf_at`` is ``source`` or ``landing``. Absent keys
-    keep the production defaults.
+    or ``none``. Both also take a mapping per source kind,
+    ``{star: none, galaxy: auto}``. ``segment_psf_at`` is ``source`` or
+    ``landing``. Absent keys keep the production defaults.
     """
+    def one_seg(v):
+        if isinstance(v, str):
+            return parse_segment_render(v)
+        if isinstance(v, bool):
+            raise ValueError(f"segment_render must be a node count, a "
+                             f"per-order mapping, 'auto' or 'none', got {v!r}")
+        return v
+
     seg = cfg.get("segment_render")
-    if isinstance(seg, str):
-        seg = parse_segment_render(seg)
-    elif isinstance(seg, bool):
-        raise ValueError(f"segment_render must be a node count, a per-order "
-                         f"mapping, 'auto' or 'none', got {seg!r}")
+    if isinstance(seg, dict) and seg and all(
+            str(k).lower() in _KIND_NAMES for k in seg):
+        seg = {_KIND_NAMES[str(k).lower()]: one_seg(v) for k, v in seg.items()}
+    else:
+        seg = one_seg(seg)
     acc = cfg.get("accumulate")
-    if isinstance(acc, str) and acc.strip().lower() == "none":
-        acc = None
-    if acc is not None and acc not in (*accum.ACCUMULATE_MODES, "auto"):
-        raise ValueError(f"accumulate must be one of "
-                         f"{(*accum.ACCUMULATE_MODES, 'auto', 'none')}, "
+    if isinstance(acc, dict):
+        acc = {_KIND_NAMES.get(str(k).lower(), str(k)):
+               _parse_accumulate_one(None if v is None else str(v))
+               for k, v in acc.items()}
+        bad = sorted(set(acc) - set(render_strategy.KINDS))
+        if bad:
+            raise ValueError(f"accumulate has unknown source kinds {bad}")
+    elif isinstance(acc, str):
+        acc = parse_accumulate(acc)
+    elif acc is not None:
+        raise ValueError(f"accumulate must be a mode or a per-kind mapping, "
                          f"got {acc!r}")
     psf_at = cfg.get("segment_psf_at") or "source"
     if psf_at not in segrender.PSF_AT_MODES:
@@ -662,10 +847,11 @@ def make_order_fori_fns(psf_payloads, optical_payloads, sensitivities,
     ``accumulate.TiledDisperser`` objects instead (one per kind and order;
     driven by :func:`disperse_order_sources`). Both combine with
     ``segment`` (segment renderer) or the deposit; ``galaxy_npix_os`` is
-    required.
+    required. A mode, or ``{kind: mode}`` (:func:`resolve_accumulate`).
 
-    ``segment`` (from :func:`resolve_segment_render`) switches the orders
-    it lists to the trace-aligned segment render
+    ``segment`` (from :func:`resolve_segment_render`; nodes per kind and
+    order, or the older per-order form for both kinds) switches the
+    (kind, order) pairs it lists to the trace-aligned segment render
     (``roman_disperser.segment_render``; ``deposit`` and ``hoist_star_psf``
     then do not apply to those orders); ``galaxy_npix_os`` is required with
     it. The segment plans are built per (SCA, order) from the trace
@@ -684,61 +870,60 @@ def make_order_fori_fns(psf_payloads, optical_payloads, sensitivities,
     """
     check_psf_payloads({o: psf_payloads[o] for o in orders}, psf_geometry,
                        detector)
-    star_fori_fns = {}
-    galaxy_fori_fns = {}
+    fns = {"star": {}, "galaxy": {}}
+    wl_np = np.asarray(wavelengths_jax)
     for order in orders:
         rebin = sed_rebin[order] if isinstance(sed_rebin, dict) else sed_rebin
-        n_nodes = None if segment is None else segment["nodes"].get(str(order))
-        if accumulate is not None:
-            star_fori_fns[order], galaxy_fori_fns[order] = _accumulate_fns(
-                accumulate, psf_payloads[order], optical_payloads[order],
-                sensitivities[order], wavelengths_jax, dlam_angstroms, rebin,
-                deposit=deposit, hoist_star_psf=hoist_star_psf,
-                n_nodes=n_nodes,
-                psf_at=None if segment is None else segment["psf_at"],
-                galaxy_npix_os=galaxy_npix_os)
-            continue
-        if n_nodes is not None:
-            wl_np = np.asarray(wavelengths_jax)
-            plans = {
-                kind: segrender.make_segment_plan(
+        for kind in ("star", "galaxy"):
+            n_nodes = segment_nodes_for(segment, kind, order)
+            mode = accumulate_for(accumulate, kind)
+            if mode is not None:
+                (fns[kind][order],) = _accumulate_fns(
+                    mode, psf_payloads[order], optical_payloads[order],
+                    sensitivities[order], wavelengths_jax, dlam_angstroms,
+                    rebin, deposit=deposit, hoist_star_psf=hoist_star_psf,
+                    n_nodes=n_nodes,
+                    psf_at=None if segment is None else segment["psf_at"],
+                    galaxy_npix_os=galaxy_npix_os, kinds=(kind,))
+            elif n_nodes is not None:
+                plan = segrender.make_segment_plan(
                     psf_payloads[order], optical_payloads[order], n_nodes,
                     kind, galaxy_npix=galaxy_npix_os,
                     psf_at=segment["psf_at"],
                     wl_range=(float(wl_np.min()), float(wl_np.max())))
-                for kind in ("star", "galaxy")}
-            star_fori_fns[order] = segrender.make_batched_star_segment(
-                psf_payloads[order], optical_payloads[order],
-                sensitivities[order], wavelengths_jax, dlam_angstroms,
-                plans["star"], sed_rebin=rebin)
-            galaxy_fori_fns[order] = (
-                segrender.make_batched_galaxy_segment(
+                make = (segrender.make_batched_star_segment if kind == "star"
+                        else segrender.make_batched_galaxy_segment)
+                fns[kind][order] = make(
                     psf_payloads[order], optical_payloads[order],
                     sensitivities[order], wavelengths_jax, dlam_angstroms,
-                    plans["galaxy"], sed_rebin=rebin))
-            continue
-        sd_fn = star_disperser.make_star_disperser(
-            psf_payloads[order], optical_payloads[order],
-            deposit=deposit, hoist_psf=hoist_star_psf,
-        )
-        star_fori_fns[order] = make_batched_star_fori(
-            sd_fn, sensitivities[order],
-            wavelengths_jax, dlam_angstroms, sed_rebin=rebin,
-        )
-        gd_fn = galaxy_disperser.make_galaxy_disperser(
-            psf_payloads[order], optical_payloads[order], deposit=deposit,
-        )
-        galaxy_fori_fns[order] = make_batched_galaxy_fori(
-            gd_fn, sensitivities[order],
-            wavelengths_jax, dlam_angstroms, sed_rebin=rebin,
-        )
-    return star_fori_fns, galaxy_fori_fns
+                    plan, sed_rebin=rebin)
+            elif kind == "star":
+                sd_fn = star_disperser.make_star_disperser(
+                    psf_payloads[order], optical_payloads[order],
+                    deposit=deposit, hoist_psf=hoist_star_psf,
+                )
+                fns[kind][order] = make_batched_star_fori(
+                    sd_fn, sensitivities[order],
+                    wavelengths_jax, dlam_angstroms, sed_rebin=rebin,
+                )
+            else:
+                gd_fn = galaxy_disperser.make_galaxy_disperser(
+                    psf_payloads[order], optical_payloads[order],
+                    deposit=deposit,
+                )
+                fns[kind][order] = make_batched_galaxy_fori(
+                    gd_fn, sensitivities[order],
+                    wavelengths_jax, dlam_angstroms, sed_rebin=rebin,
+                )
+    return fns["star"], fns["galaxy"]
 
 
 def _accumulate_fns(mode, psf_payload, optical_payload, sens, wavelengths_jax,
                     dlam_angstroms, rebin, *, deposit, hoist_star_psf,
-                    n_nodes, psf_at, galaxy_npix_os):
-    """Star and galaxy dispersers of one order for ``--accumulate``."""
+                    n_nodes, psf_at, galaxy_npix_os,
+                    kinds=("star", "galaxy")):
+    """Dispersers of one order for ``--accumulate``, one per kind in
+    ``kinds`` (default: star, galaxy)."""
     if mode not in accum.ACCUMULATE_MODES:
         raise ValueError(f"accumulate must be one of {accum.ACCUMULATE_MODES}"
                          f", got {mode!r}")
@@ -748,7 +933,7 @@ def _accumulate_fns(mode, psf_payload, optical_payload, sens, wavelengths_jax,
     # faster (XLA:CPU gains nothing from the vectorised program).
     vectorize = jax.default_backend() != "cpu"
     fns = []
-    for kind in ("star", "galaxy"):
+    for kind in kinds:
         plan = accum.make_window_plan(
             psf_payload, optical_payload, kind, wl_dep,
             renderer="deposit" if n_nodes is None else "segment",
@@ -1028,13 +1213,18 @@ def setup_pipeline(
     segment_render : int or dict, optional
         Opt-in trace-aligned segment render (``roman_disperser.segment_render``):
         number of wavelength nodes for every order, or ``{order: n_nodes}``
-        (orders left out or None keep the deposit). None (default) = the
-        production deposit everywhere. Recorded as ``SEGNODE<o>`` /
-        ``SEGPSFAT`` header cards and ``segment_render`` in the meta YAML.
-    accumulate : {None, "window", "tiled"}
+        (orders left out or None keep the deposit), ``"auto"`` (the
+        ``roman_disperser.render_strategy`` table per backend, source kind
+        and order), or ``{"star": ..., "galaxy": ...}`` with any of these per
+        source kind. None (default) = the production deposit everywhere.
+        Recorded as ``SEGNODE<o>`` (``SEGSTR<o>`` / ``SEGGAL<o>`` when the
+        kinds differ) / ``SEGPSFAT`` header cards and ``segment_render`` in
+        the meta YAML.
+    accumulate : {None, "window", "tiled", "auto"} or dict
         Opt-in per-source windows with a deterministic frame sum
-        (``roman_disperser.accumulate``); None (default) = the production
-        loop. Header card ``ACCUM``, meta ``accumulate``.
+        (``roman_disperser.accumulate``), or ``{kind: mode}``; None
+        (default) = the production loop. Header card ``ACCUM``, meta
+        ``accumulate``.
     segment_psf_at : {"source", "landing"}
         PSF lookup position of the segment render (default "source", as
         the deposit; "landing" = each node's trace position).
@@ -1104,29 +1294,30 @@ def setup_pipeline(
         + ", ".join(f"order {o}: {f * dlam_angstroms:.1f} A"
                     for o, f in sed_rebin.items())
         + f", star PSF hoist: {bool(hoist_star_psf)}")
+    def _has_auto(v):
+        return v == "auto" or (isinstance(v, dict) and "auto" in v.values())
     auto_selection = None
-    if segment_render == "auto" or accumulate == "auto":
-        auto_nodes, auto_accum, auto_selection = auto_backend_choice()
-        if segment_render == "auto":
-            segment_render = auto_nodes
-        if accumulate == "auto":
-            accumulate = auto_accum
-        log(f"Auto selection for {auto_selection}: segment render "
-            f"{segment_render or 'off'}, accumulation "
-            f"{accumulate or 'sequential'}")
+    if _has_auto(segment_render) or _has_auto(accumulate):
+        auto_selection = f"{jax.default_backend()} x{jax.device_count()}"
     segment = resolve_segment_render(segment_render, element.orders,
                                      segment_psf_at)
-    if segment is not None:
-        log("Segment render (nodes per order): "
-            + ", ".join(f"order {o}: {m if m is not None else 'off'}"
-                        for o, m in segment["nodes"].items())
-            + f", PSF at {segment['psf_at']}")
+    accumulate = resolve_accumulate(accumulate, element.orders)
+    if auto_selection or segment is not None or accumulate is not None:
+        log(("Auto selection for " + auto_selection + ": "
+             if auto_selection else "Render: ")
+            + describe_render(segment, accumulate, element.orders)
+            + (f", segment PSF at {segment['psf_at']}" if segment else ""))
     if accumulate is not None:
-        if accumulate not in accum.ACCUMULATE_MODES:
-            raise ValueError(f"accumulate must be one of "
-                             f"{accum.ACCUMULATE_MODES}, got {accumulate!r}")
-        log(f"Accumulation: per-source windows, {accumulate} mode "
-            "(deterministic frame sum)")
+        log("Accumulation: per-source windows for "
+            + ", ".join(f"{k} ({m})" for k, m in accumulate.items() if m)
+            + " (deterministic frame sum)")
+        if (jax.default_backend() != "cpu" and GPU_DETERMINISTIC_FLAG
+                not in os.environ.get("XLA_FLAGS", "")):
+            log(f"  Note: on GPU the frame sum is fixed, but the galaxy shape "
+                f"warp is still a duplicate-index scatter (atomics; ~2e-10 "
+                f"of peak run to run). For bit-identical frames set "
+                f"XLA_FLAGS={GPU_DETERMINISTIC_FLAG} (no cost in window "
+                f"mode on an L40S).")
     order_mag_limits = order_mag_limits_by_order(order_mag_limits,
                                                  element.orders)
     if order_mag_limits:
@@ -1324,13 +1515,12 @@ def process_pointing(
            for o, f in pipeline["sed_rebin"].items()},
         **{f"ORDMAG{o}": (m, f"F158 AB mag limit, order {o}")
            for o, m in pipeline.get("order_mag_limits", {}).items()},
-        **({f"SEGNODE{o}": (m, f"Segment render nodes, order {o}")
-            for o, m in (pipeline.get("segment_render") or {}).get(
-                "nodes", {}).items() if m is not None}),
+        **segment_header_cards(pipeline.get("segment_render"),
+                               element.orders),
         **({"SEGPSFAT": (pipeline["segment_render"]["psf_at"],
                          "Segment render PSF lookup position")}
            if pipeline.get("segment_render") else {}),
-        **({"ACCUM": (pipeline["accumulate"],
+        **({"ACCUM": (accumulate_card(pipeline["accumulate"]),
                       "Per-source windows, deterministic sum mode")}
            if pipeline.get("accumulate") else {}),
         **({"AUTOSEL": (pipeline["auto_selection"],
@@ -1513,16 +1703,17 @@ def process_pointing(
             dtype=jnp.float32,
         )
         for order in element.orders:
-            if isinstance(star_fori_fns[order], accum.TiledDisperser):
-                continue  # tiled programs compile on first use
+            # Tiled programs compile on first use.
             # run_*_batch donate `output`: rebind the accumulator.
-            warmup_output = star_fori_fns[order](
-                1, warmup_spec, warmup_x, warmup_y, warmup_output,
-            ).block_until_ready()
-            warmup_output = galaxy_fori_fns[order](
-                1, warmup_gspec, warmup_gx, warmup_gy,
-                warmup_imgs, warmup_output,
-            ).block_until_ready()
+            if not isinstance(star_fori_fns[order], accum.TiledDisperser):
+                warmup_output = star_fori_fns[order](
+                    1, warmup_spec, warmup_x, warmup_y, warmup_output,
+                ).block_until_ready()
+            if not isinstance(galaxy_fori_fns[order], accum.TiledDisperser):
+                warmup_output = galaxy_fori_fns[order](
+                    1, warmup_gspec, warmup_gx, warmup_gy,
+                    warmup_imgs, warmup_output,
+                ).block_until_ready()
         del warmup_output, warmup_spec, warmup_x, warmup_y
         del warmup_gspec, warmup_gx, warmup_gy, warmup_imgs
         log(f"    JIT compile: {time.time() - t_jit:.1f}s")
@@ -1673,7 +1864,8 @@ def process_pointing(
                         star_fori_fns[order], "star",
                         spec_star, x_star, y_star,
                         output, star_batch_size,
-                        accumulate=pipeline.get("accumulate"),
+                        accumulate=accumulate_for(pipeline.get("accumulate"),
+                                                  "star"),
                     )
                     elapsed = time.time() - t_order
                     ms_per = elapsed / n_star_order * 1e3
@@ -1702,7 +1894,8 @@ def process_pointing(
                         galaxy_fori_fns[order], "galaxy",
                         spec_gal, x_gal, y_gal, output, galaxy_batch_size,
                         sersic_params=sersic_gal, npix=galaxy_npix_os,
-                        accumulate=pipeline.get("accumulate"),
+                        accumulate=accumulate_for(pipeline.get("accumulate"),
+                                                  "galaxy"),
                     )
                     elapsed = time.time() - t_order
                     ms_per = elapsed / n_gal_order * 1e3
@@ -2141,8 +2334,11 @@ galaxy_npix: 30
 # (orders left out keep the deposit), "auto" or none (default).
 # segment_psf_at: source (default) or landing (PSF at each node's position).
 # accumulate: window | tiled | auto | none (default: the production loop).
-# "auto" picks the fastest choice for this machine's backend (see
-# auto_backend_choice in this script).
+# "auto" picks the fastest measured choice per backend, source kind and
+# order (the table in roman_disperser/render_strategy.py; on GPU: segment
+# render for galaxies, the deposit for stars, the sequential loop for both).
+# Both keys also take a mapping per source kind, e.g.
+# segment_render: {galaxy: auto, star: none}, accumulate: {star: window}.
 # segment_render: 12
 # segment_psf_at: source
 # accumulate: none
@@ -2747,13 +2943,16 @@ def main():
                              "0:24,2:24: in those orders only sources with "
                              "F158 <= limit are dispersed (quick mode; "
                              "default: none)")
-    parser.add_argument("--segment-render", type=parse_segment_render,
+    parser.add_argument("--segment-render",
+                        type=_argparse_type(parse_segment_render),
                         default=None,
                         help="Opt-in trace-aligned segment render "
                              "(prototype): wavelength nodes for every order "
                              "(e.g. 12) or per order (e.g. 0:6,1:12,2:28; "
-                             "orders left out keep the deposit), or auto "
-                             "(the fastest: 56 nodes on CPU, off on GPU) "
+                             "orders left out keep the deposit), auto (the "
+                             "fastest measured per backend, source kind and "
+                             "order: roman_disperser/render_strategy.py), or "
+                             "per source kind, e.g. 'galaxy=auto;star=none' "
                              "(batch key segment_render; default: off)")
     parser.add_argument("--segment-psf-at", choices=("source", "landing"),
                         default="source",
@@ -2762,15 +2961,16 @@ def main():
                              "node's landing position on the trace (batch "
                              "key segment_psf_at)")
     parser.add_argument("--accumulate",
-                        choices=accum.ACCUMULATE_MODES + ("auto",),
+                        type=_argparse_type(parse_accumulate),
                         default=None,
                         help="Opt-in (prototype): render each source into "
                              "its own window and add the windows in a fixed "
                              "order ('window': batches, vmapped; 'tiled': "
                              "8x8 detector tiles), deterministic on GPU; "
-                             "'auto': the fastest, which is the sequential "
-                             "loop on CPU and GPU (batch key accumulate; "
-                             "default: off = sequential scatter-add)")
+                             "'auto': the fastest (the sequential loop on "
+                             "CPU and GPU); per source kind, e.g. "
+                             "'star=window' (batch key accumulate; default: "
+                             "none = sequential scatter-add)")
     parser.add_argument("--seed", type=int, default=None,
                         help="RNG seed (required for quick mode)")
     parser.add_argument("--exptime", type=float, default=190.22,

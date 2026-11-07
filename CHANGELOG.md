@@ -188,11 +188,22 @@ before the references can guard the default path.
   (same values as the CLI flags); before, they were rejected as unknown keys.
   `--warmup-only` now checks the config keys too.
 - `--segment-render auto` / `--accumulate auto` pick the fastest measured
-  setting per backend: on GPU the production deposit and loop (7.7 s on an
-  L40S for BDI SCA 5, against 21-24 s for the former auto choice, 56-node
-  segments with windows); on CPU the 56-node segment render with the loop, as
-  before. `auto` asks for speed; pass `window` or `tiled` for a GPU frame sum
-  that is the same from run to run.
+  setting per backend, **source kind and order**, from the table in the new
+  `roman_disperser.render_strategy`: on GPU galaxies take the 12-node segment
+  render with the sequential loop (2x faster in orders 0-1 on L40S, A40 and
+  A5000; an approximation within ~3e-4 of peak of the deposit) and stars the
+  production deposit with the loop; on CPU both take the 56-node segment
+  render with the loop, as before. The former GPU auto (56-node segments with
+  windows) took 21-24 s for BDI SCA 5 against 7.7 s for the default. `auto`
+  asks for speed; pass `window` or `tiled` for a GPU frame sum that is the
+  same from run to run (bit-identical with
+  `XLA_FLAGS=--xla_gpu_deterministic_ops=true`, at no cost in window mode).
+- Both options (CLI and batch keys) take a value per source kind:
+  `--segment-render "galaxy=auto;star=none"`, `--accumulate star=window`,
+  `segment_render: {galaxy: 12}`. Header cards `SEGSTR<o>` / `SEGGAL<o>`
+  replace `SEGNODE<o>` when the kinds differ.
+- `accumulate.TiledDisperser` with a mesh builds its `jit(shard_map)` once
+  instead of re-tracing every call (T87: 161 s vs 33.5 s for 10k galaxies).
 - Resume no longer skips an incomplete product (T66): an existing FITS is
   skipped only if it opens and has MODEL and ISIM of the detector shape with
   all their data present (`pipeline.fits_product_problem`); otherwise it is
