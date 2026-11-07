@@ -392,3 +392,22 @@ def test_golden_frames_marker_follows_the_tag(tmp_path, monkeypatch):
     hydrate.hydrate_asset(asset, "golden-frames-v5", base,
                           locked_tag="golden-frames-v5")
     assert calls == ["golden-frames-v5"]
+
+
+def test_data_repo_env_override():
+    """ROMAN_DISPERSER_DATA_REPO redirects both the manifest and release URLs."""
+    import os
+    import subprocess
+    import sys
+    code = ("import roman_disperser.hydrate as h;"
+            "print(h.DATA_REPO);print(h._RELEASE_API);print(h._RAW)")
+    env = dict(os.environ, ROMAN_DISPERSER_DATA_REPO="someone/rdd")
+    out = subprocess.run([sys.executable, "-c", code], env=env,
+                         capture_output=True, text=True, check=True).stdout
+    assert out.split() == ["someone/rdd",
+                           "https://api.github.com/repos/someone/rdd/releases/tags/",
+                           "https://raw.githubusercontent.com/someone/rdd/{ref}/manifest.json"]
+    env.pop("ROMAN_DISPERSER_DATA_REPO")
+    out = subprocess.run([sys.executable, "-c", code], env=env,
+                         capture_output=True, text=True, check=True).stdout
+    assert out.split()[0] == "roman-grs-pit/roman_disperser_data"

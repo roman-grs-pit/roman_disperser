@@ -1,7 +1,7 @@
 """Hydrate vendored reference data for ``roman_disperser``.
 
 All reference data lives in the public ``roman-grs-pit/roman_disperser_data``
-GitHub releases, versioned independently of the code. This module downloads the
+GitHub releases (override with ``ROMAN_DISPERSER_DATA_REPO=owner/name``), versioned independently of the code. This module downloads the
 blessed versions into the data directory (see :mod:`roman_disperser.paths`).
 It is exposed as the ``roman-disperser-hydrate`` console command, so a plain
 ``pip install`` user can fetch data without a repo checkout or pixi.
@@ -29,6 +29,7 @@ with any existing lock), so producing a reproducible pin is automatic.
 
 import argparse
 import json
+import os
 import sys
 import tarfile
 import tempfile
@@ -38,7 +39,12 @@ from pathlib import Path
 
 from roman_disperser.paths import data_dir
 
-DATA_REPO = "roman-grs-pit/roman_disperser_data"
+# ROMAN_DISPERSER_DATA_REPO points hydrate at another copy of the data repo
+# (owner/name), e.g. a personal fork that carries unpublished releases. The
+# fork must hold every release its own manifest names: GitHub forks do not
+# copy releases.
+DEFAULT_DATA_REPO = "roman-grs-pit/roman_disperser_data"
+DATA_REPO = os.environ.get("ROMAN_DISPERSER_DATA_REPO") or DEFAULT_DATA_REPO
 _RELEASE_API = f"https://api.github.com/repos/{DATA_REPO}/releases/tags/"
 _RAW = f"https://raw.githubusercontent.com/{DATA_REPO}/{{ref}}/manifest.json"
 LOCK_NAME = "data-versions.lock"
@@ -344,6 +350,8 @@ def main(argv=None):
                 if k not in versions and k in manifest_versions:
                     versions[k] = manifest_versions[k]
     print(f"Hydrating {which} into {base}  (versions from {source})")
+    if DATA_REPO != DEFAULT_DATA_REPO:
+        print(f"  data repo: {DATA_REPO} (ROMAN_DISPERSER_DATA_REPO)")
 
     installed = {}
     for key in which:
