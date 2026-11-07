@@ -151,6 +151,7 @@ def test_basis_reproduces_hat_functions():
 
 
 def test_gradients_vs_finite_differences(setup):
+    """Spectral gradients = A^T W (positions: the float64 test below)."""
     A = _operator(setup, precompute=False)
     f = A.render_fn()
     theta = _rand(A.theta_shape, 6)
@@ -161,19 +162,63 @@ def test_gradients_vs_finite_differences(setup):
     W = jnp.asarray(W / W.std(), jnp.float32)
     loss = jax.jit(lambda th, d: jnp.sum(f(th, d) * W))
     d0 = jnp.zeros((A.n_sources, 2), jnp.float32)
-    g_th, g_d = jax.jit(jax.grad(loss, argnums=(0, 1)))(theta, d0)
+    g_th = jax.jit(jax.grad(loss))(theta, d0)
     # spectra: loss is linear in theta, gradient = A^T W exactly
     # (up to the float32 position-ulp effect, see POS_ULP_ATOL; the pixel-
     # uncorrelated W makes A^T W sensitive to it).
     ref = np.asarray(A.transpose(W), np.float64)
     err = np.linalg.norm(np.asarray(g_th, np.float64) - ref) / np.linalg.norm(ref)
     assert err < 1e-3
-    h = 0.02
-    for s in range(A.n_sources):
-        for ax in range(2):
+
+
+@pytest.mark.filterwarnings("ignore:scatter inputs have incompatible types")
+def test_position_gradients_vs_finite_differences(setup):
+    """Position gradients against central differences, in float64.
+
+    In float32 the FD itself is the problem: the dispersed positions carry
+    float32 rounding of ~1e-4 px, so L(+h) - L(-h) scatters by up to 9 % at
+    h = 0.005 px and 1-3 % at 0.02 px (CPU and L40S alike; cluster headline
+    1 saw 4 % on the GPU against a 3 % tolerance). With x64 the source
+    offsets and positions are float64 and that noise is gone.
+
+    The interp model is piecewise linear in position, with a kink every
+    1/os px in each sample's phase, so a central difference is the slope
+    averaged over [-h, h], not the slope at 0. The exact check is therefore
+    L(h) - L(-h) = integral of dL/dd over [-h, h], against AD averaged over
+    the interval (midpoint rule, 64 points): measured <= 4e-4 relative at
+    h = 0.02. AD at 0 against a short FD (h = 0.005) is a coarse check
+    (measured <= 0.7 %; a kink can still fall inside the interval).
+    """
+    with jax.enable_x64(True):
+        A = _operator(setup, precompute=False)
+        f = A.render_fn()
+        theta = jnp.asarray(_rand(A.theta_shape, 6), jnp.float64)
+        from scipy import ndimage
+        W = ndimage.gaussian_filter(
+            np.random.default_rng(7).normal(size=A.shape), 2.0)
+        W = jnp.asarray(W / W.std(), jnp.float64)
+        loss = jax.jit(lambda th, d: jnp.sum(f(th, d) * W))
+        d0 = jnp.zeros((A.n_sources, 2), jnp.float64)
+        grad_d = jax.jit(jax.grad(loss, argnums=1))
+        g0 = np.asarray(grad_d(theta, d0))
+        mean_grad = jax.jit(jax.vmap(grad_d, in_axes=(None, 0)))
+        k = 64
+
+        def fd(s, ax, h):
             e = d0.at[s, ax].set(h)
-            fd = (float(loss(theta, e)) - float(loss(theta, -e))) / (2 * h)
-            assert abs(float(g_d[s, ax]) - fd) <= 0.03 * abs(fd) + 1e-6, (s, ax)
+            return (float(loss(theta, e)) - float(loss(theta, -e))) / (2 * h)
+
+        for s in range(A.n_sources):
+            for ax in range(2):
+                h = 0.02
+                ts = jnp.asarray(h * (2 * (np.arange(k) + 0.5) / k - 1))
+                path = jnp.broadcast_to(d0, (k,) + d0.shape).at[:, s, ax].set(ts)
+                m = float(np.mean(np.asarray(mean_grad(theta, path))[:, s, ax]))
+                f_h = fd(s, ax, h)
+                assert abs(m - f_h) <= 2e-3 * abs(f_h), (s, ax, m, f_h)
+                f_short = fd(s, ax, 0.005)
+                assert abs(g0[s, ax] - f_short) <= 0.03 * abs(f_short), (
+                    s, ax, g0[s, ax], f_short)
 
 
 def test_floor_position_gradient_is_zero(setup):
