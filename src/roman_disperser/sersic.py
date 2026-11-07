@@ -76,11 +76,18 @@ def _sersic_kernel(r_eff_pix, n, ba, theta, y_grid, x_grid):
     y_rot = -x_grid * sin_t + y_grid * cos_t
 
     # Elliptical radius
-    r = jnp.sqrt(x_rot**2 + (y_rot / ba) ** 2)
+    r2 = x_rot**2 + (y_rot / ba) ** 2
+    # The r = 0 pixel (odd npix) has value exp(bn) and zero gradient; sqrt
+    # and (r / r_eff)**(1/n) have infinite or NaN derivatives there, so they
+    # see a dummy value at that pixel (double-where). Other pixels are
+    # computed exactly as before.
+    nonzero = r2 > 0
+    r = jnp.sqrt(jnp.where(nonzero, r2, 1.0))
 
     # Sérsic profile
     bn = compute_bn(n)
-    profile = jnp.exp(-bn * ((r / r_eff_pix) ** (1.0 / n) - 1.0))
+    scaled = jnp.where(nonzero, (r / r_eff_pix) ** (1.0 / n), 0.0)
+    profile = jnp.exp(-bn * (scaled - 1.0))
 
     # Normalize to sum=1
     return profile / profile.sum()
