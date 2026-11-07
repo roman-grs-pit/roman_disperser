@@ -108,7 +108,7 @@ class WindowPlan(NamedTuple):
     stamp_shape : (int, int)
         Oversampled stamp shape of the deposit (PSF for stars, PSF (*)
         galaxy image for galaxies); unused by the segment renderer.
-    deposit : {"interp", "floor"}
+    deposit : {"interp", "floor", "interp_gather"}
     inner : {"ordered", "scatter"}
     stride : int
         Number of interleaved sample classes for ``inner="ordered"``.
@@ -199,7 +199,7 @@ def make_window_plan(psf_payload, optical_payload, kind, wavelengths, *,
         The deposit sample wavelengths (microns; after count rebinning),
         host values. Window extent and ordered stride are computed from them.
     renderer : {"deposit", "segment"}
-    deposit : {"interp", "floor"}
+    deposit : {"interp", "floor", "interp_gather"}
         Deposit scheme for ``renderer="deposit"``.
     n_nodes : int
         Segment nodes (``renderer="segment"``).
@@ -252,7 +252,7 @@ def make_window_plan(psf_payload, optical_payload, kind, wavelengths, *,
         thr = (3.0 / os_ + stride_margin_px / 2, 3.0 / os_ + stride_margin_px / 2)
     else:
         n_y, n_x = star_disperser._native_stamp_size(*stamp_shape, os_)
-        grow = 1 if deposit == "interp" else 0
+        grow = 1 if deposit in star_disperser.INTERP_MODES else 0
         # stamp base m in [floor(u) - 1, floor(u)], origin = floor(min u) - 1
         window = (span[0] + 3 + n_y + grow + margin_px,
                   span[1] + 3 + n_x + grow + margin_px)
@@ -322,8 +322,10 @@ def _deposit_window(plan, binned, grid_wl, wavelengths, counts, xd, yd):
     w_y, w_x = plan.window_shape
     window = jnp.zeros((w_y, w_x), counts.dtype)
     os_ = plan.oversample
+    if plan.deposit == "interp" and not star_disperser.is_extended(binned, os_):
+        binned = star_disperser.extend_phases(binned)
     n_y, n_x = binned.shape[-2:]
-    if plan.deposit == "interp":
+    if plan.deposit == "interp_gather":
         n_y, n_x = n_y + 1, n_x + 1
     k_y = jnp.arange(n_y)
     k_x = jnp.arange(n_x)
@@ -438,7 +440,8 @@ def render_star_window(psf_payload, optical_payload, xsca, ysca, wavelengths,
         binned = psf_model_interp(psf_payload, xsca, ysca, binned=True)
     else:
         binned = star_disperser.bin_stack_phases(
-            psf_model_interp(psf_payload, xsca, ysca), os_)
+            psf_model_interp(psf_payload, xsca, ysca), os_,
+            extended=(plan.deposit == "interp"))
     return _deposit_window(plan, binned, psf_payload['wavelengths'],
                            wavelengths, counts, xd, yd)
 
@@ -472,7 +475,8 @@ def render_galaxy_window(psf_payload, optical_payload, image, x0, y0, counts,
     convolved, _, _, grid_wl = galaxy_disperser.prepare_galaxy_images(
         optical_payload, psf_payload, image, x0, y0, 1.0 / os_, 1.0 / os_,
         geometry=geometry)
-    binned = star_disperser.bin_stack_phases(convolved, os_)
+    binned = star_disperser.bin_stack_phases(
+        convolved, os_, extended=(plan.deposit == "interp"))
     return _deposit_window(plan, binned, grid_wl, wavelengths, counts, xd, yd)
 
 
@@ -599,7 +603,8 @@ def _arrays(psf_payload, optical_payload, plan, hoist_psf):
     if hoist_psf and plan.kind == "star" and plan.renderer == "deposit":
         pa, oa = arrays
         pa = dict(pa, psf_grid_binned=star_disperser.bin_psf_grid(
-            pa['psf_grid'], plan.oversample))
+            pa['psf_grid'], plan.oversample,
+            extended=(plan.deposit == "interp")))
         arrays = (pa, oa)
     return arrays, static
 

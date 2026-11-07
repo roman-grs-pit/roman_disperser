@@ -27,9 +27,35 @@ from . import optical_model_jax as omj
 from . import psf_model
 
 # Deposit schemes of deposit_binned / deposit_stack_native. "interp" is the
-# default; "floor" is the historical deposit (the pinned golden frames are
-# blessed with it). See deposit_binned.
-DEPOSIT_MODES = ("floor", "interp")
+# default; "floor" is the historical deposit. "interp_gather" is the same
+# interpolating deposit as "interp", computed the pre-2026-11 way (four
+# phase gathers per sample plus pad/where placement of the wrapped taps); it
+# is kept for comparison and equals "interp" to float32 summation order.
+# See deposit_binned.
+DEPOSIT_MODES = ("floor", "interp", "interp_gather")
+INTERP_MODES = ("interp", "interp_gather")
+
+# Wavelengths per deposit chunk when the caller does not choose one. On GPU
+# the extended-table interp deposit is 3-30 % faster at 8000 than at 2000
+# (L40S and A40, RESULTS_deposit_gpu.md); on CPU 2000 is kept (speed is
+# insensitive to it there and the per-chunk arrays stay smaller).
+CHUNK_SIZE_GPU = 8000
+CHUNK_SIZE_CPU = 2000
+
+
+def default_chunk_size(backend=None):
+    """Deposit chunk size for ``backend`` (default: JAX's default backend)."""
+    backend = backend or jax.default_backend()
+    return CHUNK_SIZE_CPU if backend == "cpu" else CHUNK_SIZE_GPU
+
+
+def _resolve_chunk_size(chunk_size):
+    return default_chunk_size() if chunk_size is None else int(chunk_size)
+
+
+def is_extended(binned, oversample):
+    """True if ``binned`` is an extended phase table ([os+1, os+1, ...])."""
+    return binned.shape[0] == int(oversample) + 1
 
 
 def make_psf_pixel_grid(psf_shape, oversample):
@@ -260,7 +286,7 @@ def deposit_stack_native(
         chunk 500 (galaxy, 77x77 native stamp: ~47 MB f32 values + ~95 MB
         int32 indices, vs ~184 + ~367 MB; sizes computed from the array
         shapes, not a measured peak).
-    deposit : {"floor", "interp"}, optional
+    deposit : {"floor", "interp", "interp_gather"}, optional
         Deposit scheme (default ``"interp"``; ``"floor"`` is the historical deposit); see :func:`deposit_binned`.
 
     Returns
@@ -269,7 +295,7 @@ def deposit_stack_native(
         [H, W] with the dispersed stamp flux added.
     """
     os_ = int(oversample)
-    binned = bin_stack_phases(stack, os_)
+    binned = bin_stack_phases(stack, os_, extended=(deposit == "interp"))
     return deposit_binned(
         binned, stack.shape[-2:], grid_wl, wavelengths, flux,
         xsca_disp, ysca_disp, output,
@@ -287,7 +313,7 @@ def _native_stamp_size(s_y, s_x, os_):
     return (s_y - 2) // os_ + 2, (s_x - 2) // os_ + 2
 
 
-def bin_stack_phases(stack, oversample):
+def bin_stack_phases(stack, oversample, extended=False):
     """Bin oversampled stamps to native pixels for all ``os x os`` phases.
 
     Which subpixels share a native pixel depends on the stamp centre's
@@ -306,16 +332,27 @@ def bin_stack_phases(stack, oversample):
     oversample : int
         Stamp oversampling factor.
 
+    extended : bool, optional
+        Return the extended phase table of the ``"interp"`` deposit: phases
+        0..os per axis (phase os is phase 0 one native pixel higher), each
+        binned at n + 1 native pixels. With it the two interpolation taps
+        of every axis are always the adjacent entries q and q + 1 at the
+        same base pixel (see :func:`native_stamps`).
+
     Returns
     -------
     binned : jnp.ndarray
         [os, os, ..., n_y, n_x] with ``n = (S-2)//os + 2`` per axis;
         ``binned[p_y, p_x]`` is the stack binned at phase (p_y, p_x).
+        With ``extended=True``: [os+1, os+1, ..., n_y+1, n_x+1].
     """
     os_ = int(oversample)
     s_y, s_x = stack.shape[-2:]
     lead = stack.shape[:-2]
     n_y, n_x = _native_stamp_size(s_y, s_x, os_)
+    n_p = os_ + 1 if extended else os_
+    if extended:
+        n_y, n_x = n_y + 1, n_x + 1
     no_pad = [(0, 0)] * len(lead)
 
     def bin_phase(p_y, p_x):
@@ -326,9 +363,27 @@ def bin_stack_phases(stack, oversample):
         return padded.reshape(lead + (n_y, os_, n_x, os_)).sum(axis=(-3, -1))
 
     return jnp.stack([
-        jnp.stack([bin_phase(p_y, p_x) for p_x in range(os_)])
-        for p_y in range(os_)
-    ])  # [os, os, ..., n_y, n_x]
+        jnp.stack([bin_phase(p_y, p_x) for p_x in range(n_p)])
+        for p_y in range(n_p)
+    ])  # [os(+1), os(+1), ..., n_y(+1), n_x(+1)]
+
+
+def extend_phases(binned):
+    """Extended phase table of a standard one (see :func:`bin_stack_phases`).
+
+    Exactly equal to ``bin_stack_phases(stack, os, extended=True)`` for
+    ``binned = bin_stack_phases(stack, os)``: entries q < os are phase q
+    zero-padded by one native pixel at the high edge, entry os is phase 0
+    shifted by one native pixel. Used when a caller hands the ``"interp"``
+    deposit a standard table (e.g. ``linear_operator``); production callers
+    build the extended table directly.
+    """
+    lead = [(0, 0)] * (binned.ndim - 2)
+    hi = jnp.pad(binned, lead + [(0, 1), (0, 1)])
+    shift_x = jnp.pad(binned[:, :1], lead + [(0, 1), (1, 0)])
+    e = jnp.concatenate([hi, shift_x], axis=1)        # [os, os+1, ...]
+    shift_y = jnp.pad(e[:1], lead + [(1, 0), (0, 0)])[..., :-1, :]
+    return jnp.concatenate([e, shift_y], axis=0)      # [os+1, os+1, ...]
 
 
 def _interp_taps(u, os_):
@@ -383,10 +438,15 @@ def native_stamps(binned, stamp_shape, grid_wl, wl_chunk, flux_chunk, x_chunk,
     body of :func:`deposit_binned`, factored out so that window renderers
     (``roman_disperser.accumulate``) share the arithmetic exactly).
 
+    ``binned`` is the extended phase table (``bin_stack_phases(...,
+    extended=True)``) for ``deposit="interp"`` and the standard one for
+    ``"floor"`` and ``"interp_gather"``.
+
     Returns
     -------
     native : [N, n_y(+1), n_x(+1)] flux-scaled native stamps (``+1`` for
-        ``deposit="interp"``)
+        the interpolating deposits; for ``"interp"`` the table already has
+        the extra pixel)
     m_y, m_x : [N] int32 0-based detector index of each stamp's pixel (0, 0)
     """
     os_ = int(oversample)
@@ -412,6 +472,32 @@ def native_stamps(binned, stamp_shape, grid_wl, wl_chunk, flux_chunk, x_chunk,
         return lo + t * (hi - lo)
 
     if deposit == "interp":
+        if not is_extended(binned, os_):
+            raise ValueError("deposit='interp' needs the extended phase table "
+                             "(bin_stack_phases(..., extended=True) or "
+                             "extend_phases)")
+        # Extended table: the two taps per axis are entries q and q + 1 at
+        # the same base pixel (wrapped taps included), so each sample reads
+        # one contiguous [2, 2, 2, n_y, n_x] block (y tap, x tap, wavelength
+        # node) and sums it with 8 weights. Same arithmetic as the
+        # "interp_gather" branch, regrouped.
+        q_y, _, w_y, m_y, _ = _interp_taps(u_y, os_)
+        q_x, _, w_x, m_x, _ = _interp_taps(u_x, os_)
+        e_y, e_x = binned.shape[-2:]
+
+        def block(q_y, q_x, i0):
+            return jax.lax.dynamic_slice(
+                binned, (q_y, q_x, i0, 0, 0), (2, 2, 2, e_y, e_x))
+
+        blk = jax.vmap(block)(q_y, q_x, i0)  # [N, 2, 2, 2, n_y, n_x]
+        t1 = t[:, 0, 0]
+        wy = jnp.stack([1 - w_y, w_y], -1)
+        wx = jnp.stack([1 - w_x, w_x], -1)
+        wt = jnp.stack([1 - t1, t1], -1)
+        w = (wy[:, :, None, None] * wx[:, None, :, None]
+             * wt[:, None, None, :]) * flux_chunk[:, None, None, None]
+        return jnp.einsum("nabc,nabcyx->nyx", w, blk), m_y, m_x
+    if deposit == "interp_gather":
         pa_y, pb_y, w_y, m_y, d_y = _interp_taps(u_y, os_)
         pa_x, pb_x, w_x, m_x, d_x = _interp_taps(u_x, os_)
         w_x = w_x[:, None, None]
@@ -461,7 +547,15 @@ def deposit_binned(
     ``"interp"``
         Each fine wavelength combines the two adjacent phases per axis
         (four phase stamps, bilinear weights from :func:`_interp_taps`)
-        into one [n_y+1, n_x+1] stamp, then scatters it once. This is the
+        into one [n_y+1, n_x+1] stamp, then scatters it once. ``binned``
+        should be the extended phase table (``bin_stack_phases(...,
+        extended=True)``); a standard table is extended once per call.
+        Each sample then reads one contiguous block of the table instead of
+        four gathers, which is what makes it ~as fast as floor on GPU.
+    ``"interp_gather"``
+        The same deposit computed with four separate phase gathers and
+        pad/where placement of wrapped taps (the pre-2026-11 code). Equal to
+        ``"interp"`` to float32 summation order; kept for comparison. This is the
         exact box-overlap deposit of the oversampled stamp (each subpixel a
         box of width 1/os px split between native pixels by overlap
         length), continuous and piecewise linear in the centre position,
@@ -478,13 +572,14 @@ def deposit_binned(
         raise ValueError(
             f"deposit must be one of {DEPOSIT_MODES}, got {deposit!r}")
     os_ = int(oversample)
+    chunk_size = _resolve_chunk_size(chunk_size)
+    if deposit == "interp" and not is_extended(binned, os_):
+        binned = extend_phases(binned)  # once per call, outside the scan
     n_y, n_x = binned.shape[-2:]
-    if deposit == "interp":
-        k_y = jnp.arange(n_y + 1)
-        k_x = jnp.arange(n_x + 1)
-    else:
-        k_y = jnp.arange(n_y)
-        k_x = jnp.arange(n_x)
+    if deposit == "interp_gather":
+        n_y, n_x = n_y + 1, n_x + 1
+    k_y = jnp.arange(n_y)
+    k_x = jnp.arange(n_x)
 
     # Split into n_chunks = ceil(N / chunk_size) equal chunks of at most
     # chunk_size (not chunk_size each), so the zero-flux padding is < n_chunks
@@ -539,7 +634,7 @@ def disperse_star_psf(
     output,
     rel_x=None,
     rel_y=None,
-    chunk_size=2000,
+    chunk_size=None,
     deposit="interp",
     dispersed=None,
 ):
@@ -578,11 +673,12 @@ def disperse_star_psf(
     rel_y : jnp.ndarray, optional
         Unused; kept for backward compatibility.
     chunk_size : int, optional
-        Number of wavelengths to process per chunk (default: 2000). Speed
-        is insensitive to it (500 and 2000 measured identical on a10g);
-        2000 is kept because the native-resolution per-chunk arrays make
+        Number of wavelengths to process per chunk (default: None =
+        :func:`default_chunk_size`, 8000 on GPU and 2000 on CPU). On CPU
+        speed is insensitive to it (500 and 2000 measured identical);
+        2000 is kept there because the native-resolution per-chunk arrays make
         it cheap in memory. See :func:`deposit_stack_native`.
-    deposit : {"floor", "interp"}, optional
+    deposit : {"floor", "interp", "interp_gather"}, optional
         Deposit scheme (default ``"interp"``; ``"floor"`` is the historical deposit); see :func:`deposit_binned`.
     dispersed : (xsca_disp, ysca_disp), optional
         Precomputed ``_compute_dispersed_positions(optical_payload,
@@ -658,7 +754,8 @@ def disperse_star_psf(
         psfs_grid = psf_model.interpolate_psf_spatial(
             psf_payload, xsca_star, ysca_star
         )  # [N_wl_grid, PSF_y, PSF_x]
-        binned = bin_stack_phases(psfs_grid, oversample)
+        binned = bin_stack_phases(psfs_grid, oversample,
+                                  extended=(deposit == "interp"))
 
     # Step 2: Compute ALL dispersed positions (cheap, vectorized)
     if dispersed is None:
@@ -675,7 +772,7 @@ def disperse_star_psf(
     )
 
 
-def bin_psf_grid(psf_grid, oversample):
+def bin_psf_grid(psf_grid, oversample, extended=False):
     """Phase-bin every node of a PSF grid (the star-PSF hoist, once per SCA).
 
     Parameters
@@ -688,19 +785,21 @@ def bin_psf_grid(psf_grid, oversample):
     -------
     jnp.ndarray
         [N_y, N_x, os, os, N_wl, n_y, n_x], i.e. :func:`bin_stack_phases`
-        of each node stack. Same size as ``psf_grid`` (~121 MB for the
+        of each node stack ([N_y, N_x, os+1, os+1, N_wl, n_y+1, n_x+1] with
+        ``extended=True``, ~1.6x the memory). Same size as ``psf_grid`` (~121 MB for the
         production 4x4x56 grid at 184x184).
     """
-    return _bin_psf_grid_jit(psf_grid, oversample=int(oversample))
+    return _bin_psf_grid_jit(psf_grid, oversample=int(oversample),
+                             extended=bool(extended))
 
 
-@partial(jax.jit, static_argnames=("oversample",))
-def _bin_psf_grid_jit(psf_grid, *, oversample):
-    binned = bin_stack_phases(psf_grid, oversample)  # [os, os, Ny, Nx, ...]
+@partial(jax.jit, static_argnames=("oversample", "extended"))
+def _bin_psf_grid_jit(psf_grid, *, oversample, extended=False):
+    binned = bin_stack_phases(psf_grid, oversample, extended=extended)
     return jnp.moveaxis(binned, (0, 1), (2, 3))
 
 
-def make_star_disperser(psf_payload, optical_payload, chunk_size=2000,
+def make_star_disperser(psf_payload, optical_payload, chunk_size=None,
                         deposit="interp", hoist_psf=False):
     """
     Create a JIT-compiled star disperser for a specific detector/order.
@@ -717,12 +816,13 @@ def make_star_disperser(psf_payload, optical_payload, chunk_size=2000,
     optical_payload : dict
         Optical model payload from optical_model_jax.make_sca_payload()
     chunk_size : int, optional
-        Number of wavelengths to process per chunk (default: 2000). Speed
-        is insensitive to it (500 and 2000 measured identical on a10g);
+        Number of wavelengths to process per chunk (default: None =
+        :func:`default_chunk_size`, 8000 on GPU and 2000 on CPU). On CPU
+        speed is insensitive to it (500 and 2000 measured identical);
         it sets per-chunk memory, which at native resolution is
         chunk_size × n_y × n_x × 4 bytes for the values plus twice that
         for the int32 indices. See :func:`deposit_stack_native`.
-    deposit : {"floor", "interp"}, optional
+    deposit : {"floor", "interp", "interp_gather"}, optional
         Deposit scheme (default ``"interp"``, the exact box-overlap deposit,
         continuous in position); ``"floor"`` is the historical deposit.
         See :func:`deposit_binned`.
@@ -789,12 +889,14 @@ def make_star_disperser(psf_payload, optical_payload, chunk_size=2000,
     if deposit not in DEPOSIT_MODES:
         raise ValueError(
             f"deposit must be one of {DEPOSIT_MODES}, got {deposit!r}")
+    chunk_size = _resolve_chunk_size(chunk_size)
 
     arrays, static = jit_payload.split_payloads(psf_payload, optical_payload)
     if hoist_psf:
         psf_arrays, optical_arrays = arrays
         psf_arrays = dict(psf_arrays, psf_grid_binned=bin_psf_grid(
-            psf_arrays['psf_grid'], oversample))
+            psf_arrays['psf_grid'], oversample,
+            extended=(deposit == "interp")))
         arrays = (psf_arrays, optical_arrays)
 
     def disperse_star(xsca, ysca, wavelengths, flux, output):
@@ -835,7 +937,7 @@ def make_star_disperser(psf_payload, optical_payload, chunk_size=2000,
 
 @partial(jax.jit, static_argnames=("static", "chunk_size", "deposit"))
 def disperse_star_jit(arrays, xsca, ysca, wavelengths, flux, output, *,
-                      static, chunk_size=2000, deposit="interp"):
+                      static, chunk_size=None, deposit="interp"):
     """Jitted :func:`disperse_star_psf` with the payloads as arguments.
 
     ``arrays, static = jit_payload.split_payloads(psf_payload,

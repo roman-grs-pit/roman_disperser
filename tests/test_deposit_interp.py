@@ -333,3 +333,112 @@ class TestBatchPath:
         np.testing.assert_allclose(out["interp"].sum(), out["floor"].sum(),
                                    rtol=1e-5)
         assert not np.allclose(out["interp"], out["floor"])
+
+
+class TestExtendedTable:
+    """``deposit="interp"`` reads an extended phase table (one contiguous
+    block per sample); ``"interp_gather"`` is the pre-2026-11 computation of
+    the same deposit. They must agree to float32 summation order."""
+
+    @pytest.mark.parametrize("s_y,s_x,os_", [
+        (12, 12, 4), (9, 9, 4), (10, 13, 4), (11, 8, 4), (7, 10, 2),
+        (47, 47, 4)])
+    def test_extend_equals_direct(self, s_y, s_x, os_):
+        rng = np.random.default_rng(s_y * 31 + s_x)
+        stack = jnp.asarray(rng.uniform(0, 1, (2, 3, s_y, s_x)), jnp.float32)
+        direct = star_disperser.bin_stack_phases(stack, os_, extended=True)
+        via = star_disperser.extend_phases(
+            star_disperser.bin_stack_phases(stack, os_))
+        assert direct.shape == via.shape
+        assert direct.shape[:2] == (os_ + 1, os_ + 1)
+        np.testing.assert_array_equal(np.asarray(direct), np.asarray(via))
+
+    @pytest.mark.parametrize("s_y,s_x,os_", [
+        (12, 12, 4), (9, 9, 4), (10, 13, 4), (11, 8, 4), (7, 10, 2)])
+    @pytest.mark.parametrize("chunk", [5, 64])
+    def test_matches_gather(self, s_y, s_x, os_, chunk):
+        stack, grid_wl, wl, flux, x, y = _random_case(s_y, s_x, 301,
+                                                      7 * s_y + s_x)
+        # phase-aligned and wrap positions (p0 = -1 and p0 = os - 1)
+        extra = jnp.array([30.0, 30.01, 30.125, 30.24, 30.5, 30.99, 31.0],
+                          jnp.float32)
+        x = jnp.concatenate([x, extra, extra[::-1]])
+        y = jnp.concatenate([y, extra[::-1], extra])
+        wl = jnp.concatenate([wl, wl[:14]])
+        flux = jnp.concatenate([flux, flux[:14]])
+        out = {}
+        for d in ("interp", "interp_gather"):
+            out[d] = np.asarray(star_disperser.deposit_stack_native(
+                stack, grid_wl, wl, flux, x, y, jnp.zeros(SHAPE, jnp.float32),
+                oversample=os_, chunk_size=chunk, deposit=d), np.float64)
+        peak = out["interp_gather"].max()
+        assert np.abs(out["interp"] - out["interp_gather"]).max() <= 1e-6 * peak
+        np.testing.assert_allclose(out["interp"].sum(),
+                                   out["interp_gather"].sum(), rtol=1e-6)
+
+    def test_standard_table_is_extended_once(self):
+        stack, grid_wl, wl, flux, x, y = _random_case(12, 12, 50, 3)
+        std = star_disperser.bin_stack_phases(stack, 4)
+        ext = star_disperser.bin_stack_phases(stack, 4, extended=True)
+        args = (grid_wl, wl, flux, x, y, jnp.zeros(SHAPE, jnp.float32))
+        a = star_disperser.deposit_binned(std, (12, 12), *args, oversample=4,
+                                          chunk_size=16, deposit="interp")
+        b = star_disperser.deposit_binned(ext, (12, 12), *args, oversample=4,
+                                          chunk_size=16, deposit="interp")
+        np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+
+    def test_native_stamps_rejects_standard_table(self):
+        stack, grid_wl, wl, flux, x, y = _random_case(12, 12, 4, 4)
+        std = star_disperser.bin_stack_phases(stack, 4)
+        with pytest.raises(ValueError, match="extended"):
+            star_disperser.native_stamps(std, (12, 12), grid_wl, wl, flux, x,
+                                         y, 4, "interp")
+
+    def test_position_gradient_matches_gather(self):
+        stack, grid_wl, wl, flux, x, y = _random_case(10, 10, 40, 5)
+        w = jnp.asarray(np.random.default_rng(6).uniform(0, 1, SHAPE),
+                        jnp.float32)
+
+        def loss(dx, d):
+            o = star_disperser.deposit_stack_native(
+                stack, grid_wl, wl, flux, x + dx, y + 0.5 * dx,
+                jnp.zeros(SHAPE, jnp.float32), oversample=4, chunk_size=16,
+                deposit=d)
+            return jnp.sum(o * w)
+
+        for dx in (0.0, 0.037, 0.2):
+            g_new = jax.grad(loss)(jnp.float32(dx), "interp")
+            g_old = jax.grad(loss)(jnp.float32(dx), "interp_gather")
+            np.testing.assert_allclose(float(g_new), float(g_old),
+                                       rtol=1e-4, atol=1e-4)
+
+    @pytest.mark.parametrize("hoist", [False, True])
+    def test_stars_batch_matches_gather(self, grism_payloads, hoist):
+        psf, opt = grism_payloads
+        a = TestBatchPath()._stars(psf, opt, "interp", hoist, 1)
+        b = TestBatchPath()._stars(psf, opt, "interp_gather", hoist, 1)
+        assert np.abs(a - b).max() <= 1e-6 * b.max()
+        np.testing.assert_allclose(a.sum(), b.sum(), rtol=1e-6)
+
+    def test_galaxy_batch_matches_gather(self, grism_payloads):
+        psf, opt = grism_payloads
+        wl = jnp.linspace(1.0, 1.8, 21).astype(jnp.float32)
+        sens = jnp.ones_like(wl)
+        img = jnp.zeros((16, 16), jnp.float32).at[7:9, 6:10].set(1.0 / 8)
+        out = {}
+        for dep in ("interp", "interp_gather"):
+            fn = galaxy_disperser.make_galaxy_disperser(psf, opt, deposit=dep)
+            run = make_batched_galaxy_fori(fn, sens, wl, 2.0)
+            out[dep] = np.asarray(run(
+                1, jnp.ones((1, 21), jnp.float32),
+                jnp.array([2044.37], jnp.float32),
+                jnp.array([1500.81], jnp.float32), img[None],
+                jnp.zeros((4088, 4088), jnp.float32)), np.float64)
+        b = out["interp_gather"]
+        assert np.abs(out["interp"] - b).max() <= 1e-6 * b.max()
+        np.testing.assert_allclose(out["interp"].sum(), b.sum(), rtol=1e-6)
+
+    def test_default_chunk_size(self):
+        assert star_disperser.default_chunk_size("cpu") == 2000
+        assert star_disperser.default_chunk_size("gpu") == 8000
+        assert star_disperser.default_chunk_size("cuda") == 8000

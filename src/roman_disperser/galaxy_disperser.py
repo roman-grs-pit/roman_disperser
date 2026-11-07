@@ -327,7 +327,7 @@ def disperse_galaxy(
     spectrum,
     wavelengths,
     output,
-    chunk_size=2000,
+    chunk_size=None,
     deposit="interp",
     geometry=None,
     dispersed=None,
@@ -359,11 +359,12 @@ def disperse_galaxy(
     output : jnp.ndarray
         [H, W] detector accumulator (typically 4088x4088)
     chunk_size : int, optional
-        Wavelengths per chunk (default: 2000). Speed is insensitive to it
-        (500 and 2000 measured identical on a10g); 2000 is kept because
+        Wavelengths per chunk (default: None =
+        ``star_disperser.default_chunk_size()``, 8000 on GPU and 2000 on
+        CPU). On CPU speed is insensitive to it (500 and 2000 identical); 2000 is kept there because
         it is cheap in memory at native resolution — see
         star_disperser.deposit_stack_native.
-    deposit : {"floor", "interp"}, optional
+    deposit : {"floor", "interp", "interp_gather"}, optional
         Deposit scheme (default ``"interp"``; ``"floor"`` is the historical deposit); see
         star_disperser.deposit_binned.
     geometry, dispersed : optional
@@ -404,7 +405,7 @@ def disperse_galaxy(
     )
 
 
-def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000,
+def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=None,
                           deposit="interp"):
     """Create a JIT-compiled galaxy disperser for one (SCA, order).
 
@@ -423,11 +424,12 @@ def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000,
     optical_payload : dict
         Optical model payload from optical_model_jax.make_sca_payload()
     chunk_size : int, optional
-        Wavelengths per chunk (default: 2000). Speed is insensitive to it
-        (500 and 2000 measured identical on a10g); 2000 is kept because
+        Wavelengths per chunk (default: None =
+        ``star_disperser.default_chunk_size()``, 8000 on GPU and 2000 on
+        CPU). On CPU speed is insensitive to it (500 and 2000 identical); 2000 is kept there because
         it is cheap in memory at native resolution — see
         star_disperser.deposit_stack_native.
-    deposit : {"floor", "interp"}, optional
+    deposit : {"floor", "interp", "interp_gather"}, optional
         Deposit scheme (default ``"interp"``; ``"floor"`` is the historical deposit); see
         star_disperser.deposit_binned.
 
@@ -453,6 +455,7 @@ def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000,
     if deposit not in star_disperser.DEPOSIT_MODES:
         raise ValueError(f"deposit must be one of "
                          f"{star_disperser.DEPOSIT_MODES}, got {deposit!r}")
+    chunk_size = star_disperser._resolve_chunk_size(chunk_size)
 
     arrays, static = jit_payload.split_payloads(psf_payload, optical_payload)
 
@@ -471,7 +474,7 @@ def make_galaxy_disperser(psf_payload, optical_payload, chunk_size=2000,
 
 @partial(jax.jit, static_argnames=("static", "chunk_size", "deposit"))
 def disperse_galaxy_jit(arrays, image, x0, y0, spectrum, wavelengths, output,
-                        *, static, chunk_size=2000, deposit="interp"):
+                        *, static, chunk_size=None, deposit="interp"):
     """Jitted :func:`disperse_galaxy` with the payloads as arguments.
 
     ``arrays, static = jit_payload.split_payloads(psf_payload,

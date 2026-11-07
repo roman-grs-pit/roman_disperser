@@ -620,7 +620,7 @@ def _source_loop(geometry_fn, body_fn, n_sources, batch_size, output):
          donate_argnames=("output",))
 def run_star_batch(arrays, sens, wavelengths, dlam_angstroms,
                    n_sources, spectra, xsca, ysca, output, *,
-                   static, chunk_size=2000, deposit="interp", sed_rebin=1):
+                   static, chunk_size=None, deposit="interp", sed_rebin=1):
     """Disperse the first ``n_sources`` stars of a padded batch (jitted).
 
     Every per-SCA input is an argument, so the compiled program depends only
@@ -770,7 +770,7 @@ def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
          donate_argnames=("output",))
 def run_galaxy_batch(arrays, sens, wavelengths, dlam_angstroms,
                      n_sources, spectra, xsca, ysca, images, output, *,
-                     static, chunk_size=2000, deposit="interp", sed_rebin=1):
+                     static, chunk_size=None, deposit="interp", sed_rebin=1):
     """Disperse the first ``n_sources`` galaxies of a padded batch (jitted).
 
     Same contract as :func:`run_star_batch`, plus ``images``

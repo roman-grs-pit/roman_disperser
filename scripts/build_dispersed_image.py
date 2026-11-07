@@ -2920,11 +2920,12 @@ def main():
                         help="Galaxies per JIT batch (default: 100)")
     parser.add_argument("--galaxy-npix", type=int, default=30,
                         help="Sersic image size in native pixels (default: 30)")
-    parser.add_argument("--deposit", choices=("floor", "interp"),
+    parser.add_argument("--deposit", choices=("floor", "interp", "interp_gather"),
                         default=None,
                         help="Deposit scheme (default: interp, the exact "
                              "box-overlap deposit; floor is the historical "
-                             "deposit) (quick mode)")
+                             "deposit; interp_gather is interp computed the "
+                             "pre-2026-11 way, for comparison) (quick mode)")
     parser.add_argument("--rebin-dlam", type=parse_rebin_dlam, default=None,
                         help="Rebin counts to this spacing in A before the "
                              "deposit: one value (e.g. 4), per order "
