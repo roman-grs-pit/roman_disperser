@@ -837,6 +837,8 @@ class TiledDisperser:
         ty, tx = tile_origins(self.layout)
         self.toy, self.tox = jnp.asarray(ty), jnp.asarray(tx)
         self.last_table = None
+        self._sharded = {}      # (fn, n_args) -> jit(shard_map), mesh only
+        self.n_traces = 0       # traces of the sharded program (diagnostic)
 
     def _origins(self, xsca, ysca):
         oy, ox = source_origins(self.arrays, self.wl, jnp.asarray(xsca),
@@ -850,15 +852,24 @@ class TiledDisperser:
         if self.mesh is None:
             return fn(self.arrays, self.sens, self.wl, self.dlam, *args,
                       toy, tox, **kw)
-        from jax.sharding import PartitionSpec as P
-        tiled = P("t")
-        n_tiled = len(args) + 2
+        # One jit(shard_map) per (function, argument count), built once:
+        # a fresh shard_map per call is re-traced every call (~1 s each;
+        # cluster T87: 161 s vs 33.5 s for 10k galaxies on one device).
+        key = (fn, len(args))
+        sm = self._sharded.get(key)
+        if sm is None:
+            from jax.sharding import PartitionSpec as P
+            tiled = P("t")
+            n_tiled = len(args) + 2
 
-        def local(arrays, sens, wl, dlam, *rest):
-            return fn(arrays, sens, wl, dlam, *rest, **kw)
-        sm = jax.shard_map(local, mesh=self.mesh,
-                           in_specs=(P(), P(), P(), P()) + (tiled,) * n_tiled,
-                           out_specs=tiled, check_vma=False)
+            def local(arrays, sens, wl, dlam, *rest):
+                self.n_traces += 1          # Python runs only when traced
+                return fn(arrays, sens, wl, dlam, *rest, **kw)
+            sm = jax.jit(jax.shard_map(
+                local, mesh=self.mesh,
+                in_specs=(P(), P(), P(), P()) + (tiled,) * n_tiled,
+                out_specs=tiled, check_vma=False))
+            self._sharded[key] = sm
         return sm(self.arrays, self.sens, self.wl, self.dlam, *args, toy, tox)
 
     def _run(self, xsca, ysca, spectra, extra, make_round_inputs, fn, output):

@@ -390,6 +390,29 @@ def test_gradients_match_finite_differences(payloads, sens, scene):
     assert abs(float(g_x[0]) - float(fdx)) <= 0.05 * abs(float(fdx))
 
 
+def test_sharded_tiles_traced_once(payloads, sens, scene):
+    """With a mesh the jit(shard_map) program is built once and reused: a
+    second call does not re-trace (cluster T87: a fresh shard_map per call
+    re-traced every round, ~1 s each)."""
+    from jax.sharding import Mesh
+    psf, opt = payloads
+    x, y, spec, _ = scene
+    mesh = Mesh(np.array(jax.devices()[:1]), ("t",))
+    td = acc.TiledDisperser(psf, opt, sens, WL, DLAM,
+                            _plan(payloads, vmap_width=1), hoist_psf=False,
+                            n_tiles=4, rounds=2, tile_batch=2, mesh=mesh)
+    first = np.asarray(td.stars(spec, x, y, _z()))
+    n = td.n_traces
+    assert n >= 1
+    again = np.asarray(td.stars(spec, x, y, _z()))
+    assert td.n_traces == n
+    assert np.array_equal(first, again)
+    ref = acc.TiledDisperser(psf, opt, sens, WL, DLAM,
+                             _plan(payloads, vmap_width=1), hoist_psf=False,
+                             n_tiles=4, rounds=2, tile_batch=2)
+    assert np.array_equal(first, np.asarray(ref.stars(spec, x, y, _z())))
+
+
 def test_sharded_tiles_bit_identical(tmp_path):
     """shard_map over 4 emulated CPU devices = one device, bit for bit."""
     script = textwrap.dedent(f"""
