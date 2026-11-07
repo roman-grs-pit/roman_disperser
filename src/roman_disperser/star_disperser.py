@@ -17,6 +17,7 @@ All wavelength parameters are in **microns** (consistent with the optical model)
 See docs/star_dispersion.md for the design document.
 """
 
+import os
 from functools import partial
 
 import jax
@@ -44,7 +45,13 @@ CHUNK_SIZE_CPU = 2000
 
 
 def default_chunk_size(backend=None):
-    """Deposit chunk size for ``backend`` (default: JAX's default backend)."""
+    """Deposit chunk size for ``backend`` (default: JAX's default backend).
+
+    ``ROMAN_DISPERSER_CHUNK_SIZE`` overrides it (benchmarks, memory limits).
+    """
+    env = os.environ.get("ROMAN_DISPERSER_CHUNK_SIZE")
+    if env:
+        return int(env)
     backend = backend or jax.default_backend()
     return CHUNK_SIZE_CPU if backend == "cpu" else CHUNK_SIZE_GPU
 

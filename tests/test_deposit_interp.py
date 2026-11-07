@@ -438,7 +438,10 @@ class TestExtendedTable:
         assert np.abs(out["interp"] - b).max() <= 1e-6 * b.max()
         np.testing.assert_allclose(out["interp"].sum(), b.sum(), rtol=1e-6)
 
-    def test_default_chunk_size(self):
+    def test_default_chunk_size(self, monkeypatch):
+        monkeypatch.delenv("ROMAN_DISPERSER_CHUNK_SIZE", raising=False)
         assert star_disperser.default_chunk_size("cpu") == 2000
         assert star_disperser.default_chunk_size("gpu") == 8000
         assert star_disperser.default_chunk_size("cuda") == 8000
+        monkeypatch.setenv("ROMAN_DISPERSER_CHUNK_SIZE", "1234")
+        assert star_disperser.default_chunk_size("gpu") == 1234
