@@ -78,9 +78,16 @@ class RomanOpticalModel:
         self.orders_defined = self.optmod["orders_defined"]
 
         # Cast the polynomial coefficients as arrays
+        # Orders listed without coefficients (e.g. "m1": null in v0.8, "not
+        # defined yet") get no entry, so asking for them fails by name
+        # instead of on a 0-d coefficient array deep in the trace maths.
         self.beam_coeffs = {}
         for order in self.orders_defined:
-            if order in self.optmod["orders"]:
+            spec = self.optmod["orders"].get(order)
+            if spec is not None and all(
+                    spec.get(k) is not None for k in (
+                        "xmap_ij_coeff", "ymap_ij_coeff",
+                        "crv_ijk_coeff", "ids_ijk_coeff")):
                 self.beam_coeffs[order] = {}
                 self.beam_coeffs[order]["X_ij"] = np.array(
                     self.optmod["orders"][order]["xmap_ij_coeff"],
@@ -153,7 +160,7 @@ class RomanOpticalModel:
             xfpa=xref_fpa, yfpa=yref_fpa
         )
         if sca is None:
-            sca = self.coords.match_pos_to_sca(xmpa=xref_mpa, ympa=yref_mpa)
+            sca = self.coords._single_sca(xref_mpa, yref_mpa)
         xref_sca, yref_sca = self.coords.convert_fpa_to_sca(
             xref_fpa, yref_fpa, sca=sca
         )
@@ -281,7 +288,7 @@ class RomanOpticalModel:
         )
 
         interp = LinearNDInterpolator(
-            (coeff["trace_pix_x"].ravel(), coeff["trace_pix_y"].ravel()),
+            (coeff["trace_sca_x"].ravel(), coeff["trace_sca_y"].ravel()),
             coeff["trace_wvl"].ravel(),
             fill_value=np.nan,
         )

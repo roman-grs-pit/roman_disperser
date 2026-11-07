@@ -2,7 +2,6 @@
 Utilities for Roman Optical Model
 """
 
-import warnings
 import numpy as np
 import pandas as pd
 
@@ -135,11 +134,14 @@ class RomanDetectorCoordinates:
     
     def match_pos_to_sca(self, xmpa, ympa):
         """
-        Returns matching SCA in which the given point(s) lie
-        Units are in 'mm'
+        SCA number of each MPA position [mm]; 0 for a position in a chip gap.
+
+        Returns an int for scalar input and an int array (one per position)
+        otherwise. A position inside two SCA outlines raises ValueError.
         """
+        scalar = np.ndim(xmpa) == 0 and np.ndim(ympa) == 0
         xmpa, ympa = np.atleast_1d(xmpa), np.atleast_1d(ympa)
-        pos = np.array([xmpa, ympa]).T
+        pos = np.array([xmpa, ympa], dtype=float).T
         cond = np.array(
             [
                 self.sca_polygons[sca].contains_points(
@@ -148,24 +150,27 @@ class RomanDetectorCoordinates:
                 for sca in self.sca_list
             ],
             dtype=bool,
-        )
-        j, i = np.where(cond)
+        )  # [n_sca, n_pos]
+        n_hits = cond.sum(axis=0)
+        if np.any(n_hits > 1):
+            bad = np.flatnonzero(n_hits > 1)
+            raise ValueError(f"MPA position(s) {pos[bad].tolist()} lie inside "
+                             f"more than one SCA outline")
+        sca_list = np.asarray(self.sca_list, dtype=int)
+        sca_match = np.where(n_hits == 1, sca_list[np.argmax(cond, axis=0)], 0)
+        return int(sca_match[0]) if scalar else sca_match
 
-        sca_match = np.zeros(len(xmpa), dtype=int)
-        sca_match[i] = self.sca_list[j]
-
-        if len(sca_match) > 1:
-            raise Exception("Position matched to multiple SCAs!")
-        elif sca_match == 0:
-            warnings.warn("No matching SCA; returning closest one.")
-            xdist = np.abs(xmpa - self.xy_centers_tbl["x"].to_numpy())
-            sca_column = self.sca_list[np.argsort(xdist)[:3]]
-            ydist = np.abs(
-                ympa - self.xy_centers_tbl.loc[sca_column, "y"].to_numpy()
-            )
-            return sca_column[np.argmin(ydist)]
-        else:
-            return sca_match[0]
+    def _single_sca(self, xmpa, ympa):
+        """The one SCA holding every given MPA position, for ``sca=None``."""
+        match = np.atleast_1d(self.match_pos_to_sca(xmpa, ympa))
+        if np.any(match == 0):
+            raise ValueError("position(s) fall in a chip gap, on no SCA; "
+                             "pass sca= explicitly")
+        unique = np.unique(match)
+        if unique.size > 1:
+            raise ValueError(f"positions lie on several SCAs {unique.tolist()}; "
+                             f"pass sca= explicitly")
+        return int(unique[0])
 
     def convert_sca_to_mpa(self, xsca, ysca, sca):
         """
@@ -192,7 +197,7 @@ class RomanDetectorCoordinates:
         Output: xfpa, yfpa are source position, in deg, in focal plane (FPA)
         """
         if sca is None:
-            sca = self.match_pos_to_sca(xmpa=xmpa, ympa=ympa)
+            sca = self._single_sca(xmpa, ympa)
 
         xcen, ycen = self.get_sca_center(sca=sca)
         xoff = xmpa - xcen
@@ -230,7 +235,7 @@ class RomanDetectorCoordinates:
         """
         if sca is None:
             xmpa, ympa = self.convert_fpa_to_mpa(xfpa=xfpa, yfpa=yfpa)
-            sca = self.match_pos_to_sca(xmpa=xmpa, ympa=ympa)
+            sca = self._single_sca(xmpa, ympa)
 
         xcen, ycen = self.get_sca_center(sca=sca)
         dx = (xfpa * 3600 / self.pixel_scale) - (xcen * self.plate_scale)
