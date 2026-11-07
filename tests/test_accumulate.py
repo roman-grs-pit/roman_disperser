@@ -399,8 +399,11 @@ def test_sharded_tiles_bit_identical(tmp_path):
     """)
     path = tmp_path / "sharded.py"
     path.write_text(script)
+    # Emulated CPU devices also on a GPU host, where the default backend
+    # would otherwise be the GPU (one device).
+    env = dict(os.environ, JAX_PLATFORMS="cpu")
     res = subprocess.run([sys.executable, str(path)], capture_output=True,
-                         text=True, env=dict(os.environ))
+                         text=True, env=env)
     assert "SHARDED_OK" in res.stdout, res.stdout + res.stderr
 
 
