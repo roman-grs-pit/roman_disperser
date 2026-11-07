@@ -373,3 +373,91 @@ def test_galaxy_gradients(payloads, flux):
         fd = (float(loss(*args(d))) - float(loss(*args(-d)))) / (2 * d)
         assert abs(fd) > 0
         assert np.isclose(float(g), fd, rtol=0.05), (float(g), fd)
+
+
+@pytest.fixture(scope="module")
+def bdi_batch():
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).parent.parent / "scripts" / "build_dispersed_image.py"
+    spec = importlib.util.spec_from_file_location("bdi_batch_render", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestBatchRenderOptions:
+    """Batch configs take the CLI-only render options (cluster T92)."""
+
+    @pytest.fixture
+    def bdi(self, bdi_batch):
+        return bdi_batch
+
+    def test_keys_are_known(self, bdi):
+        for key in ("segment_render", "segment_psf_at", "accumulate"):
+            assert key in bdi.BATCH_CONFIG_KEYS
+        bdi.check_config_keys({"segment_render": 12, "batch_size": 5}, "c.yaml")
+        with pytest.raises(ValueError, match="Unknown config keys"):
+            bdi.check_config_keys({"segment_rendr": 12}, "c.yaml")
+
+    def test_template_documents_them(self, bdi):
+        for key in ("segment_render", "segment_psf_at", "accumulate"):
+            assert f"# {key}:" in bdi.EXAMPLE_CONFIG
+
+    @pytest.mark.parametrize("cfg,expected", [
+        ({}, (None, "source", None)),
+        ({"segment_render": 12}, (12, "source", None)),
+        ({"segment_render": "0:6,1:12"}, ({"0": 6, "1": 12}, "source", None)),
+        ({"segment_render": {0: 6}}, ({0: 6}, "source", None)),
+        ({"segment_render": "none", "accumulate": "none"}, (None, "source", None)),
+        ({"segment_render": "auto", "accumulate": "auto"}, ("auto", "source", "auto")),
+        ({"accumulate": "window", "segment_psf_at": "landing"},
+         (None, "landing", "window")),
+        ({"accumulate": "tiled"}, (None, "source", "tiled")),
+    ])
+    def test_parse(self, bdi, cfg, expected):
+        got = bdi.render_options_from_config(cfg)
+        assert (got["segment_render"], got["segment_psf_at"],
+                got["accumulate"]) == expected
+
+    @pytest.mark.parametrize("cfg", [
+        {"accumulate": "windows"}, {"segment_psf_at": "pupil"},
+        {"segment_render": True}, {"segment_render": "x"},
+    ])
+    def test_rejects(self, bdi, cfg):
+        with pytest.raises(ValueError):
+            bdi.render_options_from_config(cfg)
+
+    def test_run_batch_passes_them(self, bdi, monkeypatch, tmp_path):
+        import yaml
+        from astropy.table import Table
+
+        class Stop(Exception):
+            pass
+        seen = {}
+
+        def fake_setup(sca_list, **kwargs):
+            seen.update(kwargs)
+            raise Stop
+        monkeypatch.setattr(bdi, "setup_pipeline", fake_setup)
+        cfg = {"output_dir": str(tmp_path / "out"), "seed": 1, "scas": [5],
+               "segment_render": "auto", "accumulate": "window",
+               "segment_psf_at": "landing"}
+        path = tmp_path / "cfg.yaml"
+        path.write_text(yaml.safe_dump(cfg))
+        pointings = tmp_path / "p.ecsv"
+        Table({"PLAN": [1], "PASS": [1], "SEGMENT": [1], "OBSERVATION": [1],
+               "VISIT": [1], "EXPOSURE": [1], "RA": [10.0], "DEC": [0.0],
+               "PA": [60.0]}).write(pointings, format="ascii.ecsv")
+        with pytest.raises(Stop):
+            bdi.run_batch(path, pointings, verbose=False)
+        assert seen["segment_render"] == "auto"
+        assert seen["accumulate"] == "window"
+        assert seen["segment_psf_at"] == "landing"
+
+    def test_warmup_checks_keys(self, bdi, tmp_path):
+        import yaml
+        path = tmp_path / "cfg.yaml"
+        path.write_text(yaml.safe_dump({"seed": 1, "exptime": 100.0}))
+        with pytest.raises(ValueError, match="exptime"):
+            bdi.run_warmup(path, verbose=False)

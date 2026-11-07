@@ -182,6 +182,12 @@ before the references can guard the default path.
 - `.payload_args` of the factory dispersers is now
   `(arrays, static, chunk_size, deposit)`.
 
+### Fixed (cluster tests, 2026-11-07)
+
+- Batch configs accept `segment_render`, `segment_psf_at` and `accumulate`
+  (same values as the CLI flags); before, they were rejected as unknown keys.
+  `--warmup-only` now checks the config keys too.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the

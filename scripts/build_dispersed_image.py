@@ -209,6 +209,35 @@ def resolve_segment_render(segment_render, orders, psf_at="source"):
     return {"nodes": nodes, "psf_at": psf_at}
 
 
+def render_options_from_config(cfg):
+    """``segment_render``, ``segment_psf_at`` and ``accumulate`` from a config.
+
+    The values are those of the CLI flags: ``segment_render`` is a node
+    count, ``{order: n_nodes}``, ``"auto"``, ``"none"`` or the flag's string
+    form (``"0:6,1:12"``); ``accumulate`` is ``window``, ``tiled``, ``auto``
+    or ``none``; ``segment_psf_at`` is ``source`` or ``landing``. Absent keys
+    keep the production defaults.
+    """
+    seg = cfg.get("segment_render")
+    if isinstance(seg, str):
+        seg = parse_segment_render(seg)
+    elif isinstance(seg, bool):
+        raise ValueError(f"segment_render must be a node count, a per-order "
+                         f"mapping, 'auto' or 'none', got {seg!r}")
+    acc = cfg.get("accumulate")
+    if isinstance(acc, str) and acc.strip().lower() == "none":
+        acc = None
+    if acc is not None and acc not in (*accum.ACCUMULATE_MODES, "auto"):
+        raise ValueError(f"accumulate must be one of "
+                         f"{(*accum.ACCUMULATE_MODES, 'auto', 'none')}, "
+                         f"got {acc!r}")
+    psf_at = cfg.get("segment_psf_at") or "source"
+    if psf_at not in segrender.PSF_AT_MODES:
+        raise ValueError(f"segment_psf_at must be one of "
+                         f"{segrender.PSF_AT_MODES}, got {psf_at!r}")
+    return dict(segment_render=seg, segment_psf_at=psf_at, accumulate=acc)
+
+
 def resolve_hoist_star_psf(hoist_star_psf):
     """``None`` -> :data:`DEFAULT_HOIST_STAR_PSF`, else ``bool(value)``."""
     return DEFAULT_HOIST_STAR_PSF if hoist_star_psf is None \
@@ -2070,6 +2099,18 @@ galaxy_npix: 30
 # rebin_dlam: {"0": 40, "1": 4, "2": 2}
 # hoist_star_psf: true
 
+# -- Render modes (optional; opt-in, same values as the CLI flags) -------------
+# segment_render: trace-aligned segment render, node count for every order
+# (56 reproduces the deposit to ~1e-6 of peak), per order {"0": 6, "1": 12}
+# (orders left out keep the deposit), "auto" or none (default).
+# segment_psf_at: source (default) or landing (PSF at each node's position).
+# accumulate: window | tiled | auto | none (default: the production loop).
+# "auto" picks the fastest choice for this machine's backend (see
+# auto_backend_choice in this script).
+# segment_render: 12
+# segment_psf_at: source
+# accumulate: none
+
 # -- Per-order brightness cut (optional) ---------------------------------------
 # Disperse a source in a listed order only if its F158 AB magnitude (catalog
 # column F158, maggies; stars and galaxies) is <= the limit. Orders left out
@@ -2116,6 +2157,32 @@ galaxy_npix: 30
 """
 
 
+# Keys a batch config may have (``--generate-config`` documents them).
+BATCH_CONFIG_KEYS = frozenset({
+    "output_dir", "seed", "element", "scas", "catalog_dir",
+    "sensitivity_dir", "optical_model", "optical_model_version",
+    "psf_cache_dir", "psf_grid", "psf_grid_bounds", "cone_radius",
+    "star_batch_size",
+    "galaxy_batch_size", "galaxy_npix", "source_cuts",
+    "output_prefix", "cache_dir", "deposit", "rebin_dlam",
+    "hoist_star_psf", "order_mag_limits",
+    "segment_render", "segment_psf_at", "accumulate",
+})
+
+
+def check_config_keys(cfg, config_path):
+    """Raise ValueError on a key not in :data:`BATCH_CONFIG_KEYS`.
+
+    ``batch_size`` (the deprecated name of ``star_batch_size``) is accepted.
+    """
+    unknown = sorted(set(cfg) - BATCH_CONFIG_KEYS - {"batch_size"})
+    if unknown:
+        raise ValueError(
+            f"Unknown config keys {unknown} in {config_path}; "
+            f"known keys: {sorted(BATCH_CONFIG_KEYS)}"
+        )
+
+
 def _pointing_dir_name(prefix, row):
     """Build the output directory name for an ECSV pointing row."""
     return (f"{prefix}"
@@ -2147,6 +2214,7 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
     """
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
+    check_config_keys(cfg, config_path)
 
     # Cache dir from config (CLI already wins via pre-parse)
     if _pre_args.cache_dir is None and "cache_dir" in cfg:
@@ -2161,6 +2229,11 @@ def run_warmup(config_path, verbose=True, worker_index=None, num_workers=None):
     def log(msg):
         if verbose:
             print(msg)
+
+    render = render_options_from_config(cfg)
+    if render["segment_render"] is not None or render["accumulate"] is not None:
+        log("Note: warm-up compiles the production loop only; the segment "
+            "render and accumulate modes compile on the first pointing.")
 
     # Parse SCA list and apply worker partitioning
     scas = cfg.get("scas", "all")
@@ -2371,21 +2444,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         )
         cfg.pop("batch_size")
 
-    known_keys = {
-        "output_dir", "seed", "element", "scas", "catalog_dir",
-        "sensitivity_dir", "optical_model", "optical_model_version",
-        "psf_cache_dir", "psf_grid", "psf_grid_bounds", "cone_radius",
-        "star_batch_size",
-        "galaxy_batch_size", "galaxy_npix", "source_cuts",
-        "output_prefix", "cache_dir", "deposit", "rebin_dlam",
-        "hoist_star_psf", "order_mag_limits",
-    }
-    unknown = sorted(set(cfg) - known_keys)
-    if unknown:
-        raise ValueError(
-            f"Unknown config keys {unknown} in {config_path}; "
-            f"known keys: {sorted(known_keys)}"
-        )
+    check_config_keys(cfg, config_path)
 
     # Load pointing table
     ptable = Table.read(pointings_path, format="ascii.ecsv")
@@ -2473,6 +2532,7 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         rebin_dlam=cfg.get("rebin_dlam"),
         hoist_star_psf=cfg.get("hoist_star_psf"),
         order_mag_limits=cfg.get("order_mag_limits"),
+        **render_options_from_config(cfg),
         verbose=verbose,
     )
 
@@ -2658,12 +2718,14 @@ def main():
                              "(prototype): wavelength nodes for every order "
                              "(e.g. 12) or per order (e.g. 0:6,1:12,2:28; "
                              "orders left out keep the deposit), or auto "
-                             "(56 nodes) (quick mode; default: off)")
+                             "(56 nodes) (batch key segment_render; "
+                             "default: off)")
     parser.add_argument("--segment-psf-at", choices=("source", "landing"),
                         default="source",
                         help="PSF lookup position of the segment render: "
                              "the direct-image position (default) or each "
-                             "node's landing position on the trace")
+                             "node's landing position on the trace (batch "
+                             "key segment_psf_at)")
     parser.add_argument("--accumulate",
                         choices=accum.ACCUMULATE_MODES + ("auto",),
                         default=None,
@@ -2672,8 +2734,8 @@ def main():
                              "order ('window': batches, vmapped; 'tiled': "
                              "8x8 detector tiles), deterministic on GPU; "
                              "'auto': sequential on CPU, window on one GPU, "
-                             "tiled on several (quick mode; default: off = "
-                             "sequential scatter-add)")
+                             "tiled on several (batch key accumulate; "
+                             "default: off = sequential scatter-add)")
     parser.add_argument("--seed", type=int, default=None,
                         help="RNG seed (required for quick mode)")
     parser.add_argument("--exptime", type=float, default=190.22,
