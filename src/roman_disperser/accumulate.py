@@ -63,6 +63,15 @@ CPU, deterministic there, not on GPU).
 
 Both are reverse-differentiable (scan + cond + vmap + unique scatters; the
 group / round steps are checkpointed).
+
+**What is still not deterministic on GPU.** Inside a galaxy's window the
+shape warp (``galaxy_disperser.disperse_galaxy_shape``, a bilinear forward
+scatter) has duplicate indices, so XLA:GPU uses atomics there: MODEL differs
+run to run by ~2e-10 of peak (L40S, BDI SCA 5; the Poisson draw did not
+change). ``XLA_FLAGS=--xla_gpu_deterministic_ops=true`` makes it
+bit-identical at no measured cost in window mode (15.1 s -> 14.5 s); the
+production loop with that flag is bit-identical too, but 1.6x slower
+(11.6 s -> 18.8 s).
 """
 
 from functools import partial
