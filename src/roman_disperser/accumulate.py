@@ -47,6 +47,10 @@ CPU, deterministic there, not on GPU).
   one after another (each add a unique-index scatter: a dense window, no
   atomics). The frame sum order is the source order; sort sources with
   :func:`canonical_order` to make it independent of catalogue order.
+  The frame does not depend on the batch size. It does depend, at the
+  float32 rounding level, on ``vmap_width`` on GPU (each width is its own
+  compiled program); ``vectorize=False`` removes that too, at the cost of
+  rendering the group's sources one after another.
 * ``"tiled"`` (:func:`run_star_tiles`, :func:`stitch_tiles`,
   :class:`TiledDisperser`): the detector is split into ``n_tiles x n_tiles``
   tiles; each source belongs to the tile holding its window origin; each
@@ -492,10 +496,16 @@ def _window_loop(geometry_fn, render_fn, n_sources, batch_args, output, width,
     render (vmapped), then the group's windows are added in source order.
     Groups past ``n_sources`` are skipped; padded rows inside the last group
     get zero windows."""
-    b = batch_args[0].shape[0]
-    # >= 2: a width-1 vmap compiles differently (float32-rounding-level
-    # pixel differences); padding keeps every width bit-identical.
-    v = max(2, min(int(width), b))
+    # The group width is the plan's alone, never the batch size: the vmapped
+    # program depends on its width (XLA fuses and orders float ops per
+    # shape; on an L40S the phase-binned PSF of a vmapped group differs from
+    # a mapped one by ~8e-8 of peak, and width 2 differs from widths 3/4/8
+    # by ~1.3e-7 of the frame peak). With a fixed width the same program
+    # renders every source, so the frame does not depend on the batch size
+    # (short batches are padded). >= 2: a width-1 vmap compiles differently
+    # again. Across *different* widths the frame is bit-identical only with
+    # vectorize=False (lax.map) or on CPU.
+    v = max(2, int(width))
     grouped = [_groups(a, v) for a in batch_args]
     n_groups = grouped[0].shape[0]
 

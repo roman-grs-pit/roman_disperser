@@ -231,19 +231,39 @@ def _production_stars(payloads, sens, scene, batch=5):
 
 
 class TestWindowMode:
-    def test_matches_production_and_batch_invariant(self, payloads, sens,
-                                                    scene):
+    def _render(self, payloads, sens, scene, batch, width, vectorize=True):
         x, y, spec, _ = scene
+        fn = _star_window_fn(payloads, sens, _plan(
+            payloads, vmap_width=width, vectorize=vectorize))
+        return np.asarray(pipeline.disperse_batched_stars(
+            fn, spec, x, y, _z(), batch))
+
+    @pytest.mark.parametrize("vectorize", [True, False])
+    def test_matches_production_and_batch_invariant(self, payloads, sens,
+                                                    scene, vectorize):
+        """Bit-identical across batch sizes (also below the width) at a
+        fixed vmap width, on every backend."""
         ref = _production_stars(payloads, sens, scene)
-        outs = []
-        for batch, width in ((5, 3), (12, 4), (7, 1)):
-            fn = _star_window_fn(payloads, sens,
-                                 _plan(payloads, vmap_width=width))
-            outs.append(np.asarray(pipeline.disperse_batched_stars(
-                fn, spec, x, y, _z(), batch)))
+        outs = [self._render(payloads, sens, scene, batch, 4, vectorize)
+                for batch in (5, 12, 7, 2)]
         _close(outs[0], ref)
         for o in outs[1:]:
             assert np.array_equal(o, outs[0])
+
+    @pytest.mark.parametrize("vectorize", [True, False])
+    def test_width_invariant(self, payloads, sens, scene, vectorize):
+        """Across vmap widths: bit-identical on CPU and with lax.map
+        (vectorize=False). On GPU each vmap width is its own compiled
+        program, so vmapped widths agree only to float32 rounding (L40S:
+        width 2 vs 3/4/8 differ by 1.3e-7 of peak); 1e-6 of peak is ~8x that."""
+        outs = [self._render(payloads, sens, scene, batch, width, vectorize)
+                for batch, width in ((5, 3), (12, 4), (7, 1), (12, 8))]
+        exact = jax.default_backend() == "cpu" or not vectorize
+        for o in outs[1:]:
+            if exact:
+                assert np.array_equal(o, outs[0])
+            else:
+                _close(o, outs[0], tol=1e-6)
 
     def test_padded_rows_skipped(self, payloads, sens, scene):
         x, y, spec, _ = scene
