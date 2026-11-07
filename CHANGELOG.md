@@ -193,6 +193,11 @@ before the references can guard the default path.
   segments with windows); on CPU the 56-node segment render with the loop, as
   before. `auto` asks for speed; pass `window` or `tiled` for a GPU frame sum
   that is the same from run to run.
+- Resume no longer skips an incomplete product (T66): an existing FITS is
+  skipped only if it opens and has MODEL and ISIM of the detector shape with
+  all their data present (`pipeline.fits_product_problem`); otherwise it is
+  re-rendered with a `RuntimeWarning`. `write_fits` writes `<name>.part` and
+  renames it, so an interrupted write no longer leaves a truncated product.
 
 ## [0.16.0] - 2026-10-27
 

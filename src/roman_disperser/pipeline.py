@@ -11,8 +11,10 @@ Not added to ``__init__.py`` — scripts import directly::
     from roman_disperser.pipeline import write_fits, load_sensitivities, ...
 """
 
+import os
 import re
 import subprocess
+import warnings
 from functools import lru_cache, partial
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -1014,7 +1016,47 @@ def write_fits(model_np, isim_np, output_file, pointing_ra, pointing_dec,
     isim_hdu.header["NOISE"] = ("POISSON-SRC", "no background/detector noise")
 
     hdul = fits.HDUList([primary, model_hdu, isim_hdu])
-    hdul.writeto(output_file, overwrite=True)
+    # Write beside the target and rename: an interrupted write leaves a
+    # .part file, never a truncated product that a resume would take as done.
+    output_file = Path(output_file)
+    part = output_file.with_name(output_file.name + ".part")
+    hdul.writeto(part, overwrite=True)
+    os.replace(part, output_file)
+
+
+def fits_product_problem(path, shape=(DETECTOR_SIZE, DETECTOR_SIZE)):
+    """Why the FITS product at ``path`` is not a complete one, or None.
+
+    Complete: it opens, has MODEL and ISIM image extensions of ``shape``,
+    and all their data can be read (a truncated file fails here). Used
+    before skipping an existing product on resume.
+    """
+    try:
+        with warnings.catch_warnings():
+            # astropy reports a short file as a warning ("File may have been
+            # truncated") and pads the data; treat it as an error.
+            warnings.simplefilter("error")
+            with fits.open(path, memmap=False) as hdul:
+                names = [h.name for h in hdul]
+                # A file cut inside a data block can still open, with the
+                # missing data silently padded: compare the extents.
+                size = os.path.getsize(path)
+                for i in range(len(hdul)):
+                    info = hdul.fileinfo(i)
+                    end = info["datLoc"] + info["datSpan"]
+                    if end > size:
+                        return (f"truncated: HDU {i} ends at byte {end}, "
+                                f"file has {size}")
+                for ext in ("MODEL", "ISIM"):
+                    if ext not in names:
+                        return f"no {ext} extension (has {names})"
+                    data = hdul[ext].data
+                    if data is None or tuple(data.shape) != tuple(shape):
+                        got = None if data is None else tuple(data.shape)
+                        return f"{ext} has shape {got}, expected {tuple(shape)}"
+    except Exception as exc:  # noqa: BLE001 - any read failure means redo
+        return f"cannot be read ({type(exc).__name__}: {exc})"
+    return None
 
 
 def write_png(output_np, png_file, linear_width=0.01):

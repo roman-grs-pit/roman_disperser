@@ -45,6 +45,7 @@ import os
 import sys
 import tempfile
 import time
+import warnings
 from pathlib import Path
 
 # -- Early CLI pre-parse for flags that must be set before JAX import --------
@@ -91,7 +92,7 @@ from roman_disperser.pipeline import (
     sed_rebin_factors, rebin_counts,
     parse_order_mag_limits, order_mag_limits_by_order,
     apply_order_mag_limits, flux_to_ab_mag,
-    write_fits, write_png, write_mosaic_png, write_mosaic_from_directory,
+    write_fits, fits_product_problem, write_png, write_mosaic_png, write_mosaic_from_directory,
     get_code_version, get_git_sha, make_sca_keys,
 )
 import roman_disperser.optical_model_jax as omj
@@ -1437,8 +1438,15 @@ def process_pointing(
         stem = f"{prefix}_detSCA{sca_num:02d}"
         fits_path = str(output_dir / f"{stem}.fits")
         png_path = str(output_dir / f"{stem}.png")
+        problem = (fits_product_problem(fits_path, (DETECTOR_SIZE, DETECTOR_SIZE))
+                   if Path(fits_path).exists() and not force else None)
         if Path(fits_path).exists() and force:
             log(f"    FITS exists, --force: re-rendering.")
+            Path(fits_path).unlink()
+        elif problem is not None:
+            warnings.warn(f"{fits_path} exists but is incomplete ({problem}); "
+                          f"re-rendering it.", RuntimeWarning, stacklevel=2)
+            log(f"    FITS incomplete ({problem}): re-rendering.")
             Path(fits_path).unlink()
         elif Path(fits_path).exists():
             log(f"    FITS exists, skipping.")
@@ -1749,7 +1757,6 @@ def process_pointing(
             )
             key_data = np.array(jax.random.key_data(sca_key))
         else:
-            import warnings
             warnings.warn(
                 f"SCA {sca_num}: no pointing_key, so ISIM is the noiseless "
                 f"MODEL*exptime, not a Poisson draw (RNDSEED0/1 = 0).",
@@ -1969,10 +1976,15 @@ def build_dispersed_image(
     """
     output_file = Path(output_file)
     if not force and output_file.exists():
-        if verbose:
-            print(f"Skipping {output_file} (already exists, "
-                  f"use --force to overwrite)")
-        return None
+        problem = fits_product_problem(output_file,
+                                       (DETECTOR_SIZE, DETECTOR_SIZE))
+        if problem is None:
+            if verbose:
+                print(f"Skipping {output_file} (already exists, "
+                      f"use --force to overwrite)")
+            return None
+        warnings.warn(f"{output_file} exists but is incomplete ({problem}); "
+                      f"re-rendering it.", RuntimeWarning, stacklevel=2)
 
     pipeline = setup_pipeline(
         [sca],
@@ -2426,7 +2438,6 @@ def run_batch(config_path, pointings_path, verbose=True, force=False,
         Total number of parallel workers.  When set, this worker processes
         only pointings where ``index % num_workers == worker_index``.
     """
-    import warnings
     from astropy.table import Table
 
     with open(config_path) as f:
