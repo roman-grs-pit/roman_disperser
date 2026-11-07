@@ -335,6 +335,33 @@ class TestBatchPath:
         assert not np.allclose(out["interp"], out["floor"])
 
 
+def _direct_extended(stack, os_):
+    """Independent reference: bin phases 0..os at n + 1 native pixels."""
+    s_y, s_x = stack.shape[-2:]
+    n_y, n_x = star_disperser._native_stamp_size(s_y, s_x, os_)
+    n_y, n_x = n_y + 1, n_x + 1
+    lead = stack.shape[:-2]
+    no_pad = [(0, 0)] * len(lead)
+
+    def bin_phase(p_y, p_x):
+        padded = jnp.pad(stack, no_pad + [(p_y, os_ * n_y - s_y - p_y),
+                                          (p_x, os_ * n_x - s_x - p_x)])
+        return padded.reshape(lead + (n_y, os_, n_x, os_)).sum(axis=(-3, -1))
+
+    return jnp.stack([jnp.stack([bin_phase(p_y, p_x) for p_x in range(os_ + 1)])
+                      for p_y in range(os_ + 1)])
+
+
+@pytest.fixture
+def force_extended(monkeypatch):
+    """Use the extended table at any sample count (the tests use few)."""
+    jax.clear_caches()
+    monkeypatch.setattr(star_disperser, "EXT_MIN_SAMPLES", 0)
+    yield
+    jax.clear_caches()
+
+
+@pytest.mark.usefixtures("force_extended")
 class TestExtendedTable:
     """``deposit="interp"`` reads an extended phase table (one contiguous
     block per sample); ``"interp_gather"`` is the pre-2026-11 computation of
@@ -346,9 +373,8 @@ class TestExtendedTable:
     def test_extend_equals_direct(self, s_y, s_x, os_):
         rng = np.random.default_rng(s_y * 31 + s_x)
         stack = jnp.asarray(rng.uniform(0, 1, (2, 3, s_y, s_x)), jnp.float32)
-        direct = star_disperser.bin_stack_phases(stack, os_, extended=True)
-        via = star_disperser.extend_phases(
-            star_disperser.bin_stack_phases(stack, os_))
+        direct = _direct_extended(stack, os_)
+        via = star_disperser.bin_stack_phases(stack, os_, extended=True)
         assert direct.shape == via.shape
         assert direct.shape[:2] == (os_ + 1, os_ + 1)
         np.testing.assert_array_equal(np.asarray(direct), np.asarray(via))
@@ -385,7 +411,9 @@ class TestExtendedTable:
                                           chunk_size=16, deposit="interp")
         b = star_disperser.deposit_binned(ext, (12, 12), *args, oversample=4,
                                           chunk_size=16, deposit="interp")
-        np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+        # same values; GPU scatter-add order can differ between the calls
+        a, b = np.asarray(a, np.float64), np.asarray(b, np.float64)
+        assert np.abs(a - b).max() <= 1e-6 * np.abs(a).max()
 
     def test_native_stamps_rejects_standard_table(self):
         stack, grid_wl, wl, flux, x, y = _random_case(12, 12, 4, 4)
@@ -445,3 +473,48 @@ class TestExtendedTable:
         assert star_disperser.default_chunk_size("cuda") == 8000
         monkeypatch.setenv("ROMAN_DISPERSER_CHUNK_SIZE", "1234")
         assert star_disperser.default_chunk_size("gpu") == 1234
+
+
+class TestExtendedDispatch:
+    """Below EXT_MIN_SAMPLES samples "interp" runs the gather computation on
+    the standard table (exact slice of the extended one)."""
+
+    def test_standard_slice_of_extended(self):
+        stack, *_ = _random_case(11, 9, 3, 8)
+        std = star_disperser.bin_stack_phases(stack, 4)
+        ext = star_disperser.bin_stack_phases(stack, 4, extended=True)
+        np.testing.assert_array_equal(
+            np.asarray(star_disperser.standard_phases(ext, 4)), np.asarray(std))
+
+    def test_few_samples_equal_gather_exactly(self):
+        assert 50 < star_disperser.EXT_MIN_SAMPLES
+        stack, grid_wl, wl, flux, x, y = _random_case(12, 12, 50, 9)
+        out = {}
+        for d in ("interp", "interp_gather"):
+            out[d] = np.asarray(star_disperser.deposit_stack_native(
+                stack, grid_wl, wl, flux, x, y, jnp.zeros(SHAPE, jnp.float32),
+                oversample=4, chunk_size=16, deposit=d))
+        if jax.default_backend() == "cpu":
+            np.testing.assert_array_equal(out["interp"], out["interp_gather"])
+        else:
+            assert (np.abs(out["interp"] - out["interp_gather"]).max()
+                    <= 1e-6 * out["interp_gather"].max())
+
+    def test_use_extended(self):
+        n = star_disperser.EXT_MIN_SAMPLES
+        assert star_disperser.use_extended("interp", n)
+        assert not star_disperser.use_extended("interp", n - 1)
+        assert not star_disperser.use_extended("interp_gather", 10 * n)
+        assert not star_disperser.use_extended("floor", 10 * n)
+
+    def test_many_samples_use_extended(self):
+        """A deposit above the threshold matches gather (extended path)."""
+        n = star_disperser.EXT_MIN_SAMPLES + 7
+        stack, grid_wl, wl, flux, x, y = _random_case(10, 10, n, 10)
+        out = {}
+        for d in ("interp", "interp_gather"):
+            out[d] = np.asarray(star_disperser.deposit_stack_native(
+                stack, grid_wl, wl, flux, x, y, jnp.zeros(SHAPE, jnp.float32),
+                oversample=4, chunk_size=500, deposit=d), np.float64)
+        b = out["interp_gather"]
+        assert np.abs(out["interp"] - b).max() <= 1e-6 * b.max()

@@ -322,10 +322,10 @@ def _deposit_window(plan, binned, grid_wl, wavelengths, counts, xd, yd):
     w_y, w_x = plan.window_shape
     window = jnp.zeros((w_y, w_x), counts.dtype)
     os_ = plan.oversample
-    if plan.deposit == "interp" and not star_disperser.is_extended(binned, os_):
-        binned = star_disperser.extend_phases(binned)
+    binned, deposit = star_disperser.interp_table(
+        binned, os_, plan.deposit, wavelengths.shape[0])
     n_y, n_x = binned.shape[-2:]
-    if plan.deposit == "interp_gather":
+    if deposit == "interp_gather":
         n_y, n_x = n_y + 1, n_x + 1
     k_y = jnp.arange(n_y)
     k_x = jnp.arange(n_x)
@@ -333,7 +333,7 @@ def _deposit_window(plan, binned, grid_wl, wavelengths, counts, xd, yd):
     def stamps(idx):
         nat, m_y, m_x = star_disperser.native_stamps(
             binned, plan.stamp_shape, grid_wl, wavelengths[idx], counts[idx],
-            xd[idx], yd[idx], os_, plan.deposit)
+            xd[idx], yd[idx], os_, deposit)
         return nat, m_y - oy, m_x - ox
 
     n = wavelengths.shape[0]
@@ -441,7 +441,8 @@ def render_star_window(psf_payload, optical_payload, xsca, ysca, wavelengths,
     else:
         binned = star_disperser.bin_stack_phases(
             psf_model_interp(psf_payload, xsca, ysca), os_,
-            extended=(plan.deposit == "interp"))
+            extended=star_disperser.use_extended(plan.deposit,
+                                                 wavelengths.shape[0]))
     return _deposit_window(plan, binned, psf_payload['wavelengths'],
                            wavelengths, counts, xd, yd)
 
@@ -476,7 +477,8 @@ def render_galaxy_window(psf_payload, optical_payload, image, x0, y0, counts,
         optical_payload, psf_payload, image, x0, y0, 1.0 / os_, 1.0 / os_,
         geometry=geometry)
     binned = star_disperser.bin_stack_phases(
-        convolved, os_, extended=(plan.deposit == "interp"))
+        convolved, os_, extended=star_disperser.use_extended(
+            plan.deposit, wavelengths.shape[0]))
     return _deposit_window(plan, binned, grid_wl, wavelengths, counts, xd, yd)
 
 
@@ -604,7 +606,7 @@ def _arrays(psf_payload, optical_payload, plan, hoist_psf):
         pa, oa = arrays
         pa = dict(pa, psf_grid_binned=star_disperser.bin_psf_grid(
             pa['psf_grid'], plan.oversample,
-            extended=(plan.deposit == "interp")))
+            extended=star_disperser.use_extended(plan.deposit, plan.n_samples)))
         arrays = (pa, oa)
     return arrays, static
 

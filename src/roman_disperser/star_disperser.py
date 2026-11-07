@@ -65,6 +65,40 @@ def is_extended(binned, oversample):
     return binned.shape[0] == int(oversample) + 1
 
 
+# The extended table is ~1.6x the standard one, so building or blending it
+# costs more per source; its faster per-sample read only pays off with many
+# samples. Below this many deposit samples per source the "interp" deposit
+# runs the gather computation on the standard table (an exact slice of the
+# extended one). Grism orders at the default rebin: o0 ~275 samples (gather),
+# o1 ~2750 and o2 ~5500 (extended). Measured on L40S and A40.
+EXT_MIN_SAMPLES = 1000
+
+
+def use_extended(deposit, n_samples):
+    """Whether the ``deposit`` of ``n_samples`` samples reads the extended table."""
+    return deposit == "interp" and int(n_samples) >= EXT_MIN_SAMPLES
+
+
+def interp_table(binned, oversample, deposit, n_samples):
+    """``(table, deposit)`` to hand :func:`native_stamps`: the extended table
+    with ``"interp"`` for many samples, else the standard table with
+    ``"interp_gather"`` (same deposit) or the caller's ``deposit``."""
+    os_ = int(oversample)
+    if use_extended(deposit, n_samples):
+        if not is_extended(binned, os_):
+            binned = extend_phases(binned)
+        return binned, "interp"
+    if is_extended(binned, os_):
+        binned = standard_phases(binned, os_)
+    return binned, ("interp_gather" if deposit == "interp" else deposit)
+
+
+def standard_phases(ext, oversample):
+    """Standard table from an extended one (exact: a slice)."""
+    os_ = int(oversample)
+    return ext[:os_, :os_, ..., :-1, :-1]
+
+
 def make_psf_pixel_grid(psf_shape, oversample):
     """
     Create relative coordinate grid for PSF deposition.
@@ -302,7 +336,8 @@ def deposit_stack_native(
         [H, W] with the dispersed stamp flux added.
     """
     os_ = int(oversample)
-    binned = bin_stack_phases(stack, os_, extended=(deposit == "interp"))
+    binned = bin_stack_phases(
+        stack, os_, extended=use_extended(deposit, len(wavelengths)))
     return deposit_binned(
         binned, stack.shape[-2:], grid_wl, wavelengths, flux,
         xsca_disp, ysca_disp, output,
@@ -354,12 +389,16 @@ def bin_stack_phases(stack, oversample, extended=False):
         With ``extended=True``: [os+1, os+1, ..., n_y+1, n_x+1].
     """
     os_ = int(oversample)
+    if extended:
+        # Bin the os x os phases, then extend. Binning phases 0..os at n + 1
+        # directly gives the same numbers, but inside a jitted deposit loop
+        # XLA then re-derives the table per chunk: galaxies 3x slower at
+        # chunk 8000 on L40S and A40 (RESULTS_dep_impl.md).
+        return extend_phases(bin_stack_phases(stack, os_))
     s_y, s_x = stack.shape[-2:]
     lead = stack.shape[:-2]
     n_y, n_x = _native_stamp_size(s_y, s_x, os_)
-    n_p = os_ + 1 if extended else os_
-    if extended:
-        n_y, n_x = n_y + 1, n_x + 1
+    n_p = os_
     no_pad = [(0, 0)] * len(lead)
 
     def bin_phase(p_y, p_x):
@@ -492,9 +531,12 @@ def native_stamps(binned, stamp_shape, grid_wl, wl_chunk, flux_chunk, x_chunk,
         q_x, _, w_x, m_x, _ = _interp_taps(u_x, os_)
         e_y, e_x = binned.shape[-2:]
 
-        def block(q_y, q_x, i0):
+        z = jnp.int32(0)
+
+        def block(q_y, q_x, i0):  # one index dtype (int64 i0 under x64)
             return jax.lax.dynamic_slice(
-                binned, (q_y, q_x, i0, 0, 0), (2, 2, 2, e_y, e_x))
+                binned, (q_y.astype(jnp.int32), q_x.astype(jnp.int32),
+                         i0.astype(jnp.int32), z, z), (2, 2, 2, e_y, e_x))
 
         blk = jax.vmap(block)(q_y, q_x, i0)  # [N, 2, 2, 2, n_y, n_x]
         t1 = t[:, 0, 0]
@@ -503,7 +545,9 @@ def native_stamps(binned, stamp_shape, grid_wl, wl_chunk, flux_chunk, x_chunk,
         wt = jnp.stack([1 - t1, t1], -1)
         w = (wy[:, :, None, None] * wx[:, None, :, None]
              * wt[:, None, None, :]) * flux_chunk[:, None, None, None]
-        return jnp.einsum("nabc,nabcyx->nyx", w, blk), m_y, m_x
+        # Elementwise multiply-and-sum, not an einsum: no dot_general, so no
+        # TF32 and no autotuned GEMM kernel choice on GPU (equally fast).
+        return (w[:, :, :, :, None, None] * blk).sum(axis=(1, 2, 3)), m_y, m_x
     if deposit == "interp_gather":
         pa_y, pb_y, w_y, m_y, d_y = _interp_taps(u_y, os_)
         pa_x, pb_x, w_x, m_x, d_x = _interp_taps(u_x, os_)
@@ -580,8 +624,9 @@ def deposit_binned(
             f"deposit must be one of {DEPOSIT_MODES}, got {deposit!r}")
     os_ = int(oversample)
     chunk_size = _resolve_chunk_size(chunk_size)
-    if deposit == "interp" and not is_extended(binned, os_):
-        binned = extend_phases(binned)  # once per call, outside the scan
+    # Extended table for many samples (built once per call if needed,
+    # outside the scan), else the gather computation on the standard one.
+    binned, deposit = interp_table(binned, os_, deposit, len(wavelengths))
     n_y, n_x = binned.shape[-2:]
     if deposit == "interp_gather":
         n_y, n_x = n_y + 1, n_x + 1
@@ -754,15 +799,22 @@ def disperse_star_psf(
     # binned, and binning commutes with the bilinear blend, so blend the
     # binned nodes directly; otherwise blend, then bin.
     if 'psf_grid_binned' in psf_payload:
+        grid_b = psf_payload['psf_grid_binned']
+        if (grid_b.shape[2] == oversample + 1
+                and not use_extended(deposit, len(wavelengths))):
+            # few samples: blend only the standard part of the nodes
+            psf_payload = dict(psf_payload, psf_grid_binned=grid_b[
+                :, :, :oversample, :oversample, :, :-1, :-1])
         binned = psf_model.interpolate_psf_spatial(
             psf_payload, xsca_star, ysca_star, grid_key='psf_grid_binned'
-        )  # [os, os, N_wl_grid, n_y, n_x]
+        )  # [os(+1), os(+1), N_wl_grid, n_y(+1), n_x(+1)]
     else:
         psfs_grid = psf_model.interpolate_psf_spatial(
             psf_payload, xsca_star, ysca_star
         )  # [N_wl_grid, PSF_y, PSF_x]
-        binned = bin_stack_phases(psfs_grid, oversample,
-                                  extended=(deposit == "interp"))
+        binned = bin_stack_phases(
+            psfs_grid, oversample,
+            extended=use_extended(deposit, len(wavelengths)))
 
     # Step 2: Compute ALL dispersed positions (cheap, vectorized)
     if dispersed is None:
