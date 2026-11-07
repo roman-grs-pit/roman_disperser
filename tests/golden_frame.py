@@ -53,7 +53,8 @@ Design decisions (agreed 2026-08-24, see the research log)
   publish the new asset in the same change, keeping code and reference
   atomic. Provenance (code version, git sha, jax version, platform, seed)
   is stored inside each ``.npz``.
-* **References are per-backend** (``cpu/`` and ``gpu-a10g/`` subdirs),
+* **References are per-backend** (``cpu/`` and ``gpu-<model>/`` subdirs,
+  e.g. ``gpu-a10g/`` up to v3, ``gpu-l40s/`` from v4),
   because tight cross-backend comparison is ill-conditioned. Measured on
   this scene (2026-08-24, a10g vs CPU, jax 0.7.2): total flux agrees to
   ~3e-8, and GPU run-to-run repeats agree to 2e-7–8e-7 of frame peak
@@ -102,6 +103,12 @@ Version history
   exactly. jax 0.7.2 -> 0.11.2 adds only f32 rounding (<=1.9e-7 of peak on
   CPU), so these frames serve both. Measurements are in the research log,
   thread v0.16-release.
+* ``golden-frames-v4`` — blessed for the STPSF 2.3.0 PSF caches (default
+  nodes x 50-4050, y 202-4088, add_ipc off, each SCA's own high-frequency
+  map), on CPU and on an NVIDIA L40S (``gpu-l40s``; the a10g frames are not
+  regenerated). Same code path and deposit options as v3: the change is the
+  PSFs alone, which have charge diffusion, 6 mas jitter and the Phase C
+  optical model, and move total flux by ~1.2e-3 vs v3. jax 0.11.2, Bouchet.
 
 Regenerating (only for an *intentional* results change) — once per backend,
 on the deterministic CPU and on the production GPU (a10g)::
@@ -142,7 +149,7 @@ from roman_disperser.pipeline import (
 # The pinned reference version. Bumping this is a *results-changing* act:
 # do it only together with publishing the regenerated frames as a
 # roman_disperser_data release of the same name (see module docstring).
-GOLDEN_VERSION = "golden-frames-v3"
+GOLDEN_VERSION = "golden-frames-v4"
 
 # Deposit options the pinned frames were blessed with: the historical floor
 # deposit, no count rebinning, no star PSF hoist. These are no longer the
