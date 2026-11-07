@@ -33,6 +33,24 @@ Two rules, both learned the hard way (see `get_fpa_pos`):
    library code would silently change the numerics of any other JAX work
    sharing the interpreter — including code that legitimately wants TF32.
    `tests/test_precision_convention.py` enforces the annotation by AST scan.
+
+Position contractions: einsum vs elementwise
+--------------------------------------------
+The source-position math (the 2x2 PA rotation, the 2D position polynomial,
+the trace-coefficient polynomials and their wavelength/dely evaluation, here
+and in `disperser`) contracts over at most ~6 terms. Written as matmul/einsum,
+XLA:GPU lowers these to Triton GEMM fusions whose tile configuration the
+autotuner picks by *timing* at each compile. Two configurations sum in
+different orders, so a fresh compile can move a source by 1-2 float32 ulp
+(~5e-4 px), which shows as a ~1.5e-4-of-peak dipole on steep traces
+(agent_work/tests_cluster/RESULTS_determinism.md). The ``"elementwise"`` mode
+writes the same sums as broadcast-multiply + ``jnp.sum``: plain fusions with no
+autotuned kernel choice, so every compile gives the same bits. ``"einsum"`` is
+the original code, kept for comparison.
+
+Select with the environment variable ``ROMAN_DISPERSER_POSITION_CONTRACTION``
+(read at import) or :func:`set_position_contraction` (which clears JAX's jit
+caches, because the mode is read when a function is traced).
 """
 
 import math
@@ -41,6 +59,52 @@ import os
 import jax
 import jax.numpy as jnp
 import numpy as np
+
+POSITION_CONTRACTION_MODES = ("elementwise", "einsum")
+POSITION_CONTRACTION = os.environ.get("ROMAN_DISPERSER_POSITION_CONTRACTION", "einsum")
+if POSITION_CONTRACTION not in POSITION_CONTRACTION_MODES:
+    raise ValueError(
+        f"ROMAN_DISPERSER_POSITION_CONTRACTION={POSITION_CONTRACTION!r}; "
+        f"expected one of {POSITION_CONTRACTION_MODES}")
+
+
+def set_position_contraction(mode):
+    """Select ``"elementwise"`` or ``"einsum"`` position contractions.
+
+    The mode is read when a function is traced, so this clears JAX's jit
+    caches; functions compiled before the call recompile on next use.
+    """
+    global POSITION_CONTRACTION
+    if mode not in POSITION_CONTRACTION_MODES:
+        raise ValueError(f"mode {mode!r}; expected one of {POSITION_CONTRACTION_MODES}")
+    POSITION_CONTRACTION = mode
+    jax.clear_caches()
+
+
+def _elementwise():
+    return POSITION_CONTRACTION == "elementwise"
+
+
+def _poly2d(x_powers, coef, y_powers):
+    """sum_ij x_powers[n,i] coef[i,j] y_powers[n,j] -> [n]  ('ni,ij,nj->n')."""
+    if _elementwise():
+        return jnp.sum(x_powers[:, :, None] * coef[None] * y_powers[:, None, :], axis=(1, 2))
+    return jnp.einsum('ni,ij,nj->n', x_powers, coef, y_powers, precision='highest')
+
+
+def _poly2d_coeffs(x_powers, coef, y_powers):
+    """sum_jk x_powers[n,j] coef[i,j,k] y_powers[n,k] -> [i,n]  ('nj,ijk,nk->in')."""
+    if _elementwise():
+        return jnp.sum(x_powers[None, :, :, None] * coef[:, None, :, :]
+                       * y_powers[None, :, None, :], axis=(2, 3))
+    return jnp.einsum('nj,ijk,nk->in', x_powers, coef, y_powers, precision='highest')
+
+
+def _poly1d(powers, coef):
+    """sum_i powers[n,i] coef[i,n] -> [n]  ('ni,in->n')."""
+    if _elementwise():
+        return jnp.sum(powers * coef.T, axis=1)
+    return jnp.einsum('ni,in->n', powers, coef, precision='highest')
 
 
 def make_sca_payload(model, sca: int, order: str = "1"):
@@ -577,6 +641,12 @@ def get_fpa_pos_from_offsets(dx, dy, pointing_pa):
     # displaced every source in the 2026-07 SSC line-grid package by a median
     # 1.84 px and up to 7.08 px. The same op on CPU is exact, so no CPU-only
     # test can see it. Note `@` takes no precision argument -- jnp.matmul does.
+    if _elementwise():
+        # Same two products and one add per output as the 2x2 matmul, as a
+        # plain fusion (no autotuned GEMM; see "Position contractions").
+        xfpa = -(rot_matrix[0, 0] * xy[0] + rot_matrix[0, 1] * xy[1])
+        yfpa = -(rot_matrix[1, 0] * xy[0] + rot_matrix[1, 1] * xy[1])
+        return xfpa, yfpa
     xy = jnp.matmul(rot_matrix, xy, precision='highest')
     xfpa = -xy[0, :]
     yfpa = -xy[1, :]
@@ -869,8 +939,8 @@ def get_mpa_coords(payload, xfpa, yfpa):
     Y_ij = payload["poly"]["Y_ij"]
     
     # Evaluate 2D polynomials using einsum (more efficient than matmul + diagonal)
-    xmpa = jnp.einsum('ni,ij,nj->n', x_powers, X_ij, y_powers, precision='highest')
-    ympa = jnp.einsum('ni,ij,nj->n', x_powers, Y_ij, y_powers, precision='highest')
+    xmpa = _poly2d(x_powers, X_ij, y_powers)
+    ympa = _poly2d(x_powers, Y_ij, y_powers)
     
     return xmpa, ympa
 
@@ -898,7 +968,7 @@ def get_trace_coeffs(payload, xfpa, yfpa):
     # Compute crv[i, n] using einsum: sum over j,k for each i,n
     # Original: x @ C_ijk @ y.T -> [n,i,n], then diagonal(axis1=1,axis2=2) -> [n,i], then transpose -> [i,n]
     # Einsum: directly compute shape [i, n]
-    crv = jnp.einsum('nj,ijk,nk->in', x_powers_crv, C_ijk, y_powers_crv, precision='highest')
+    crv = _poly2d_coeffs(x_powers_crv, C_ijk, y_powers_crv)
     
     # Inverse dispersion coefficients (D_ijk)
     ids_j = payload["poly"]["ids_j"]
@@ -909,7 +979,7 @@ def get_trace_coeffs(payload, xfpa, yfpa):
     D_ijk = payload["poly"]["D_ijk"]  # [i, j, k]
     
     # Compute ids[i, n] using einsum
-    ids = jnp.einsum('nj,ijk,nk->in', x_powers_ids, D_ijk, y_powers_ids, precision='highest')
+    ids = _poly2d_coeffs(x_powers_ids, D_ijk, y_powers_ids)
     
     return crv, ids
 
@@ -950,11 +1020,11 @@ def trace_beam(payload, xfpa, yfpa, wavelength):
     # Compute dely: sum over i of ids[i] * wl^i
     ids_i = payload["poly"]["ids_i"]
     wl_powers = wl[:, jnp.newaxis] ** jnp.arange(ids_i)  # [n, i]
-    dely = jnp.einsum('ni,in->n', wl_powers, ids, precision='highest')
+    dely = _poly1d(wl_powers, ids)
 
     # Compute delx: sum over i of crv[i] * dely^i
     crv_i = payload["poly"]["crv_i"]
     dely_powers = dely[:, jnp.newaxis] ** jnp.arange(crv_i)  # [n, i]
-    delx = jnp.einsum('ni,in->n', dely_powers, crv, precision='highest')
+    delx = _poly1d(dely_powers, crv)
     
     return xmpa_ref + delx, ympa_ref + dely
