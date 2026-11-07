@@ -1,4 +1,4 @@
-"""Resuming over existing products: incomplete FITS are re-rendered (T66).
+"""Resuming over existing products (T66) and the noiseless-ISIM flag (T58).
 
 ``process_pointing`` and quick mode skip an existing product only if it is
 complete (``pipeline.fits_product_problem``); ``write_fits`` writes through a
@@ -87,3 +87,36 @@ def test_resume_rerenders_truncated_fits(bdi, tmp_path, monkeypatch):
         _render(bdi, out)
     assert len(calls) == 2 * n_first
     assert fits_product_problem(fits_path, (16, 16)) is None
+
+
+# -- T58: no pointing_key -> noiseless ISIM, flagged ------------------------
+
+def test_write_fits_noise_card(tmp_path):
+    img = np.ones((8, 8), np.float32)
+    for poisson, card in ((True, "POISSON-SRC"), (False, "NONE")):
+        p = tmp_path / f"{card}.fits"
+        write_fits(img, img, str(p), pointing_ra=1.0, pointing_dec=2.0,
+                   pointing_pa=0.0, sca=5, exptime=100.0,
+                   rng_key_data=np.zeros(2, np.uint32), seed=1,
+                   poisson=poisson)
+        with fits.open(p) as h:
+            assert h["ISIM"].header["NOISE"] == card
+
+
+def test_no_pointing_key_is_flagged(bdi, tmp_path, monkeypatch):
+    _patch(monkeypatch, bdi, [])
+    out = tmp_path / "pt"
+    with pytest.warns(RuntimeWarning, match="noiseless"):
+        bdi.process_pointing(_fake_pipeline(None), 10.0, 0.1, 0.0, str(out),
+                             cone_radius=1.0, verbose=False, pointing_key=None)
+    fits_path, = out.glob("*_detSCA05.fits")
+    with fits.open(fits_path) as h:
+        assert h["ISIM"].header["NOISE"] == "NONE"
+        assert h[0].header["RNDSEED0"] == 0 and h[0].header["RNDSEED1"] == 0
+        np.testing.assert_array_equal(
+            h["ISIM"].data, h["MODEL"].data * np.float32(190.22))
+    out2 = tmp_path / "pt2"
+    _render(bdi, out2)
+    fits_path, = out2.glob("*_detSCA05.fits")
+    with fits.open(fits_path) as h:
+        assert h["ISIM"].header["NOISE"] == "POISSON-SRC"

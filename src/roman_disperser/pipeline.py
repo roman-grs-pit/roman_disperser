@@ -957,7 +957,7 @@ def disperse_batched_sersic_galaxies(fori_fn, spectra, xsca, ysca,
 
 def write_fits(model_np, isim_np, output_file, pointing_ra, pointing_dec,
                pointing_pa, sca, exptime, rng_key_data, seed,
-               extra_headers=None):
+               extra_headers=None, poisson=True):
     """Write the grism image to a FITS file.
 
     Primary HDU contains pointing/simulation metadata.  MODEL extension
@@ -985,6 +985,9 @@ def write_fits(model_np, isim_np, output_file, pointing_ra, pointing_dec,
         Top-level seed for the full run.
     extra_headers : dict, optional
         Additional FITS header cards as ``{keyword: (value, comment)}``.
+    poisson : bool, optional
+        True (default): ISIM is a Poisson draw, ``NOISE = 'POISSON-SRC'``.
+        False: ISIM is the noiseless MODEL x exptime, ``NOISE = 'NONE'``.
     """
     primary = fits.PrimaryHDU()
     primary.header["WFICENRA"] = (pointing_ra, "Pointing RA [deg]")
@@ -1013,7 +1016,11 @@ def write_fits(model_np, isim_np, output_file, pointing_ra, pointing_dec,
     # Units follow the SENSITIVITY tables, whose unit is not declared.
     model_hdu.header["BUNIT"] = ("counts/s", "SENSITIVITY counts per s")
     isim_hdu.header["BUNIT"] = ("counts", "source-only Poisson draw")
-    isim_hdu.header["NOISE"] = ("POISSON-SRC", "no background/detector noise")
+    if poisson:
+        isim_hdu.header["NOISE"] = ("POISSON-SRC",
+                                    "no background/detector noise")
+    else:
+        isim_hdu.header["NOISE"] = ("NONE", "noiseless MODEL*exptime, no draw")
 
     hdul = fits.HDUList([primary, model_hdu, isim_hdu])
     # Write beside the target and rename: an interrupted write leaves a

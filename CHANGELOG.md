@@ -198,6 +198,9 @@ before the references can guard the default path.
   all their data present (`pipeline.fits_product_problem`); otherwise it is
   re-rendered with a `RuntimeWarning`. `write_fits` writes `<name>.part` and
   renames it, so an interrupted write no longer leaves a truncated product.
+- `process_pointing(..., pointing_key=None)` (noiseless ISIM = MODEL x exptime,
+  with a `RuntimeWarning`) now also flags the product: ISIM card
+  `NOISE = 'NONE'` instead of `POISSON-SRC` (T58). `write_fits(poisson=...)`.
 
 ## [0.16.0] - 2026-10-27
 

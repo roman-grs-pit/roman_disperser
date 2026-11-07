@@ -1265,7 +1265,10 @@ def process_pointing(
     exptime : float
         Exposure time in seconds (default: 190.22).
     pointing_key : jax.random.key or None
-        JAX RNG key for this pointing.  Split into per-SCA keys.
+        JAX RNG key for this pointing.  Split into per-SCA keys. None makes
+        ISIM the noiseless MODEL*exptime (a ``RuntimeWarning`` per SCA, ISIM
+        card ``NOISE = 'NONE'``, ``RNDSEED0/1 = 0``); the batch and quick
+        modes always pass a key.
     seed : int
         Top-level seed (stored in FITS header for provenance).
     verbose : bool
@@ -1759,8 +1762,9 @@ def process_pointing(
         else:
             warnings.warn(
                 f"SCA {sca_num}: no pointing_key, so ISIM is the noiseless "
-                f"MODEL*exptime, not a Poisson draw (RNDSEED0/1 = 0).",
-                RuntimeWarning,
+                f"MODEL*exptime, not a Poisson draw (NOISE = 'NONE', "
+                f"RNDSEED0/1 = 0).",
+                RuntimeWarning, stacklevel=2,
             )
             isim = output * exptime
             key_data = np.zeros(2, dtype=np.uint32)
@@ -1796,7 +1800,8 @@ def process_pointing(
         write_fits(output_np, isim_np, fits_path,
                    pointing_ra, pointing_dec, pointing_pa, sca_num,
                    exptime, key_data, seed,
-                   extra_headers=extra_headers)
+                   extra_headers=extra_headers,
+                   poisson=sca_key is not None)
         t_fits = time.time() - t0
         t0 = time.time()
         write_png(output_np, png_path)
