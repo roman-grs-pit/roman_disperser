@@ -1018,17 +1018,18 @@ class TestPSFCaching:
 
         This is the end-to-end property the element= parameter exists for:
         the derived (filter, wavelengths) pair lands on the published cache
-        file, not on a fresh wrong-band generation. The vendored file has the
-        legacy name, so it takes the temporary fallback.
+        file, not on a fresh wrong-band generation. The metadata check of the
+        exact file is stubbed: only the name is under test here.
         """
-        monkeypatch.setenv(psf_model.ALLOW_FALLBACK_ENV, "1")
-        grid = psf_model.make_spatial_grid("4x4", psf_model.FULL_DETECTOR_BOUNDS)
+        grid = psf_model.make_spatial_grid()
+        monkeypatch.setattr(psf_model, '_exact_file_problems', lambda *a: [])
         monkeypatch.setattr(
             psf_model, 'load_psf_payload',
             lambda path, verbose=True, **kw: {
                 'name': Path(path).name,
                 'spatial_x': grid['x'], 'spatial_y': grid['y']})
-        expected = "psf_WFI05_PRISM_4x4x56_0.75-1.85um_fov5.0_os4.npz"
+        expected = ("psf_WFI05_PRISM_4x4x56_x50-4050_y202-4088_0.75-1.85um"
+                    "_fov5.0_os4_stpsf2.3.0.npz")
         (tmp_path / expected).write_bytes(b"placeholder")
         result = psf_model.get_or_make_psf_payload(
             detector='WFI05', order='1', element='prism',
@@ -1373,11 +1374,7 @@ def _good_file(directory, add_ipc=False, marker=1.0):
 
 
 class TestStrictLookup:
-    """Without the temporary fallback: the exact file or an error."""
-
-    @pytest.fixture(autouse=True)
-    def _no_fallback(self, monkeypatch):
-        monkeypatch.delenv(psf_model.ALLOW_FALLBACK_ENV, raising=False)
+    """The exact file or an error."""
 
     @pytest.fixture
     def no_generation(self, monkeypatch):
@@ -1409,12 +1406,18 @@ class TestStrictLookup:
         assert f"{_STEM}.npz (STPSF 2.1.0, add_ipc unknown, 2x2 nodes)" in message
         assert f"{_STEM}_stpsf2.3.0_ipc.npz (STPSF 2.3.0, add_ipc True" in message
         assert "WFI06" not in message
-        assert psf_model.ALLOW_FALLBACK_ENV in message
+        assert "ALLOW_PSF_FALLBACK" not in message
 
-    def test_empty_directory_has_no_fallback_hint(self, tmp_path, no_stpsf):
-        with pytest.raises(psf_model.PSFCacheNotFoundError) as info:
-            _lookup(tmp_path / "absent")
-        assert psf_model.ALLOW_FALLBACK_ENV not in str(info.value)
+    @pytest.mark.parametrize("version", ["2.1.0", "2.2.0", _ABSENT])
+    def test_legacy_file_never_serves(self, tmp_path, no_stpsf, no_generation,
+                                      monkeypatch, version):
+        """The old opt-in variable is gone: setting it changes nothing."""
+        monkeypatch.setenv("ROMAN_DISPERSER_ALLOW_PSF_FALLBACK", "1")
+        _fake_cache(tmp_path, f"{_STEM}.npz", version)
+        _fake_cache(tmp_path, f"{_STEM}_stpsf2.2.0.npz", "2.2.0")
+        for add_ipc in (False, True):
+            with pytest.raises(psf_model.PSFCacheNotFoundError):
+                _lookup(tmp_path, add_ipc=add_ipc)
 
     @staticmethod
     def _command(error):
@@ -1659,11 +1662,7 @@ class TestHighFrequencyMap:
 
 
 class TestNodeBoundsLookup:
-    """The rule for the default bounds without the temporary fallback."""
-
-    @pytest.fixture(autouse=True)
-    def _no_fallback(self, monkeypatch):
-        monkeypatch.delenv(psf_model.ALLOW_FALLBACK_ENV, raising=False)
+    """The rule for the default bounds."""
 
     def _write_full(self, directory, name, version=_ABSENT, **kw):
         grid = psf_model.make_spatial_grid("2x2", psf_model.FULL_DETECTOR_BOUNDS)
@@ -1697,110 +1696,7 @@ class TestNodeBoundsLookup:
         assert "--psf-grid-bounds" not in str(info.value)
 
 
-class TestFallbackLookup:
-    """TEMPORARY: remove once the 54 caches are regenerated on the cluster."""
-
-    @pytest.fixture(autouse=True)
-    def _fallback(self, monkeypatch):
-        monkeypatch.setenv(psf_model.ALLOW_FALLBACK_ENV, "1")
-
-    @pytest.mark.parametrize("value", ["0", "", "true"])
-    def test_only_the_value_1_enables_it(self, tmp_path, no_stpsf, monkeypatch, value):
-        monkeypatch.setenv(psf_model.ALLOW_FALLBACK_ENV, value)
-        _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
-        with pytest.raises(psf_model.PSFCacheNotFoundError):
-            _lookup(tmp_path)
-
-    def test_exact_target_beats_everything(self, tmp_path, no_stpsf):
-        _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0", marker=1.0)
-        _fake_cache(tmp_path, f"{_STEM}_stpsf2.9.0.npz", "2.9.0", False, marker=2.0)
-        _good_file(tmp_path, marker=3.0)
-        with warnings.catch_warnings(record=True) as record:
-            warnings.simplefilter("always")
-            payload = _lookup(tmp_path)
-        assert _marker(payload) == 3.0
-        assert _version_warnings(record) == []
-
-    def test_takes_newest_and_warns(self, tmp_path, no_stpsf):
-        _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0", marker=1.0)
-        _fake_cache(tmp_path, f"{_STEM}_stpsf2.2.0.npz", "2.2.0", marker=2.0)
-        with pytest.warns(psf_model.PSFCacheVersionWarning, match="stpsf2.2.0"):
-            assert _marker(_lookup(tmp_path)) == 2.0
-
-    def test_exact_name_without_ipc_metadata_loads_with_warning(self, tmp_path, no_stpsf):
-        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0")
-        with pytest.warns(psf_model.PSFCacheVersionWarning, match="no add_ipc"):
-            assert _lookup(tmp_path)['add_ipc'] is None
-
-    def test_legacy_name_used_and_nothing_generated(self, tmp_path, no_stpsf, monkeypatch):
-        def no_generation(**kwargs):
-            raise AssertionError("must not generate")
-        monkeypatch.setattr(psf_model, 'make_psf_payload', no_generation)
-        _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
-        with pytest.warns(psf_model.PSFCacheVersionWarning):
-            payload = _lookup(tmp_path)
-        assert payload['stpsf_version'] == "2.1.0"
-        assert payload['add_ipc'] is False
-
-    def test_nothing_matching_raises_and_never_generates(self, tmp_path, no_stpsf,
-                                                         monkeypatch):
-        def no_generation(**kwargs):
-            raise AssertionError("must not generate")
-        monkeypatch.setattr(psf_model, 'make_psf_payload', no_generation)
-        _fake_cache(tmp_path, _STEM.replace("os4", "os44") + ".npz", "2.1.0")
-        _fake_cache(tmp_path, _STEM.replace("WFI05", "WFI06") + ".npz", "2.1.0")
-        with pytest.raises(psf_model.PSFCacheNotFoundError):
-            _lookup(tmp_path)
-
-    def test_legacy_file_with_other_nodes_is_not_used(self, tmp_path, no_stpsf):
-        """An old name says nothing about node placement; the stored nodes do."""
-        _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0",
-                    spatial_x=np.array([16.0, 4055.0]))
-        with pytest.raises(psf_model.PSFCacheNotFoundError):
-            _lookup(tmp_path)
-
-    def _full_detector_legacy(self, directory, **kw):
-        grid = psf_model.make_spatial_grid("2x2", psf_model.FULL_DETECTOR_BOUNDS)
-        return _fake_cache(directory, f"{_STEM}.npz", "2.1.0",
-                           spatial_x=grid['x'].astype(np.float32),
-                           spatial_y=grid['y'].astype(np.float32), **kw)
-
-    def test_default_bounds_use_a_full_detector_file(self, tmp_path, no_stpsf):
-        """Today's files have the old nodes; they keep them, with a warning."""
-        self._full_detector_legacy(tmp_path)
-        grid = psf_model.make_spatial_grid("2x2")
-        with pytest.warns(psf_model.PSFCacheVersionWarning, match="used in place of"):
-            payload = _lookup_grid(tmp_path, grid)
-        np.testing.assert_allclose(payload['spatial_x'], [1, 4088])
-
-    def test_default_bounds_prefer_their_own_file(self, tmp_path, no_stpsf):
-        self._full_detector_legacy(tmp_path, marker=1.0)
-        grid = psf_model.make_spatial_grid("2x2")
-        name = psf_model.get_cache_filename(
-            'WFI05', '1', _WL, grid, 5.0, 4, stpsf_filter='GRISM1')
-        _fake_cache(tmp_path, name, "2.3.0", False, marker=2.0,
-                    spatial_x=grid['x'].astype(np.float32),
-                    spatial_y=grid['y'].astype(np.float32))
-        assert _marker(_lookup_grid(tmp_path, grid)) == 2.0
-
-    def test_other_bounds_do_not_use_a_full_detector_file(self, tmp_path, no_stpsf):
-        self._full_detector_legacy(tmp_path)
-        grid = psf_model.make_spatial_grid("2x2", "16,4055,187,4088")
-        with pytest.raises(psf_model.PSFCacheNotFoundError):
-            _lookup_grid(tmp_path, grid)
-
-    def test_invalid_candidate_falls_through(self, tmp_path, no_stpsf):
-        (tmp_path / f"{_STEM}_stpsf2.2.0.npz").write_bytes(b"not an npz")
-        _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0", marker=5.0)
-        with pytest.warns(RuntimeWarning, match="invalid"):
-            assert _marker(_lookup(tmp_path)) == 5.0
-
-
 class TestIPCSeparation:
-    @pytest.fixture(autouse=True)
-    def _fallback(self, monkeypatch):
-        monkeypatch.setenv(psf_model.ALLOW_FALLBACK_ENV, "1")
-
     def test_off_request_skips_ipc_file(self, tmp_path, no_stpsf):
         _good_file(tmp_path, add_ipc=True)
         with pytest.raises(psf_model.PSFCacheNotFoundError):
@@ -1814,7 +1710,6 @@ class TestIPCSeparation:
     def test_each_request_gets_its_file(self, tmp_path, no_stpsf, monkeypatch):
         _good_file(tmp_path, marker=1.0)
         _good_file(tmp_path, add_ipc=True, marker=2.0)
-        monkeypatch.delenv(psf_model.ALLOW_FALLBACK_ENV)
         assert _marker(_lookup(tmp_path)) == 1.0
         assert _marker(_lookup(tmp_path, add_ipc=True)) == 2.0
 
@@ -1823,22 +1718,6 @@ class TestIPCSeparation:
         _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", True)
         with pytest.raises(psf_model.PSFCacheNotFoundError):
             _lookup(tmp_path)
-
-    @pytest.mark.parametrize("version", ["2.1.0", "2.2.0", _ABSENT, "unknown"])
-    def test_legacy_without_ipc_serves_only_off(self, tmp_path, no_stpsf, version):
-        _fake_cache(tmp_path, f"{_STEM}.npz", version)
-        with pytest.warns(psf_model.PSFCacheVersionWarning):
-            assert _lookup(tmp_path)['add_ipc'] is False
-        with pytest.raises(psf_model.PSFCacheNotFoundError):
-            _lookup(tmp_path, add_ipc=True)
-
-    @pytest.mark.parametrize("add_ipc", [False, True])
-    def test_legacy_stamped_230_is_unknown_and_warns(self, tmp_path, no_stpsf,
-                                                     add_ipc):
-        """Old code under STPSF 2.3.0 wrote this; IPC may be in it either way."""
-        _fake_cache(tmp_path, f"{_STEM}.npz", "2.3.0")
-        with pytest.warns(psf_model.PSFCacheVersionWarning, match="IPC"):
-            assert _lookup(tmp_path, add_ipc=add_ipc)['add_ipc'] is None
 
     def test_known_state_beats_unknown_at_same_version(self, tmp_path, no_stpsf):
         _fake_cache(tmp_path, f"{_STEM}.npz", "2.3.0", marker=1.0)
@@ -1916,16 +1795,14 @@ class TestCacheWarnings:
         assert 'stpsf' not in sys.modules
 
     def test_legacy_stamped_210_gets_one_warning(self, tmp_path, monkeypatch):
-        """Also with STPSF 2.3.0 installed, through the lookup."""
+        """Also with STPSF 2.3.0 installed, when loaded directly."""
         monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: "2.3.0")
-        monkeypatch.setenv(psf_model.ALLOW_FALLBACK_ENV, "1")
         path = _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
         with warnings.catch_warnings(record=True) as record:
             warnings.simplefilter("always")
-            _lookup(tmp_path)
+            psf_model.load_psf_payload(path, verbose=False)
         record = _version_warnings(record)
-        self._assert_one(record, path, "2.1.0", "older", "used in place of",
-                         "_stpsf2.3.0.npz")
+        self._assert_one(record, path, "2.1.0", "older")
 
     def test_repeated_loads_warn_once_per_file(self, tmp_path, no_stpsf):
         """As in warm-up plus per-SCA loops; 'always' would otherwise spam."""
@@ -1997,7 +1874,6 @@ class TestFindCacheFile:
     KW = dict(wavelengths=_WL, spatial_grid=_GRID)
 
     def test_exact_or_error(self, tmp_path, no_stpsf, monkeypatch):
-        monkeypatch.delenv(psf_model.ALLOW_FALLBACK_ENV, raising=False)
         _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
         with pytest.raises(psf_model.PSFCacheNotFoundError, match="2.1.0"):
             psf_model.find_psf_cache_file(tmp_path, "WFI05", "GRISM1", **self.KW)
@@ -2006,21 +1882,11 @@ class TestFindCacheFile:
             tmp_path, "WFI05", "GRISM1", **self.KW) == target
 
     def test_wrong_metadata_is_refused(self, tmp_path, no_stpsf, monkeypatch):
-        monkeypatch.delenv(psf_model.ALLOW_FALLBACK_ENV, raising=False)
         _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0")
         with pytest.raises(psf_model.PSFCacheNotFoundError, match="add_ipc"):
             psf_model.find_psf_cache_file(tmp_path, "WFI05", "GRISM1", **self.KW)
 
-    def test_fallback_when_enabled(self, tmp_path, no_stpsf, monkeypatch):
-        monkeypatch.setenv(psf_model.ALLOW_FALLBACK_ENV, "1")
-        _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
-        newer = _fake_cache(tmp_path, f"{_STEM}_stpsf2.2.0.npz", "2.2.0")
-        with pytest.warns(psf_model.PSFCacheVersionWarning):
-            assert psf_model.find_psf_cache_file(
-                tmp_path, "WFI05", "GRISM1", **self.KW) == newer
-
-    def test_respects_ipc(self, tmp_path, no_stpsf, monkeypatch):
-        monkeypatch.setenv(psf_model.ALLOW_FALLBACK_ENV, "1")
+    def test_respects_ipc(self, tmp_path, no_stpsf):
         _good_file(tmp_path, add_ipc=True)
         with pytest.raises(psf_model.PSFCacheNotFoundError):
             psf_model.find_psf_cache_file(tmp_path, "WFI05", "GRISM1", **self.KW)
@@ -2144,7 +2010,6 @@ class TestGridOption:
         assert (version, ipc) == ("2.3.0", True)
 
     def test_two_placements_coexist(self, tmp_path, no_stpsf, monkeypatch):
-        monkeypatch.delenv(psf_model.ALLOW_FALLBACK_ENV, raising=False)
         monkeypatch.setattr(psf_model, 'make_psf_payload', _fake_generation)
         grids = [psf_model.make_spatial_grid("2x2", b)
                  for b in ("1,4088,1,4088", "16,4055,187,4088")]
@@ -2477,7 +2342,6 @@ class TestScripts:
         cache = tmp_path / "data" / "psf_cache"
         cache.mkdir(parents=True)
         monkeypatch.setenv("ROMAN_DISPERSER_DATA", str(tmp_path / "data"))
-        monkeypatch.delenv(psf_model.ALLOW_FALLBACK_ENV, raising=False)
         out = tmp_path / "gauss"
         monkeypatch.setattr(sys, 'argv', ['x', '--out-dir', str(out)])
         return script, cache, out
@@ -2521,7 +2385,6 @@ class TestScripts:
         assert payload['psf_source'] == 'stpsf'
 
     def test_unmarked_legacy_is_not_a_stand_in(self, tmp_path, no_stpsf, monkeypatch):
-        monkeypatch.delenv(psf_model.ALLOW_FALLBACK_ENV, raising=False)
         _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
         with pytest.raises(psf_model.PSFCacheNotFoundError):
             _lookup(tmp_path)
@@ -2570,8 +2433,8 @@ class TestDriverGrid:
     """The driver asks for the requested grid at all its PSF-loading sites."""
 
     @pytest.fixture(autouse=True)
-    def _strict(self, monkeypatch, no_stpsf):
-        monkeypatch.delenv(psf_model.ALLOW_FALLBACK_ENV, raising=False)
+    def _strict(self, no_stpsf):
+        pass
 
     @pytest.fixture
     def paths_only(self, bdi, monkeypatch, tmp_path):

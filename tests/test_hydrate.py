@@ -372,3 +372,23 @@ def test_main_rejects_unknown_asset(tmp_path):
         assert exc.code != 0
     else:  # pragma: no cover
         raise AssertionError("expected SystemExit for unknown asset")
+
+
+def test_golden_frames_marker_follows_the_tag(tmp_path, monkeypatch):
+    # The golden-frames tarball extracts a version-named directory, so the
+    # done marker is the resolved tag's: an installed v3 does not satisfy v4,
+    # and v4 is up to date by its own marker.
+    asset = hydrate.ASSETS["golden_frames"]
+    base = tmp_path / "data"
+    marker = base / asset.subdir / "golden-frames-v4" / "cpu" / "provenance.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("{}")
+    monkeypatch.setattr(hydrate, "list_release_files", _raiser("network hit"))
+    hydrate.hydrate_asset(asset, "golden-frames-v4", base,
+                          locked_tag="golden-frames-v4")
+    calls = []
+    monkeypatch.setattr(hydrate, "list_release_files",
+                        lambda tag: calls.append(tag) or [])
+    hydrate.hydrate_asset(asset, "golden-frames-v5", base,
+                          locked_tag="golden-frames-v5")
+    assert calls == ["golden-frames-v5"]

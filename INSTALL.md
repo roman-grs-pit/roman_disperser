@@ -330,14 +330,10 @@ Most users hydrate. To rebuild instead:
   that makes it. No other file is used and nothing is generated. Library users can
   pass `allow_generate=True` or `force_regenerate=True` to `get_or_make_psf_payload`.
 
-  **Temporary: the hydrated caches need an opt-in.** `roman-disperser-hydrate`
-  still delivers `psf-v1` and `psf-prism-v1`, made with STPSF 2.1.0 under the old
-  unversioned names, so a run on them fails until you set:
-  ```bash
-  export ROMAN_DISPERSER_ALLOW_PSF_FALLBACK=1
-  ```
-  Then the best file of the same configuration loads with a
-  `PSFCacheVersionWarning` per file, and the images are the same as before. This
-  never generates. It goes away once the caches are regenerated and released.
+  **The hydrated `psf-v1` / `psf-prism-v1` caches are not used.** They were made
+  with STPSF 2.1.0 under the old unversioned names, and runs need the STPSF 2.3.0
+  files. Until the 2.3.0 caches are released, generate them with
+  `scripts/generate_psf_caches.py` (about 10 minutes for all 54 SCA and filter
+  pairs on 36 cores). The former opt-in `ROMAN_DISPERSER_ALLOW_PSF_FALLBACK` is gone.
 
 

@@ -17,7 +17,7 @@ The output is not an STPSF product: it has `psf_source = gaussian`, no STPSF
 version or add_ipc field, and the unversioned filename. The loader skips the
 STPSF version checks for it and gives one notice per file instead. The real
 cache is only a template here, so its version does not matter, but it must be
-the exact default file (legacy files need ROMAN_DISPERSER_ALLOW_PSF_FALLBACK=1).
+the exact default file.
 """
 
 import argparse

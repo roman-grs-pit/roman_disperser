@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **STPSF 2.3.0 and exact PSF caches:** PSF caches now target STPSF 2.3.0
 (`psf_model.TARGET_STPSF_VERSION`), and a run needs the exact file. **The hydrated
-`psf-v1` and `psf-prism-v1` caches (STPSF 2.1.0) now fail without
-`ROMAN_DISPERSER_ALLOW_PSF_FALLBACK=1`**, a temporary opt-in with which they render
-the same images as before, with a `PSFCacheVersionWarning`. Caches made with 2.3.0
-change results: the PSF has charge diffusion, 6 mas jitter and the Phase C optical
+`psf-v1` and `psf-prism-v1` caches (STPSF 2.1.0) are no longer used**: runs need
+the STPSF 2.3.0 caches, made with `scripts/generate_psf_caches.py` until they are
+released. (The temporary opt-in `ROMAN_DISPERSER_ALLOW_PSF_FALLBACK=1` of earlier
+development builds is removed.) Caches made with 2.3.0 change results: the PSF has charge diffusion, 6 mas jitter and the Phase C optical
 model.
 
 - Cache names carry the version, `..._os4_stpsf2.3.0.npz`, plus `_ipc` for caches

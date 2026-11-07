@@ -376,8 +376,7 @@ def write_references(out_dir):
 
 
 def main():
-    # Rendering loads the exact PSF cache: for the psf-v1 caches the references
-    # were blessed with, run with ROMAN_DISPERSER_ALLOW_PSF_FALLBACK=1 (TEMPORARY).
+    # Rendering loads the exact PSF caches (STPSF 2.3.0, add_ipc off, default nodes).
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--out-dir", default=None,
                     help="destination (default: <data>/golden_frames/"

@@ -86,9 +86,6 @@ _NODE_TOLERANCE_PX = 5e-3
 # A stored float32 wavelength at 2 um has a spacing of 2.4e-7 um.
 _WAVELENGTH_TOLERANCE_UM = 1e-5
 
-# TEMPORARY: remove once the 54 caches are regenerated on the cluster
-ALLOW_FALLBACK_ENV = "ROMAN_DISPERSER_ALLOW_PSF_FALLBACK"
-
 
 class PSFCacheVersionWarning(UserWarning):
     """A PSF cache's STPSF version or IPC state is stale, unknown or inconsistent."""
@@ -610,9 +607,6 @@ def _not_found_error(request, cache_path, problems=None):
         lines.append(f"  Other files for {request['detector']} "
                      f"{request['stpsf_filter']} in this directory, not used:")
         lines.extend(others)
-        # TEMPORARY: remove once the 54 caches are regenerated on the cluster
-        lines.append(f"  To use the best file of the same configuration for now, "
-                     f"with a warning, set {ALLOW_FALLBACK_ENV}=1.")
     return PSFCacheNotFoundError("\n".join(lines))
 
 
@@ -669,82 +663,10 @@ def _non_stpsf_stand_in_at(cache_dir, stem, request):
     return path
 
 
-# ---- TEMPORARY: remove once the 54 caches are regenerated on the cluster ----
-# Everything down to the END marker, the ALLOW_FALLBACK_ENV constant, its use in
-# _resolve_cache_files, the hint in _not_found_error, and the fallback_for
-# argument of load_psf_payload and _cache_issues.
-def _cache_ipc_state(name, header):
-    """Is IPC in this file, for matching a request? True, False, or None if unknown.
-
-    Metadata wins, then the filename: a versioned name without ``_ipc`` declares
-    IPC off. A legacy name says nothing, so it depends on the stamped version.
-    STPSF before 2.3.0 has no IPC in OVERDIST. A legacy name with no version at
-    all predates 2.3.0 too, so it counts as off. A legacy name stamped >= 2.3.0
-    came from the old code under the new STPSF, whose default is IPC on, unless
-    the caller overrode it: unknown.
-    """
-    _, name_version, name_ipc = _parse_cache_filename(name)
-    if header is not None and header['psf_source'] != 'stpsf':
-        return None
-    if header is not None and header['add_ipc'] is not None:
-        return header['add_ipc']
-    if name_ipc:
-        return True
-    if name_version is not None:
-        return False
-    parsed = _parse_version(header['version']) if header is not None else None
-    if parsed is None or parsed < _parse_version(IPC_FIRST_STPSF_VERSION):
-        return False
-    return None
-
-
-def _fallback_cache_files(cache_dir, stem, request):
-    """Files of the same configuration, best first, if the environment allows it.
-
-    The exact target file comes first, then the newest STPSF version; at equal
-    version a known IPC state beats an unknown one and a versioned name beats a
-    legacy one. Dropped: a file with the wrong IPC state, or stored nodes,
-    wavelengths or other settings that differ from the request. A file with an
-    unreadable header stays in, so that the loader reports what is wrong with it.
-    A request on the default bounds also takes full-detector files, last, since
-    those are the only ones that exist today.
-    """
-    if os.environ.get(ALLOW_FALLBACK_ENV) != "1" or not cache_dir.is_dir():
-        return []
-    ranked = _ranked_fallback_files(cache_dir, stem, request)
-    full = _full_detector_request(request)
-    if full is not None:
-        ranked += _ranked_fallback_files(cache_dir, _request_stem(full), full)
-    return ranked
-
-
-def _ranked_fallback_files(cache_dir, stem, request):
-    ranked = []
-    for path in cache_dir.iterdir():
-        stem_of_file, name_version, name_ipc = _parse_cache_filename(path.name)
-        if stem_of_file != stem:
-            continue
-        config = _read_cache_config(path)
-        if config is not None and _config_mismatches(config, request):
-            continue
-        state = _cache_ipc_state(path.name, config)
-        if state is not None and state != request['add_ipc']:
-            continue
-        version = (config['version'] if config is not None else None) or name_version
-        exact = (name_version == TARGET_STPSF_VERSION
-                 and name_ipc == request['add_ipc'])
-        key = (exact, _parse_version(version) or (), state is not None,
-               name_version is not None, path.name)
-        ranked.append((key, path))
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    return [path for _, path in ranked]
-# ---- END TEMPORARY ----------------------------------------------------------
-
-
 def _resolve_cache_files(cache_dir, filename, stem, request):
-    """Files that may serve a request, best first, and the exact file's problems.
+    """Files that may serve a request, and the exact file's problems.
 
-    Strictly this is the exact file or nothing.
+    This is the exact file, the deliberate non-STPSF stand-in, or nothing.
     """
     exact = cache_dir / filename
     problems = None
@@ -755,16 +677,13 @@ def _resolve_cache_files(cache_dir, filename, stem, request):
     stand_in = _non_stpsf_stand_in(cache_dir, stem, request)
     if stand_in is not None:
         return [stand_in], None
-    return _fallback_cache_files(cache_dir, stem, request), problems
+    return [], problems
 
 
-def _cache_issues(path, header, fallback_for=None):
+def _cache_issues(path, header):
     """Everything wrong with a cache's version or IPC labels, as clauses."""
     _, name_version, name_ipc = _parse_cache_filename(path.name)
     issues = []
-    if fallback_for is not None:
-        issues.append(f"used in place of {fallback_for}, which is missing or "
-                      f"not usable in this directory")
 
     meta_version = header['version']
     name_parsed = _parse_version(name_version)
@@ -817,14 +736,14 @@ def _cache_issues(path, header, fallback_for=None):
     return issues
 
 
-def _warn_on_cache(path, header, fallback_for=None, stacklevel=4):
+def _warn_on_cache(path, header, stacklevel=4):
     """Give at most one warning for a cache, once per message per process."""
     if header['psf_source'] != 'stpsf':
         _warn_once(f"PSF cache {path} holds {header['psf_source']} PSFs, not "
                    f"STPSF ones; STPSF version checks do not apply.",
                    UserWarning, stacklevel=stacklevel)
         return
-    issues = _cache_issues(path, header, fallback_for)
+    issues = _cache_issues(path, header)
     if issues:
         _warn_once(f"PSF cache {path}: {'; '.join(issues)}. "
                    f"{_REGENERATE_ADVICE}", stacklevel=stacklevel)
@@ -961,7 +880,7 @@ def save_psf_payload(payload, filepath, verbose=True):
         print(f"  Size: {size_mb:.1f} MB (compressed)")
 
 
-def load_psf_payload(filepath, verbose=True, fallback_for=None):
+def load_psf_payload(filepath, verbose=True):
     """
     Load a cached PSF payload from disk.
 
@@ -974,8 +893,6 @@ def load_psf_payload(filepath, verbose=True, fallback_for=None):
         Path to the cache file (.npz format)
     verbose : bool, optional
         Print load information (default: True)
-    fallback_for : str, optional
-        Name of the file this one stands in for; added to the warning.
 
     Returns
     -------
@@ -1020,7 +937,7 @@ def load_psf_payload(filepath, verbose=True, fallback_for=None):
                 raise ValueError(f"Cache file missing required field: {field}")
 
         header = _header_from_npz(data)
-        _warn_on_cache(filepath, header, fallback_for)
+        _warn_on_cache(filepath, header)
         _, name_version, name_ipc = _parse_cache_filename(filepath.name)
         version = header['version'] or name_version
         parsed = _parse_version(version)
@@ -1538,10 +1455,7 @@ def get_or_make_psf_payload(
     unless ``allow_generate`` or ``force_regenerate`` says so.
 
     One exception is a file marked non-STPSF (``make_gaussian_psf_cache.py``) under
-    the bare configuration name, used for add_ipc=False with a notice. A temporary
-    exception: with ``ROMAN_DISPERSER_ALLOW_PSF_FALLBACK=1`` the best file of the
-    same configuration is loaded with a `PSFCacheVersionWarning`; that never
-    generates either.
+    the bare configuration name, used for add_ipc=False with a notice.
 
     Parameters
     ----------
@@ -1679,7 +1593,7 @@ def get_or_make_psf_payload(
     )
     cache_path = cache_dir / filename
 
-    # Load the exact file. Only the temporary fallback can offer anything else.
+    # Load the exact file (or the deliberate non-STPSF stand-in), nothing else.
     if not force_regenerate:
         resolved_filter = resolve_stpsf_filter(order, stpsf_filter)
         request = _cache_request(detector, resolved_filter, wavelengths,
@@ -1692,15 +1606,13 @@ def get_or_make_psf_payload(
                 print(f"Loading PSF payload from cache: {candidate}")
             exact = candidate.name == filename
             try:
-                payload = load_psf_payload(
-                    candidate, verbose=verbose,
-                    fallback_for=None if exact else filename)
+                payload = load_psf_payload(candidate, verbose=verbose)
             except (ValueError, KeyError, EOFError, zipfile.BadZipFile) as e:
                 warnings.warn(f"PSF cache {candidate} is invalid ({e}).",
                               RuntimeWarning, stacklevel=2)
                 problems = [f"it is invalid ({e})"] if exact else problems
                 continue
-            # A stand-in or fallback on the default bounds can be a full-detector file
+            # A stand-in on the default bounds can be a full-detector file
             full = None if exact else _full_detector_request(request)
             if (full is not None and
                     _parse_cache_filename(candidate.name)[0] == _request_stem(full)):

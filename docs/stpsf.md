@@ -9,7 +9,7 @@
 
 **IPC in v2.3.0:** `OVERDIST` contains IPC by default. `psf_model` sets `wfi.options['add_ipc']` from its `add_ipc` argument, default False. With `add_ipc=True` the PSF contains IPC. romanisim >= 0.16.0 applies IPC in `make_l1`, so wrapped images would count it twice. The pinned v0.15.0 applies none because of a bug (romanisim #383), so with the default `add_ipc=False` wrapped products contain no IPC until romanisim is upgraded.
 
-**Cache lookup:** `get_or_make_psf_payload` needs the exact file for the request, whose metadata must agree, and raises `PSFCacheNotFoundError` with the `generate_psf_caches.py` command otherwise. See INSTALL.md, including the temporary `ROMAN_DISPERSER_ALLOW_PSF_FALLBACK=1`.
+**Cache lookup:** `get_or_make_psf_payload` needs the exact file for the request, whose metadata must agree, and raises `PSFCacheNotFoundError` with the `generate_psf_caches.py` command otherwise. See INSTALL.md.
 
 **Official Resources:**
 - Documentation: https://stpsf.readthedocs.io

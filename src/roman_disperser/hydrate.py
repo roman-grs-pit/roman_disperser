@@ -81,11 +81,16 @@ ASSETS = {
     # done marker is version-specific so publishing a new version triggers a
     # fresh download on the next hydrate.
     "golden_frames": Asset("golden_frames", "golden_frames", extract=True,
-                           done_marker="golden-frames-v3/cpu/provenance.json"),
+                           done_marker="{tag}/cpu/provenance.json"),
 }
 
 # Bootstrap fallback used only when the remote manifest is unavailable. The
 # remote manifest in roman_disperser_data is the source of truth.
+# TODO(psf-v2): point "psf" / "psf_prism" at "psf-v2" / "psf-prism-v2" and
+# "golden_frames" at "golden-frames-v4" once those releases are published (the
+# STPSF 2.3.0 caches and the matching golden frames; publishing needs the
+# maintainer's OK). Until then hydrate delivers the 2.1.0 caches, which runs do
+# not use, and the golden test skips when golden-frames-v4 is not present.
 DEFAULT_MANIFEST = {
     "optical_model": "optical-model-v0.8",
     "sensitivities": "sensitivities-v1",
@@ -167,7 +172,8 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
     which are read by name).
 
     Non-extract assets get the same treatment: their filenames need not
-    carry the release version either (the PSF caches don't), so a file that
+    carry the release tag either (PSF caches name the STPSF version, not the
+    release), so a file that
     is "already present" may be from another delivery. Present files whose
     lock entry disagrees with ``tag`` are re-downloaded, keeping the
     written lock truthful about what is on disk. Because that check runs on
@@ -183,9 +189,11 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
     if asset.extract:
         # Up-to-date check BEFORE any network call, so a pinned re-hydrate of
         # an installed asset touches nothing remote.
-        present = asset.done_marker and (out / asset.done_marker).exists()
+        # A "{tag}" in the marker is the release tag (version-named dirs).
+        marker = asset.done_marker.format(tag=tag)
+        present = marker and (out / marker).exists()
         if present and locked_tag == tag and not force:
-            print(f"    up to date ({tag} per lock; {asset.done_marker} exists)")
+            print(f"    up to date ({tag} per lock; {marker} exists)")
             return
         if present and locked_tag != tag:
             have = locked_tag or "an unrecorded version"
@@ -228,9 +236,10 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
         files = _filter_sca(files, sca)
     refetch = []
     if locked_tag != tag and not force:
-        # Present files may be another delivery's under the same name
-        # (version is not in the filename) — re-fetch them so the lock
-        # written afterwards describes the actual contents.
+        # Present files may be another delivery's under the same name (the
+        # release tag is not in the filename; PSF caches name their STPSF
+        # version, but two releases can share one) — re-fetch them so the
+        # lock written afterwards describes the actual contents.
         refetch = [n for n, _ in files if (out / n).exists()]
     if dry_run:
         extra = (f" ({len(refetch)} present but "
@@ -250,10 +259,10 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
             got += 1
             print(f"    [{i}/{len(files)}] {name}")
     print(f"    {got} downloaded, {len(files) - got} already present -> {out}")
-    # TEMPORARY: remove once the 54 caches are regenerated on the cluster
     if asset.key in ("psf", "psf_prism") and tag in ("psf-v1", "psf-prism-v1"):
-        print(f"    note: {tag} has old STPSF 2.1.0 files, which runs use only "
-              f"with ROMAN_DISPERSER_ALLOW_PSF_FALLBACK=1 (see INSTALL.md)")
+        print(f"    note: {tag} has old STPSF 2.1.0 files, which runs do not use; "
+              f"generate the STPSF 2.3.0 caches with "
+              f"scripts/generate_psf_caches.py (see INSTALL.md)")
 
 
 # ---------------------------------------------------------------------------
