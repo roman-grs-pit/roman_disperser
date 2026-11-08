@@ -77,7 +77,7 @@ Key functions: `sca_to_mpa`, `mpa_to_sca`, `sca_to_fpa`, `fpa_to_sca`, `get_mpa_
 
 Sky-to-FPA functions (`get_pa_rotation`, `get_fpa_pos`) are standalone — no payload needed. They convert (RA, Dec) to FPA coordinates given telescope pointing parameters. The class-based equivalents live in `RomanDetectorCoordinates` in `optical_model_utils.py`.
 
-All use `jnp.einsum` for polynomial evaluation.
+Polynomials are evaluated by Horner (`POSITION_CONTRACTION="horner"`, GEMM-free so GPU compiles are reproducible); the original `jnp.einsum` path stays selectable with `ROMAN_DISPERSER_POSITION_CONTRACTION=einsum`.
 
 ### Disperser JIT Pattern
 
@@ -251,6 +251,7 @@ The unified pipeline (`build_dispersed_image.py`) sets `JAX_COMPILATION_CACHE_DI
 - Spectral orders are strings: "1", "0", "2", "m1"
 - `demo_utils.py` provides helpers for generating synthetic galaxy profiles and spectra
 - All `jnp.einsum` calls use `precision='highest'` for CPU/GPU numerical consistency
+- Position polynomials default to Horner, not einsum: XLA:GPU autotunes small einsums per compile, which moved sources by 1-2 ulp between compiles (see `optical_model_jax` "Position contractions")
 - GPU tests in `test_disperser_gpu.py` verify CPU vs GPU results match
 
 ### Reference data (vendored)

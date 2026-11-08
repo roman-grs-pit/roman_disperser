@@ -43,10 +43,17 @@ XLA:GPU lowers these to Triton GEMM fusions whose tile configuration the
 autotuner picks by *timing* at each compile. Two configurations sum in
 different orders, so a fresh compile can move a source by 1-2 float32 ulp
 (~5e-4 px), which shows as a ~1.5e-4-of-peak dipole on steep traces
-(agent_work/tests_cluster/RESULTS_determinism.md). The ``"elementwise"`` mode
-writes the same sums as broadcast-multiply + ``jnp.sum``: plain fusions with no
-autotuned kernel choice, so every compile gives the same bits. ``"einsum"`` is
-the original code, kept for comparison.
+(roman-disperser-notes agent_work/tests_cluster/RESULTS_determinism.md). Modes:
+
+- ``"horner"`` (default): nested Horner evaluation, vectorised over the
+  coefficient indices. No GEMM, so no autotuned kernel choice: every compile
+  gives the same bits. Also the most accurate (rms 3e-4 px vs 4.5e-4 px for
+  einsum against a float64 evaluation, SCA 5, orders 0/1/2) and the fastest
+  (GPU 0.16 vs 0.22 ms, CPU 6 vs 19 ms for 140k sources in `trace_beam`).
+- ``"elementwise"``: the einsum sums as broadcast-multiply + ``jnp.sum``. Also
+  GEMM-free, but 1.5-3x slower on CPU; kept for comparison.
+- ``"einsum"``: the original einsum/matmul code, kept for comparison. On GPU a
+  fresh compile can land on either of two Triton GEMM configurations.
 
 Select with the environment variable ``ROMAN_DISPERSER_POSITION_CONTRACTION``
 (read at import) or :func:`set_position_contraction` (which clears JAX's jit
@@ -61,7 +68,7 @@ import jax.numpy as jnp
 import numpy as np
 
 POSITION_CONTRACTION_MODES = ("elementwise", "horner", "einsum")
-POSITION_CONTRACTION = os.environ.get("ROMAN_DISPERSER_POSITION_CONTRACTION", "einsum")
+POSITION_CONTRACTION = os.environ.get("ROMAN_DISPERSER_POSITION_CONTRACTION", "horner")
 if POSITION_CONTRACTION not in POSITION_CONTRACTION_MODES:
     raise ValueError(
         f"ROMAN_DISPERSER_POSITION_CONTRACTION={POSITION_CONTRACTION!r}; "
