@@ -377,7 +377,11 @@ class TestExtendedTable:
         via = star_disperser.bin_stack_phases(stack, os_, extended=True)
         assert direct.shape == via.shape
         assert direct.shape[:2] == (os_ + 1, os_ + 1)
-        np.testing.assert_array_equal(np.asarray(direct), np.asarray(via))
+        # Same sums in a different order: on GPU XLA may reorder the float32
+        # adds between compiles (seen as 1-ulp differences on L40S), so compare
+        # to float32 rounding rather than bit for bit.
+        np.testing.assert_allclose(np.asarray(via), np.asarray(direct),
+                                   rtol=1e-6, atol=0)
 
     @pytest.mark.parametrize("s_y,s_x,os_", [
         (12, 12, 4), (9, 9, 4), (10, 13, 4), (11, 8, 4), (7, 10, 2)])
