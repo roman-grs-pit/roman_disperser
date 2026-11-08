@@ -58,6 +58,14 @@ different orders, so a fresh compile can move a source by 1-2 float32 ulp
 Select with the environment variable ``ROMAN_DISPERSER_POSITION_CONTRACTION``
 (read at import) or :func:`set_position_contraction` (which clears JAX's jit
 caches, because the mode is read when a function is traced).
+
+Scope: production dispersed positions go through :func:`trace_sca` (its own
+fixed-order Horner, see there), which this setting does not touch. The
+setting governs the FPA-based functions: ``get_fpa_pos_from_offsets``,
+``get_mpa_coords``, ``get_trace_coeffs``, ``trace_beam`` (so the
+``ROMAN_DISPERSER_POSITIONS=legacy`` path of ``trace_sca``,
+``catalog.select_sources`` and the driver's selection positions) and the
+legacy ``disperser`` module.
 """
 
 import math
