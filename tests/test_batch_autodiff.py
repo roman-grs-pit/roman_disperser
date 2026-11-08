@@ -197,16 +197,14 @@ def test_grad_star_batch_vs_finite_differences(setup, weight):
         _, ty = jax.jvp(lambda y: loss_ref(STAR_X, y), (STAR_Y,), (e,))
         assert abs(float(gx[s]) - float(tx)) <= 1e-4 * abs(float(tx))
         assert abs(float(gy[s]) - float(ty)) <= 1e-4 * abs(float(ty))
-    # ... and agrees with finite differences. The interp deposit is
-    # piecewise linear in position with kinks where the subpixel grid aligns
-    # with the pixel edges; across the dispersion all samples of a trace
-    # share (nearly) one cross-dispersion position, so a star can sit on a
-    # kink, where the AD slope is a one-sided one. Check that it lies within
-    # the left/right one-sided FD slopes (3 % margin).
-    # The FD losses are summed in float64 on the host: the float32 jnp.sum
-    # over 4088^2 pixels is quantised at ~1 count, which moves h = 0.01
-    # one-sided slopes by several % (L40S, job 32472319).
-    h = 0.01
+    # ... and agrees with finite differences. The FD losses are summed in
+    # float64 on the host (the float32 jnp.sum over 4088^2 pixels is
+    # quantised at ~1 count). Even so the one-sided slopes scatter with the
+    # step (y: 180-250 for h = 0.001-0.1, both position modes, CPU and L40S,
+    # job 32478582): the float32 sample positions move in ulp steps and the
+    # interp deposit is piecewise linear with kinks wherever a subpixel edge
+    # crosses a pixel edge. AD (== forward mode, checked above) must lie
+    # within the range of the one-sided slopes over h = 0.003-0.03 (3 % margin).
     w64 = np.asarray(weight, np.float64)
     img = jax.jit(star_img)
     for s in range(2):
@@ -217,11 +215,13 @@ def test_grad_star_batch_vs_finite_differences(setup, weight):
                        else img(spec, STAR_X, STAR_Y + e))
                 return float(np.sum(np.asarray(out, np.float64) * w64))
             l0 = l(0.0)
-            left, right = (l0 - l(-h)) / h, (l(h) - l0) / h
-            lo, hi = min(left, right), max(left, right)
+            slopes = []
+            for h in (0.003, 0.01, 0.03):
+                slopes += [(l0 - l(-h)) / h, (l(h) - l0) / h]
+            lo, hi = min(slopes), max(slopes)
             pad = 0.03 * max(abs(lo), abs(hi))
-            assert lo - pad <= float(g[s]) <= hi + pad, (s, which, left,
-                                                         right, float(g[s]))
+            assert lo - pad <= float(g[s]) <= hi + pad, (s, which, slopes,
+                                                         float(g[s]))
 
 
 def test_grad_galaxy_batch_vs_finite_differences(setup, weight):
