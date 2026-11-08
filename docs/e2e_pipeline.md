@@ -86,10 +86,25 @@ the same as `inject`, but the light skips romanisim's QE, and the Poisson
 noise is drawn twice for a source that is also in the sky term. Kept only for
 comparison.
 
-Cost: ~260–290 s and ~8 GB per SCA, single-threaded. Most of that (~200 s)
-is romanisim's read-by-read electron apportioning (`l1.apportion_counts_to_resultants`).
-Run SCAs in parallel: `--num-threads` concurrent SCAs per worker, workers as
-a job array.
+Cost: ~160–185 CPU-s and ~9 GB peak per SCA with the svh/newrd romanisim
+fork (threaded apportioning and ramp fit; stock romanisim 0.15.0 takes
+~260–290 s single-threaded, most of it in `l1.apportion_counts_to_resultants`).
+The cost is per pixel, so it does not depend on how many sources the catalog
+has. Run SCAs in parallel: `--num-threads` concurrent SCAs per worker,
+each threaded over `ROMANISIM_NTHREADS` cores, workers as a job array.
+
+`slurm_e2e.sh` defaults to 16-CPU jobs running 4 SCAs at once with 4
+romanisim threads each (`WRAP_CPUS=16`, `WRAP_THREADS=4`, 12 GB requested per
+concurrent SCA). Wall time for 18 SCAs on one 16-CPU node (AMD 9655):
+
+| concurrent SCAs × threads | 1×16 | 2×8 | 4×4 | 8×2 | 16×1 |
+|---|---|---|---|---|---|
+| wall (s) | 670–730 | 370–405 | 250–325 | 250–290 | 310–340 |
+
+One SCA does not keep 16 threads busy, so run at least 4 at a time. 4×4 and
+8×2 tie within the node-to-node spread; 4×4 needs half the memory. A worker
+gets ceil(n_SCA / `WRAP_WORKERS`) SCAs per pointing, which also caps the
+concurrency.
 
 ## 4. Output units (romanisim L2)
 

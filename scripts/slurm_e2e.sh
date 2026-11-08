@@ -23,9 +23,14 @@
 #   WRAP_LEVEL         1 or 2                           (2)
 #   WRAP_WORKERS       CPU jobs for stage 2 (array)     (6)
 #   WRAP_CPUS          CPUs per stage-2 job             (16)
-#   WRAP_THREADS       concurrent SCAs per job; ~12 GB RAM each (1). romanisim
-#                      (svh/newrd fork) threads each SCA itself over WRAP_CPUS/WRAP_THREADS
-#                      cores (ROMANISIM_NTHREADS): ~50-60 s per SCA at 16 cores
+#   WRAP_THREADS       concurrent SCAs per job (4); the job asks for 12 GB RAM per
+#                      concurrent SCA (peak ~9 GB). romanisim (svh/newrd fork) threads each
+#                      SCA over WRAP_CPUS/WRAP_THREADS cores (ROMANISIM_NTHREADS).
+#                      Measured on a 16-CPU node, 18 SCAs (notes RESULTS_old_vs_new.md):
+#                      1x16 670-730 s, 2x8 370-405 s, 4x4 250-325 s, 8x2 250-290 s,
+#                      16x1 310-340 s. One SCA cannot keep 16 threads busy, so run >= 4 at
+#                      once; 4x4 ties 8x2 at a third of the memory. Each worker gets
+#                      ceil(n_SCA / WRAP_WORKERS) SCAs, so concurrency is capped by that too.
 #   CRDS_MODE          local when CRDS_PATH is set (complete cache; saves 10-50 s/SCA)
 set -euo pipefail
 CFG=$(readlink -f "$1"); PTS=$(readlink -f "$2")
@@ -37,7 +42,7 @@ ACC=${SLURM_ACCOUNT:-pi_np274}
 DISP=${DISP_ACTIVATE:-"module load miniconda; conda activate roman"}
 WRAP=${WRAP_ACTIVATE:-"module load miniconda; conda activate romanisim"}
 RSRC=${ROMANISIM_SRC:-$HOME/Roman/romanisim}
-NW=${WRAP_WORKERS:-6}; NT=${WRAP_THREADS:-1}; NC=${WRAP_CPUS:-16}; LEVEL=${WRAP_LEVEL:-2}
+NW=${WRAP_WORKERS:-6}; NT=${WRAP_THREADS:-4}; NC=${WRAP_CPUS:-16}; LEVEL=${WRAP_LEVEL:-2}
 RT=$(( NC / NT > 0 ? NC / NT : 1 ))
 CMODE=${CRDS_MODE:-${CRDS_PATH:+local}}
 mkdir -p "$OUT" "$L2"
