@@ -203,13 +203,19 @@ def test_grad_star_batch_vs_finite_differences(setup, weight):
     # share (nearly) one cross-dispersion position, so a star can sit on a
     # kink, where the AD slope is a one-sided one. Check that it lies within
     # the left/right one-sided FD slopes (3 % margin).
+    # The FD losses are summed in float64 on the host: the float32 jnp.sum
+    # over 4088^2 pixels is quantised at ~1 count, which moves h = 0.01
+    # one-sided slopes by several % (L40S, job 32472319).
     h = 0.01
+    w64 = np.asarray(weight, np.float64)
+    img = jax.jit(star_img)
     for s in range(2):
         for g, which in ((gx, 0), (gy, 1)):
             def l(d):
                 e = jnp.zeros(3, jnp.float32).at[s].set(d)
-                return float(loss(spec, STAR_X + e, STAR_Y) if which == 0
-                             else loss(spec, STAR_X, STAR_Y + e))
+                out = (img(spec, STAR_X + e, STAR_Y) if which == 0
+                       else img(spec, STAR_X, STAR_Y + e))
+                return float(np.sum(np.asarray(out, np.float64) * w64))
             l0 = l(0.0)
             left, right = (l0 - l(-h)) / h, (l(h) - l0) / h
             lo, hi = min(left, right), max(left, right)

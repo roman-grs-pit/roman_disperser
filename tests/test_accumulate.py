@@ -384,10 +384,27 @@ def test_gradients_match_finite_differences(payloads, sens, scene):
     e = jnp.zeros_like(sp0).at[1, k].set(0.25)
     fd = (loss(sp0 + e, x0) - loss(sp0 - e, x0)) / 0.5
     assert abs(float(g_sp[1, k]) - float(fd)) <= 2e-3 * abs(float(fd))
-    h = 0.05
-    ex = jnp.zeros_like(x0).at[0].set(h)
-    fdx = (loss(sp0, x0 + ex) - loss(sp0, x0 - ex)) / (2 * h)
-    assert abs(float(g_x[0]) - float(fdx)) <= 0.05 * abs(float(fdx))
+    # FD on a float64 host sum: the float32 jnp.sum over 4088^2 pixels is
+    # quantised at ~1 count, which scattered the old h = 0.05 central
+    # difference by ~15 % (job 32471411). The interp deposit is piecewise
+    # linear in position, so AD is a one-sided slope at a kink: require it
+    # within the left/right one-sided FD slopes (5 % margin), as in
+    # test_batch_autodiff.
+    w64 = np.asarray(w, np.float64)
+
+    def loss64(xx_):
+        out = acc.run_star_batch_window(
+            arrays, sens, WL, jnp.float32(DLAM), 3, sp0, xx_, y_b,
+            jnp.zeros((4088, 4088), jnp.float32), static=static, plan=p)
+        return float(np.sum(np.asarray(out, np.float64) * w64))
+
+    h = 0.01
+    l0 = loss64(x0)
+    r = (loss64(x0.at[0].add(h)) - l0) / h
+    lft = (l0 - loss64(x0.at[0].add(-h))) / h
+    lo, hi = min(r, lft), max(r, lft)
+    m = 0.05 * max(abs(r), abs(lft))
+    assert lo - m <= float(g_x[0]) <= hi + m, (float(g_x[0]), lft, r)
 
 
 def test_sharded_tiles_traced_once(payloads, sens, scene):
