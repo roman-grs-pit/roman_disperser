@@ -154,13 +154,9 @@ def _probe_trace(optical_payload, wavelengths, probe=9, pad=300.0):
     xs = np.repeat(px[None, :], probe, 0).ravel().astype(np.float32)
     ys = np.repeat(py[:, None], probe, 1).ravel().astype(np.float32)
     wl = np.asarray(wavelengths, np.float32)
-    xf, yf = omj.sca_to_fpa(optical_payload, jnp.asarray(xs), jnp.asarray(ys))
     n_p = xs.size
-    xf = jnp.broadcast_to(jnp.asarray(xf)[:, None], (n_p, wl.size)).ravel()
-    yf = jnp.broadcast_to(jnp.asarray(yf)[:, None], (n_p, wl.size)).ravel()
-    wl_b = jnp.broadcast_to(jnp.asarray(wl)[None, :], (n_p, wl.size)).ravel()
-    xm, ym = omj.trace_beam(optical_payload, xf, yf, wl_b)
-    xd, yd = omj.mpa_to_sca(optical_payload, xm, ym)
+    xd, yd = omj.trace_sca(optical_payload, jnp.asarray(xs)[:, None],
+                           jnp.asarray(ys)[:, None], jnp.asarray(wl)[None, :])
     return (np.asarray(xd, np.float64).reshape(n_p, wl.size),
             np.asarray(yd, np.float64).reshape(n_p, wl.size))
 

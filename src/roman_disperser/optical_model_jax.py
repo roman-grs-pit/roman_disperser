@@ -35,6 +35,9 @@ Two rules, both learned the hard way (see `get_fpa_pos`):
    `tests/test_precision_convention.py` enforces the annotation by AST scan.
 """
 
+import math
+import os
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -94,7 +97,167 @@ def make_sca_payload(model, sca: int, order: str = "1"):
             "C_ijk": jnp.asarray(model.beam_coeffs[order]["C_ijk"], dtype=jnp.float32),
             "D_ijk": jnp.asarray(model.beam_coeffs[order]["D_ijk"], dtype=jnp.float32),
         },
+        # SCA-local re-expansion of the same polynomials (float64 on the host,
+        # stored float32), evaluated by `trace_sca`. See its docstring.
+        "local": make_local_poly(model, sca, order),
+        # float64 host copies of the detector constants (Python floats: a
+        # label, never a jit argument) for the host-side float64 maps.
+        "host": {
+            "crpix1": float(model.detmod["crpix1"]),
+            "crpix2": float(model.detmod["crpix2"]),
+            "pixel_scale": float(model.detmod["pixel_scale"]),
+            "plate_scale": float(model.detmod["plate_scale"]),
+            "xy_center": (float(xcen), float(ycen)),
+        },
     }
+
+
+# -------- SCA-local trace (precision) --------
+#
+# The legacy chain sca_to_fpa -> trace_beam -> mpa_to_sca carries absolute
+# FPA degrees (~0.3 deg) and MPA millimetres (~100 mm) in float32 and
+# subtracts the SCA centre at the very end. One float32 ulp of 100 mm is
+# 7.6e-6 mm ~ 7.6e-4 px, and the coefficients themselves (X_ij in mm) lose as
+# much when cast to float32, so the dispersed positions came out 1-7e-4 px
+# off (median) and up to 4.5e-3 px (SCAs far from the FPA centre). At a
+# bright, steep trace edge (~0.3 peak/px) that is a dipole of up to ~7e-4 of
+# peak. Re-expanding every polynomial on the host, in float64, in the
+# *normalised pixel offsets from the SCA reference pixel* and folding the
+# SCA-centre subtraction and the mm->px scale into the coefficients keeps every
+# float32 intermediate small; what is left is the float32 rounding of the
+# final absolute pixel position (<= 1.2e-4 px at x > 2048).
+
+LOCAL_SCALE = 2048.0   # u = (crpix1 - xsca) / LOCAL_SCALE, v = (ysca - crpix2) / LOCAL_SCALE
+POSITION_MODES = ("local", "legacy")
+
+
+def _shift_poly2d(C, x0, sx, y0, sy):
+    """Re-expand ``sum_ij C[i,j] x^i y^j`` with ``x = x0 + sx*u``,
+    ``y = y0 + sy*v`` as ``sum_ab D[a,b] u^a v^b`` (float64, host)."""
+    C = np.asarray(C, np.float64)
+    I, J = C.shape
+    D = np.zeros((I, J), np.float64)
+    for i in range(I):
+        for j in range(J):
+            if C[i, j] == 0.0:
+                continue
+            for a in range(i + 1):
+                ca = math.comb(i, a) * x0 ** (i - a) * sx ** a
+                for b in range(j + 1):
+                    D[a, b] += C[i, j] * ca * math.comb(j, b) * y0 ** (j - b) * sy ** b
+    return D
+
+
+def make_local_poly(model, sca, order):
+    """Host float64 SCA-local polynomial coefficients for :func:`trace_sca`.
+
+    Returns float32 JAX arrays with the shapes of the ``poly`` coefficients:
+
+    * ``X``, ``Y`` [map_i, map_j]: reference trace offset from the SCA
+      reference pixel in pixels, ``(xmpa_ref - xcen) * plate_scale`` (and y),
+      as polynomials in ``u, v``;
+    * ``C`` [crv_i, crv_j, crv_k], ``D`` [ids_i, ids_j, ids_k]: the curvature
+      and inverse-dispersion coefficients (mm, as before) as polynomials in
+      ``u, v``.
+    """
+    det = model.detmod
+    xc, yc = model.coords.get_sca_center(sca=sca)
+    ps = float(det["plate_scale"])
+    pix = float(det["pixel_scale"])
+    # sca_to_fpa: xfpa = (xc*ps - (xsca - crpix1)) * pix/3600 = xf0 + s*u
+    xf0 = float(xc) * ps * pix / 3600.0
+    yf0 = float(yc) * ps * pix / 3600.0
+    s = LOCAL_SCALE * pix / 3600.0
+    b = model.beam_coeffs[order]
+    X = _shift_poly2d(b["X_ij"], xf0, s, yf0, s)
+    Y = _shift_poly2d(b["Y_ij"], xf0, s, yf0, s)
+    X[0, 0] -= xc
+    Y[0, 0] -= yc
+    X *= ps
+    Y *= ps
+    C = np.stack([_shift_poly2d(c, xf0, s, yf0, s) for c in b["C_ijk"]])
+    D = np.stack([_shift_poly2d(d, xf0, s, yf0, s) for d in b["D_ijk"]])
+    f32 = lambda a: jnp.asarray(a, jnp.float32)
+    return {"X": f32(X), "Y": f32(Y), "C": f32(C), "D": f32(D)}
+
+
+def _poly2(C, u, v):
+    """``sum_ab C[..., a, b] u^a v^b`` for C [L..., A, B]; result [shape(u, v), L...].
+
+    Horner in a fixed order with elementwise ops only (vectorised over the
+    leading coefficient axes L). No ``dot_general`` (so no autotuned GEMM
+    choice, see RESULTS_determinism) and no reduction (whose association
+    order XLA may pick per array shape, which broke the bit-identity of
+    sharded vs single-device runs)."""
+    lead = C.ndim - 2
+    u = jnp.asarray(u)
+    v = jnp.asarray(v)
+    uu = u.reshape(u.shape + (1,) * lead)
+    vv = v.reshape(v.shape + (1,) * lead)
+    A, B = C.shape[-2], C.shape[-1]
+    out = None
+    for a in range(A - 1, -1, -1):
+        row = C[..., a, B - 1] + jnp.zeros_like(vv)
+        for b in range(B - 2, -1, -1):
+            row = row * vv + C[..., a, b]
+        out = row if out is None else out * uu + row
+    return out
+
+
+def position_mode(mode=None):
+    """Resolve the trace position mode: argument, else the
+    ``ROMAN_DISPERSER_POSITIONS`` environment variable, else ``"local"``."""
+    mode = mode or os.environ.get("ROMAN_DISPERSER_POSITIONS") or "local"
+    if mode not in POSITION_MODES:
+        raise ValueError(f"position mode {mode!r} not in {POSITION_MODES}")
+    return mode
+
+
+def trace_sca(payload, xsca, ysca, wavelength, mode=None):
+    """Dispersed SCA position of a source at (xsca, ysca) and wavelength(s).
+
+    Same result as ``mpa_to_sca(trace_beam(sca_to_fpa(...)))`` but evaluated
+    in SCA-local coordinates (see the comment above ``LOCAL_SCALE``), which
+    cuts the float32 position error ~10x (p99 ~2.5e-4 px instead of
+    ~2e-3 px). Inputs broadcast elementwise; the output has their broadcast
+    shape. Jittable and differentiable.
+
+    ``mode="legacy"`` (or ``ROMAN_DISPERSER_POSITIONS=legacy``, read at trace
+    time) selects the original chain; payloads without a ``local`` entry
+    always use it.
+    """
+    if position_mode(mode) == "legacy" or "local" not in payload:
+        xs, ys, wl = jnp.broadcast_arrays(jnp.asarray(xsca), jnp.asarray(ysca),
+                                          jnp.asarray(wavelength))
+        shape = xs.shape
+        xf, yf = sca_to_fpa(payload, xs.reshape(-1), ys.reshape(-1))
+        xm, ym = trace_beam(payload, xf, yf, wl.reshape(-1))
+        xo, yo = mpa_to_sca(payload, xm, ym)
+        return xo.reshape(shape), yo.reshape(shape)
+    loc = payload["local"]
+    det = payload["det"]
+    c1, c2 = det["crpix1"], det["crpix2"]
+    u = (c1 - xsca) * (1.0 / LOCAL_SCALE)
+    v = (ysca - c2) * (1.0 / LOCAL_SCALE)
+    wl_ref = payload["wl"]["reference"]
+    if payload["wl"]["transform"] == "linear":
+        w = wavelength - wl_ref
+    elif payload["wl"]["transform"] == "log":
+        w = jnp.log10(wavelength / wl_ref)
+    else:
+        raise ValueError(f"Invalid wavelength transform: {payload['wl']['transform']}")
+    ids = _poly2(loc["D"], u, v)             # [..., ids_i] (mm)
+    crv = _poly2(loc["C"], u, v)             # [..., crv_i] (mm)
+    dely = ids[..., -1]
+    for i in range(ids.shape[-1] - 2, -1, -1):
+        dely = dely * w + ids[..., i]
+    delx = crv[..., -1]
+    for i in range(crv.shape[-1] - 2, -1, -1):
+        delx = delx * dely + crv[..., i]
+    ps = det["plate_scale"]
+    xo = c1 - (_poly2(loc["X"], u, v) + delx * ps)
+    yo = c2 + (_poly2(loc["Y"], u, v) + dely * ps)
+    return jnp.broadcast_arrays(xo, yo)
 
 
 # -------- coordinate transforms --------
@@ -459,6 +622,28 @@ def get_fpa_pos(ra, dec, pointing_ra, pointing_dec, pointing_pa):
 # other rounding is the final reference + change.
 
 
+def get_sca_pos_f64(ra, dec, pointing_ra, pointing_dec, pointing_pa, payload):
+    """Undispersed SCA position of sky sources, float64 on the host.
+
+    The production driver used to compute this as ``fpa_to_sca`` of the
+    float32 FPA position (:func:`get_fpa_pos`), which rounds the absolute FPA
+    degrees (~0.3 deg) to ~1e-3 px. Here the tangent-plane offsets, the PA
+    rotation and the FPA -> SCA map are all float64 NumPy (with the payload's
+    float64 ``host`` constants when present); cast the result to float32 only
+    at the end (<= 1.2e-4 px).
+
+    Returns:
+        xsca, ysca: float64 NumPy arrays (1-indexed FITS pixels)
+    """
+    xi, eta = sky_to_tangent_offsets(ra, dec, pointing_ra, pointing_dec)
+    theta = np.deg2rad(np.float64(pointing_pa) + 180.0 + FOCAL_PA_DEG)
+    c, s = np.cos(theta), np.sin(theta)
+    xfpa = -(c * xi - s * eta)
+    yfpa = -(s * xi + c * eta)
+    det = payload["host"] if "host" in payload else payload["det"]
+    return _fpa_to_sca_f64(det, xfpa, yfpa)
+
+
 def _fpa_to_sca_f64(det, xfpa, yfpa):
     """float64 NumPy :func:`fpa_to_sca` (host reference)."""
     pixel_scale = float(det["pixel_scale"])
@@ -629,7 +814,7 @@ def perturbed_sky_to_sca(ref, payload, d_xi=0.0, d_eta=0.0, d_ra=0.0,
     change (the FPA -> SCA map is linear), ~2e-4 px from a float64
     evaluation; without, it is ``fpa_to_sca`` of the float32 FPA position
     (~1e-3 px, like production). If ``wavelengths`` (microns) is given, the
-    dispersed trace from :func:`trace_beam` and :func:`mpa_to_sca` is
+    dispersed trace from :func:`trace_sca` is
     returned too. Jittable and differentiable (``jax.grad`` /
     ``jax.jacfwd``) in all perturbations.
 
@@ -647,12 +832,11 @@ def perturbed_sky_to_sca(ref, payload, d_xi=0.0, d_eta=0.0, d_ra=0.0,
         return xsca, ysca
     wavelengths = jnp.asarray(wavelengths, jnp.float32)
 
-    def trace_one(xf, yf):   # as star_disperser._compute_dispersed_positions
-        xmpa, ympa = trace_beam(payload, xf[None], yf[None], wavelengths)
-        xt, yt = mpa_to_sca(payload, xmpa, ympa)
+    def trace_one(xs, ys):   # as star_disperser._compute_dispersed_positions
+        xt, yt = trace_sca(payload, xs[None], ys[None], wavelengths)
         return xt.reshape(-1), yt.reshape(-1)
 
-    xt, yt = jax.vmap(trace_one)(jnp.atleast_1d(xfpa), jnp.atleast_1d(yfpa))
+    xt, yt = jax.vmap(trace_one)(jnp.atleast_1d(xsca), jnp.atleast_1d(ysca))
     return xsca, ysca, xt, yt
 
 # -------- polynomial functions --------

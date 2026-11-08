@@ -1757,11 +1757,22 @@ def process_pointing(
             # distortion). Not the order-1 landing point of any wavelength.
             xfpa_sel = xfpa[any_mask]
             yfpa_sel = yfpa[any_mask]
-            xsca_all, ysca_all = omj.fpa_to_sca(
-                sd["optical_payloads"]["1"], xfpa_sel, yfpa_sel,
-            )
-            xsca_all_np = np.asarray(xsca_all)
-            ysca_all_np = np.asarray(ysca_all)
+            pay1 = sd["optical_payloads"]["1"]
+            if omj.position_mode() == "legacy" or "host" not in pay1:
+                xsca_all, ysca_all = omj.fpa_to_sca(
+                    sd["optical_payloads"]["1"], xfpa_sel, yfpa_sel,
+                )
+                xsca_all_np = np.asarray(xsca_all)
+                ysca_all_np = np.asarray(ysca_all)
+            else:
+                # float64 host sky -> SCA (the float32 FPA route above
+                # rounds absolute FPA degrees to ~1e-3 px), cast at the end.
+                xs64, ys64 = omj.get_sca_pos_f64(
+                    ra_cone[any_mask], dec_cone[any_mask],
+                    pointing_ra, pointing_dec, pointing_pa, pay1,
+                )
+                xsca_all_np = xs64.astype(np.float32)
+                ysca_all_np = ys64.astype(np.float32)
 
             # -- Index mapping overview --
             # We have three nested subsets of cone sources:

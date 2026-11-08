@@ -61,13 +61,10 @@ def trace_beam_sca(payload, xsca, ysca, wavelength):
     x_out, y_out : float
         Dispersed SCA position (scalars)
     """
-    xsca_a = jnp.atleast_1d(xsca)
-    ysca_a = jnp.atleast_1d(ysca)
-    wl_a = jnp.atleast_1d(wavelength)
-    xfpa, yfpa = omj.sca_to_fpa(payload, xsca_a, ysca_a)
-    xmpa, ympa = omj.trace_beam(payload, xfpa, yfpa, wl_a)
-    x_out, y_out = omj.mpa_to_sca(payload, xmpa, ympa)
-    return x_out[0], y_out[0]
+    x_out, y_out = omj.trace_sca(payload, jnp.atleast_1d(xsca),
+                                 jnp.atleast_1d(ysca),
+                                 jnp.atleast_1d(wavelength))
+    return x_out.reshape(-1)[0], y_out.reshape(-1)[0]
 
 
 def trace_beam_sca_with_jacobian(payload, xsca, ysca, wavelength):

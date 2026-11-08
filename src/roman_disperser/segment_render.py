@@ -142,13 +142,9 @@ def _hat_extents(optical_payload, node_wl, wl_range, positions, n_fine):
     wl = np.linspace(lo, hi, n_fine).astype(np.float32)
     xs = np.asarray([p[0] for p in positions], np.float32)
     ys = np.asarray([p[1] for p in positions], np.float32)
-    xf, yf = omj.sca_to_fpa(optical_payload, jnp.asarray(xs), jnp.asarray(ys))
     n_p = xs.size
-    xf = jnp.broadcast_to(jnp.asarray(xf)[:, None], (n_p, wl.size)).ravel()
-    yf = jnp.broadcast_to(jnp.asarray(yf)[:, None], (n_p, wl.size)).ravel()
-    wl_b = jnp.broadcast_to(jnp.asarray(wl)[None, :], (n_p, wl.size)).ravel()
-    xm, ym = omj.trace_beam(optical_payload, xf, yf, wl_b)
-    xd, yd = omj.mpa_to_sca(optical_payload, xm, ym)
+    xd, yd = omj.trace_sca(optical_payload, jnp.asarray(xs)[:, None],
+                           jnp.asarray(ys)[:, None], jnp.asarray(wl)[None, :])
     xd = np.asarray(xd, np.float64).reshape(n_p, wl.size)
     yd = np.asarray(yd, np.float64).reshape(n_p, wl.size)
     node_wl = np.asarray(node_wl, np.float64)

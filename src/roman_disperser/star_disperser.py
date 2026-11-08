@@ -233,21 +233,12 @@ def _compute_dispersed_positions(optical_payload, xsca_star, ysca_star, waveleng
     xsca_disp, ysca_disp : jnp.ndarray
         [N_wl] dispersed positions in SCA coordinates
     """
-    # Convert star position to FPA (optical model functions expect arrays)
-    xsca_arr = jnp.atleast_1d(xsca_star)
-    ysca_arr = jnp.atleast_1d(ysca_star)
-    xfpa, yfpa = omj.sca_to_fpa(optical_payload, xsca_arr, ysca_arr)
-
-    # Trace beam at all wavelengths (wavelengths already in microns)
-    xmpa, ympa = omj.trace_beam(optical_payload, xfpa, yfpa, wavelengths)
-
-    # Convert back to SCA
-    xsca_disp, ysca_disp = omj.mpa_to_sca(optical_payload, xmpa, ympa)
-    # Shapes: [1, N_wl] each - flatten to [N_wl]
-    xsca_disp = xsca_disp.reshape(-1)
-    ysca_disp = ysca_disp.reshape(-1)
-
-    return xsca_disp, ysca_disp
+    # SCA -> dispersed SCA in SCA-local coordinates (omj.trace_sca; the
+    # legacy FPA/MPA chain is ROMAN_DISPERSER_POSITIONS=legacy).
+    xsca_disp, ysca_disp = omj.trace_sca(
+        optical_payload, jnp.atleast_1d(xsca_star), jnp.atleast_1d(ysca_star),
+        wavelengths)
+    return xsca_disp.reshape(-1), ysca_disp.reshape(-1)
 
 
 def deposit_stack_native(
