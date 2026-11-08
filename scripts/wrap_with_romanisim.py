@@ -23,11 +23,17 @@ Header-driven arguments (read per FITS):
     MA_TABLE                 -> --ma_table_number
     RNDSEED0 ^ RNDSEED1      -> --rng_seed  (XOR fold to 32-bit)
 
+Counts mode (--counts-mode, see docs/e2e_pipeline.md):
+    inject (default): romanisim_inject_rate.py adds the noiseless MODEL rate
+        where romanisim renders its own sources (Poisson, QE, MA-table
+        exposure time); no unused PSF build.
+    extra-counts: legacy ``romanisim-make-image --extra-counts <fits> ISIM
+        --stpsf``, which adds the ISIM draw after QE and noise.
+
 Static arguments (CLI-tunable; see --help):
     --bandpass  (default: per file from the OPTELEM header card; see below)
-    --usecrds --stpsf
+    --usecrds
     --nobj 0
-    --extra-counts <fits> ISIM
     --date    (default 2026-01-01T12:00:00.000)
     --level   (default 2)
 
@@ -134,8 +140,43 @@ def resolve_bandpass(optelem: str | None, cli_bandpass: str | None,
     return "GRISM"
 
 
+INJECT_SCRIPT = Path(__file__).resolve().parent / "romanisim_inject_rate.py"
+
+
 def build_command(hdr: dict, fits_path: Path, out: Path,
-                  date: str, bandpass: str, level: int) -> list[str]:
+                  date: str, bandpass: str, level: int,
+                  counts_mode: str = "inject") -> list[str]:
+    """romanisim command for one product.
+
+    counts_mode "inject" (default): the noiseless MODEL rate goes through
+    romanisim's own source path (Poisson, QE from the CRDS flat, MA-table
+    exposure time) via romanisim_inject_rate.py, and the unused PSF build is
+    skipped. "extra-counts": the legacy ``--extra-counts FILE ISIM``, which
+    adds the disperser's counts after QE, so L2 carries a 1/flat imprint and
+    is scaled by EXPTIME / (MA-table time); kept for comparison.
+    """
+    tail = [
+        "--radec", f"{hdr['ra']}", f"{hdr['dec']}",
+        "--roll", f"{hdr['pa']}",
+        "--sca", str(hdr["sca"]),
+        "--rng_seed", str(hdr["rng_seed"]),
+        "--date", date,
+        "--ma_table_number", str(hdr["ma_table"]),
+        "--bandpass", bandpass,
+        "--level", str(level),
+        "--usecrds",
+        "--nobj", "0",
+    ]
+    if counts_mode == "inject":
+        return [sys.executable, str(INJECT_SCRIPT), "--rate-file", str(fits_path),
+                "--rate-hdu", "MODEL", "--", str(out)] + tail
+    if counts_mode != "extra-counts":
+        raise ValueError(f"unknown counts_mode {counts_mode!r}")
+    return _legacy_command(hdr, fits_path, out, date, bandpass, level)
+
+
+def _legacy_command(hdr: dict, fits_path: Path, out: Path,
+                    date: str, bandpass: str, level: int) -> list[str]:
     return [
         "romanisim-make-image",
         str(out),
@@ -157,7 +198,7 @@ def build_command(hdr: dict, fits_path: Path, out: Path,
 def wrap_one(fits_path: Path, input_root: Path, output_root: Path,
              log_dir: Path, date: str, cli_bandpass: str | None,
              cli_element: str | None, level: int,
-             dry_run: bool) -> WrapResult:
+             dry_run: bool, counts_mode: str = "inject") -> WrapResult:
     out = derive_output_path(fits_path, input_root, output_root)
     if out.exists() and out.stat().st_mtime >= fits_path.stat().st_mtime:
         return WrapResult(fits_path, out, "skipped", 0.0, None, None,
@@ -181,7 +222,7 @@ def wrap_one(fits_path: Path, input_root: Path, output_root: Path,
         return WrapResult(fits_path, out, "failed", 0.0, None, log_path,
                           note=str(exc))
 
-    cmd = build_command(hdr, fits_path, out, date, bandpass, level)
+    cmd = build_command(hdr, fits_path, out, date, bandpass, level, counts_mode)
 
     if dry_run:
         return WrapResult(fits_path, out, "skipped", 0.0, None, log_path,
@@ -244,6 +285,11 @@ def main() -> None:
                         "overridden at simulation time.")
     p.add_argument("--level", type=int, default=2,
                    help="L1 (1) or L2 (2) output (default: 2)")
+    p.add_argument("--counts-mode", choices=("inject", "extra-counts"),
+                   default="inject",
+                   help="inject (default): MODEL rate through romanisim's source "
+                        "path (QE, Poisson, MA-table time); extra-counts: legacy "
+                        "--extra-counts ISIM (no QE, 1/flat imprint in L2)")
     p.add_argument("--dry-run", action="store_true",
                    help="Print intended romanisim commands; do not execute")
     p.add_argument("--manifest-file", type=Path, default=None,
@@ -314,7 +360,7 @@ def main() -> None:
             pool.submit(
                 wrap_one, f, args.input_dir, args.output_dir, log_dir,
                 args.date, args.bandpass, args.element, args.level,
-                args.dry_run,
+                args.dry_run, args.counts_mode,
             ): f
             for f in my_files
         }
