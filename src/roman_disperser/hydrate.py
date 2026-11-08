@@ -93,10 +93,10 @@ ASSETS = {
 # Bootstrap fallback used only when the remote manifest is unavailable. The
 # remote manifest in roman_disperser_data is the source of truth.
 # TODO(psf-v2): point "psf" / "psf_prism" at "psf-v2" / "psf-prism-v2" and
-# "golden_frames" at "golden-frames-v4" once those releases are published (the
+# "golden_frames" at "golden-frames-v5" once those releases are published (the
 # STPSF 2.3.0 caches and the matching golden frames; publishing needs the
 # maintainer's OK). Until then hydrate delivers the 2.1.0 caches, which runs do
-# not use, and the golden test skips when golden-frames-v4 is not present.
+# not use, and the golden test skips when golden-frames-v5 is not present.
 DEFAULT_MANIFEST = {
     "optical_model": "optical-model-v0.8",
     "sensitivities": "sensitivities-v1",

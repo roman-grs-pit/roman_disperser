@@ -109,6 +109,16 @@ Version history
   regenerated). Same code path and deposit options as v3: the change is the
   PSFs alone, which have charge diffusion, 6 mas jitter and the Phase C
   optical model, and move total flux by ~1.2e-3 vs v3. jax 0.11.2, Bouchet.
+* ``golden-frames-v5`` — blessed after the precision work on svh/combined+
+  (CPU and ``gpu-l40s``). Positions now come from the SCA-local float32
+  trace with float64 host source positions (``omj.trace_sca``), and the
+  FPA-based contractions use a GEMM-free Horner evaluation. Against a true
+  float64 run the float32 frame error drops from ~1.3e-3 to ~1.4e-4 of
+  peak. The golden scene uses the floor deposit, so the sub-ulp position
+  changes flip pixel boundaries: up to ~2.4e-2 of peak per pixel vs v4,
+  total flux unchanged to <=1.5e-8. The interp deposit now reads an
+  extended phase table (identical to float32 rounding; not used by this
+  floor scene). jax 0.11.2, Bouchet.
 
 Regenerating (only for an *intentional* results change) — once per backend,
 on the deterministic CPU and on the production GPU (a10g)::
@@ -149,7 +159,7 @@ from roman_disperser.pipeline import (
 # The pinned reference version. Bumping this is a *results-changing* act:
 # do it only together with publishing the regenerated frames as a
 # roman_disperser_data release of the same name (see module docstring).
-GOLDEN_VERSION = "golden-frames-v4"
+GOLDEN_VERSION = "golden-frames-v5"
 
 # Deposit options the pinned frames were blessed with: the historical floor
 # deposit, no count rebinning, no star PSF hoist. These are no longer the
