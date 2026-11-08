@@ -101,11 +101,23 @@ def _horner1d(t, coef):
 
 
 def _horner2d(x, y, coef):
-    """sum_ij coef[..., i, j] x^i y^j by nested Horner (static i, j; unrolled into one fusion)."""
+    """sum_ij coef[..., i, j] x^i y^j by nested Horner.
+
+    Vectorised over the coefficient indices: one Horner pass in y over the
+    last axis (all i at once), then one in x. Per element this is the same
+    sequence of multiply-adds as a fully unrolled Horner, but the traced
+    program has only n_i + n_j steps, which keeps compiles of the galaxy
+    batch (vmap/jvp/transpose of this) small.
+    """
     ni, nj = coef.shape[-2:]
-    rows = [_horner1d(y, [coef[..., i, j, None] if coef.ndim > 2 else coef[i, j]
-                          for j in range(nj)]) for i in range(ni)]
-    return _horner1d(x, rows)
+    t = coef[..., nj - 1, None]                 # [..., ni, 1]
+    for j in range(nj - 2, -1, -1):
+        t = t * y + coef[..., j, None]          # [..., ni, n]
+    t = t + jnp.zeros_like(y)                   # nj == 1: broadcast to [..., ni, n]
+    p = t[..., ni - 1, :]
+    for i in range(ni - 2, -1, -1):
+        p = p * x + t[..., i, :]
+    return p
 
 
 def _poly2d(x_powers, coef, y_powers):
