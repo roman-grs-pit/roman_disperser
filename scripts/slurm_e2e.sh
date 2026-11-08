@@ -12,6 +12,8 @@
 #   scripts/slurm_e2e.sh CONFIG.yaml POINTINGS.ecsv [L2_OUT_DIR]
 #
 # Environment (defaults are Bouchet's):
+#   ROMAN_DISPERSER_DATA  data dir from hydrate (exported to both stages; needed unless
+#                      the repo's data/ is hydrated)
 #   SLURM_ACCOUNT      account                         (pi_np274)
 #   GPU_PARTITION, CPU_PARTITION                       (gpu, day)
 #   GPU_GRES           GPU request; L40S is fastest    (l40s:1)
@@ -19,8 +21,12 @@
 #   WRAP_ACTIVATE      shell to enter the romanisim env (... conda activate romanisim)
 #   ROMANISIM_SRC      romanisim checkout to put first on PYTHONPATH (needs IPC fix #384)
 #   WRAP_LEVEL         1 or 2                           (2)
-#   WRAP_WORKERS       CPU jobs for stage 2 (array)     (4)
-#   WRAP_THREADS       concurrent SCAs per worker; ~8 GB RAM each (4)
+#   WRAP_WORKERS       CPU jobs for stage 2 (array)     (6)
+#   WRAP_CPUS          CPUs per stage-2 job             (16)
+#   WRAP_THREADS       concurrent SCAs per job; ~12 GB RAM each (1). romanisim
+#                      (svh/newrd fork) threads each SCA itself over WRAP_CPUS/WRAP_THREADS
+#                      cores (ROMANISIM_NTHREADS): ~50-60 s per SCA at 16 cores
+#   CRDS_MODE          local when CRDS_PATH is set (complete cache; saves 10-50 s/SCA)
 set -euo pipefail
 CFG=$(readlink -f "$1"); PTS=$(readlink -f "$2")
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -31,7 +37,9 @@ ACC=${SLURM_ACCOUNT:-pi_np274}
 DISP=${DISP_ACTIVATE:-"module load miniconda; conda activate roman"}
 WRAP=${WRAP_ACTIVATE:-"module load miniconda; conda activate romanisim"}
 RSRC=${ROMANISIM_SRC:-$HOME/Roman/romanisim}
-NW=${WRAP_WORKERS:-4}; NT=${WRAP_THREADS:-4}; LEVEL=${WRAP_LEVEL:-2}
+NW=${WRAP_WORKERS:-6}; NT=${WRAP_THREADS:-1}; NC=${WRAP_CPUS:-16}; LEVEL=${WRAP_LEVEL:-2}
+RT=$(( NC / NT > 0 ? NC / NT : 1 ))
+CMODE=${CRDS_MODE:-${CRDS_PATH:+local}}
 mkdir -p "$OUT" "$L2"
 
 J1=$(sbatch --parsable --account=$ACC --partition=${GPU_PARTITION:-gpu} --gpus=${GPU_GRES:-l40s:1} --nodes=1 \
@@ -47,12 +55,14 @@ python "$HERE/build_dispersed_image.py" --config "$CFG" --pointings "$PTS"
 EOS
 )
 J2=$(sbatch --parsable --account=$ACC --partition=${CPU_PARTITION:-day} --dependency=afterok:$J1 \
-  --array=0-$((NW - 1)) --cpus-per-task=$NT --mem=$((NT * 9))G --time=12:00:00 \
+  --array=0-$((NW - 1)) --cpus-per-task=$NC --mem=$((NT * 12))G --time=12:00:00 \
   --job-name=e2e-wrap --output="$L2/e2e-wrap-%A_%a.log" <<EOS
 #!/usr/bin/env bash
 set -eo pipefail
 $WRAP
 export PYTHONPATH=$RSRC\${PYTHONPATH:+:\$PYTHONPATH}
+export ROMANISIM_NTHREADS=$RT
+${CMODE:+export CRDS_MODE=$CMODE}
 python -c "import romanisim; print('romanisim', romanisim.__version__, romanisim.__file__)"
 python "$HERE/wrap_with_romanisim.py" --input-dir "$OUT" --output-dir "$L2" --level $LEVEL \
   --num-threads $NT --worker-index \$SLURM_ARRAY_TASK_ID --num-workers $NW
