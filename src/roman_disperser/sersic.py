@@ -25,26 +25,61 @@ _BN_VALUES = gammaincinv(2.0 * _BN_N_GRID, 0.5).astype(np.float32)
 # at package import (on a GPU node: preallocating GPU memory), before any
 # worker processes are started. jnp.interp converts them when traced.
 
+# Cubic spline of b_n on the same 2000 nodes (float64 fit, float32
+# per-interval coefficients). Linear interpolation is exact at the nodes but
+# its derivative db_n/dn jumps at every node (C0); the spline is C2, so
+# gradients in the Sérsic index are smooth (for HMC/NUTS or Newton fits).
+# The nodes are uniform, so the interval index is arithmetic (no search).
+_BN_LO, _BN_HI, _BN_N = 0.01, 10.0, 2000
+_BN_STEP = (_BN_HI - _BN_LO) / (_BN_N - 1)
 
-def compute_bn(n):
-    """Look up Sérsic b_n via interpolation on precomputed table.
 
-    JIT-compatible (uses jnp.interp on static arrays).
-    Works for scalar or array n.
+def _bn_spline_coeffs():
+    from scipy.interpolate import CubicSpline
+    x = np.linspace(_BN_LO, _BN_HI, _BN_N)
+    c = CubicSpline(x, gammaincinv(2.0 * x, 0.5)).c   # [4, N-1], highest first
+    return np.ascontiguousarray(c.T).astype(np.float32)  # [N-1, 4]
+
+
+_BN_SPLINE = _bn_spline_coeffs()
+
+BN_METHODS = ("spline", "linear")
+
+
+def compute_bn(n, method="spline"):
+    """Sérsic b_n (``gammaincinv(2n, 0.5)``) from a precomputed table.
+
+    JIT-compatible; scalar or array ``n`` in [0.01, 10] (clamped outside).
 
     Parameters
     ----------
     n : float or jnp.ndarray
         Sérsic index. Valid range: [0.01, 10.0].
+    method : {"spline", "linear"}
+        ``"spline"`` (default): cubic spline through 2000 nodes, C2 in n,
+        max error ~1e-7 relative for n >= 0.1. ``"linear"``: the earlier
+        linear interpolation between the same nodes (C0: the gradient in
+        n is piecewise constant).
 
     Returns
     -------
     b_n : same shape as n
     """
-    return jnp.interp(n, _BN_N_GRID, _BN_VALUES)
+    if method == "linear":
+        return jnp.interp(n, _BN_N_GRID, _BN_VALUES)
+    if method != "spline":
+        raise ValueError(f"method must be one of {BN_METHODS}, got {method!r}")
+    n = jnp.asarray(n)
+    s = (jnp.clip(n, _BN_LO, _BN_HI) - _BN_LO) / _BN_STEP
+    i = jnp.clip(jnp.floor(s), 0, _BN_N - 2)
+    dt = (s - i) * _BN_STEP
+    c = jnp.asarray(_BN_SPLINE, n.dtype if jnp.issubdtype(n.dtype, jnp.floating)
+                    else jnp.float32)[i.astype(jnp.int32)]
+    return ((c[..., 0] * dt + c[..., 1]) * dt + c[..., 2]) * dt + c[..., 3]
 
 
-def _sersic_kernel(r_eff_pix, n, ba, theta, y_grid, x_grid):
+def _sersic_kernel(r_eff_pix, n, ba, theta, y_grid, x_grid,
+                   bn_method="spline"):
     """Core Sérsic profile computation (no grid creation).
 
     Parameters
@@ -85,7 +120,7 @@ def _sersic_kernel(r_eff_pix, n, ba, theta, y_grid, x_grid):
     r = jnp.sqrt(jnp.where(nonzero, r2, 1.0))
 
     # Sérsic profile
-    bn = compute_bn(n)
+    bn = compute_bn(n, bn_method)
     scaled = jnp.where(nonzero, (r / r_eff_pix) ** (1.0 / n), 0.0)
     profile = jnp.exp(-bn * (scaled - 1.0))
 
