@@ -157,6 +157,19 @@ def galaxy_stack(order, x, y, image, psf_spatial="linear"):
     return star_disperser.bin_stack_phases(conv, os_)
 
 
+def sersic_galaxy_stack(order, x, y, params, npix, psf_spatial="linear",
+                        subsample=1):
+    """:func:`galaxy_stack` of a Sérsic galaxy rendered directly in the
+    warped frame (``galaxy_disperser.prepare_sersic_galaxy_images``);
+    ``params`` = [4] (r_eff_pix, n, ba, theta)."""
+    psf, opt = _payloads(order)
+    os_ = psf['oversample']
+    conv, _, _, _ = galaxy_disperser.prepare_sersic_galaxy_images(
+        opt, psf, tuple(params[i] for i in range(4)), npix, x, y,
+        1.0 / os_, 1.0 / os_, psf_spatial=psf_spatial, subsample=subsample)
+    return star_disperser.bin_stack_phases(conv, os_)
+
+
 def dispersed_positions(order, x, y):
     _, opt = _payloads(order)
     return star_disperser._compute_dispersed_positions(
@@ -228,6 +241,9 @@ class SceneOperator:
     sersic_subsample : int
         Sub-pixel sampling of the in-graph Sérsic images (``sersic.
         make_sersic_images``); 1 matches production.
+    sersic_warp : {"analytic", "splat"}
+        How :meth:`model_fn` applies the dispersion warp to Sérsic
+        parameters (see there).
 
     Sources are ordered stars first, then galaxies, in ``theta``.
     """
@@ -236,7 +252,8 @@ class SceneOperator:
                  galaxy_xy=None, galaxy_images=None, window=None, basis=None,
                  flux_unit=1e-17, precompute=True, checkpoint=True,
                  deposit="interp", chunk_size=2000, psf_spatial="linear",
-                 galaxy_npix=None, sersic_subsample=1):
+                 galaxy_npix=None, sersic_subsample=1,
+                 sersic_warp="analytic"):
         self.orders = dict(orders)
         self.order_keys = tuple(sorted(self.orders))
         self.wavelengths = jnp.asarray(wavelengths, jnp.float32)
@@ -264,6 +281,10 @@ class SceneOperator:
                              f"got {psf_spatial!r}")
         self.psf_spatial = psf_spatial
         self.sersic_subsample = int(sersic_subsample)
+        if sersic_warp not in ("analytic", "splat"):
+            raise ValueError(f"sersic_warp must be 'analytic' or 'splat', "
+                             f"got {sersic_warp!r}")
+        self.sersic_warp = sersic_warp
         self.window = tuple(int(v) for v in (window or FULL_SCA))
         self.shape = self.window[2:]
         self.basis = basis
@@ -347,6 +368,12 @@ class SceneOperator:
                 x, y, spec = row
                 binned = star_stack(order, x, y, self.psf_spatial)
                 xd, yd = dispersed_positions(order, x, y)
+            elif kind == "gal_sersic":
+                x, y, params, spec = row
+                binned = sersic_galaxy_stack(
+                    order, x, y, params, self.galaxy_npix, self.psf_spatial,
+                    self.sersic_subsample)
+                xd, yd = dispersed_positions(order, x, y)
             else:
                 x, y, image, spec = row
                 binned = galaxy_stack(order, x, y, image, self.psf_spatial)
@@ -361,9 +388,10 @@ class SceneOperator:
         return out
 
     def _model(self, consts, theta, dxy=None, use_pre=None,
-               galaxy_images=None):
+               galaxy_images=None, sersic_params=None):
         """Image for coefficients theta and optional position offsets dxy
-        [n_src, 2] and galaxy images (both force on-the-fly stacks)."""
+        [n_src, 2], galaxy images, or Sérsic parameters [n_gal, 4] rendered
+        in the warped frame (all force on-the-fly stacks)."""
         use_pre = self.precompute if use_pre is None else use_pre
         if galaxy_images is None:
             galaxy_images = consts["galaxy_images"]
@@ -386,12 +414,16 @@ class SceneOperator:
                 out = self._scan_group(order, k, "star", st_shape, xs, out,
                                        use_pre)
             if self.n_gal:
+                kind = "gal"
                 if use_pre:
                     b, xd, yd = consts["pre"][k]["gal"]
                     xs = (b, xd, yd, g_spec)
+                elif sersic_params is not None:
+                    xs = (gxy[:, 0], gxy[:, 1], sersic_params, g_spec)
+                    kind = "gal_sersic"
                 else:
                     xs = (gxy[:, 0], gxy[:, 1], galaxy_images, g_spec)
-                out = self._scan_group(order, k, "gal", gal_shape, xs, out,
+                out = self._scan_group(order, k, kind, gal_shape, xs, out,
                                        use_pre)
         return out
 
@@ -456,23 +488,35 @@ class SceneOperator:
         ``galaxy_images``). Differentiable in all three; compose with
         ``transforms.sersic_from_unconstrained`` for unconstrained shape
         parameters and with :func:`sky_dxy` for sky offsets.
+
+        With ``sersic_warp="analytic"`` (default) the Sérsic profile is
+        evaluated directly in the dispersion-warped frame at every PSF grid
+        wavelength (no resampling; smooth in the shape parameters and the
+        position); ``"splat"`` renders the image once and warps it with
+        the production bilinear forward scatter (piecewise linear in the
+        warp).
         """
         self._require_position_gradients()
         consts = self._consts
         npix = self.galaxy_npix
         sub = self.sersic_subsample
+        analytic = self.sersic_warp == "analytic"
 
         def f(theta, dxy=None, sersic_params=None):
             if dxy is None:
                 dxy = jnp.zeros((self.n_sources, 2), jnp.float32)
-            images = None
+            images = params = None
             if sersic_params is not None:
-                images = sersic.make_sersic_images(*sersic_params, npix=npix,
-                                                   subsample=sub)
+                if analytic:
+                    params = jnp.stack([jnp.asarray(p, jnp.float32)
+                                        for p in sersic_params], axis=-1)
+                else:
+                    images = sersic.make_sersic_images(
+                        *sersic_params, npix=npix, subsample=sub)
             elif self.n_gal and consts["galaxy_images"] is None:
                 raise ValueError("no galaxy_images: pass sersic parameters")
             return self._model(consts, theta, dxy=dxy, use_pre=False,
-                               galaxy_images=images)
+                               galaxy_images=images, sersic_params=params)
         return f
 
 

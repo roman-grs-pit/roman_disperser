@@ -41,8 +41,9 @@ def log_post(theta, d_xi, d_eta, u_shape):
 | PSF spatial, `method="linear"` | C0 | bilinear across the 4x4 nodes |
 | PSF spatial, `method="cubic"` | C1 | Catmull-Rom on the node index; edge value held outside the grid |
 | PSF wavelength interpolation | linear in λ | does not depend on fitted parameters |
-| Sérsic images | smooth inside the clip ranges | fit through `transforms` (clips never active); `subsample` > 1 for compact profiles; `b_n(n)` is a 2000-point linear table (gradient steps of ~1e-4 relative) |
-| Galaxy Jacobian warp | piecewise linear | bilinear scatter of the warped image |
+| Sérsic images | smooth inside the clip ranges | fit through `transforms` (clips never active); `subsample` > 1 for compact profiles; `b_n(n)` is a cubic spline through 2000 tabulated `gammaincinv` values (C2; `compute_bn(n, "linear")` gives the old table interpolation) |
+| Galaxy Jacobian warp, image input (production) | piecewise linear in the warp | bilinear forward scatter of a pre-rendered image (`disperse_galaxy_shape`); also keeps the unwarped peak (surface brightness not divided by det J) |
+| Galaxy Jacobian warp, Sérsic parameters (`model_fn`, default `sersic_warp="analytic"`) | smooth | profile evaluated at J⁻¹ of the output pixels (`galaxy_disperser.warped_sersic_images`); no resampling. Same cost as the splat in a full fitting step (L40S: model +4 %, gradient +1 %; CPU: 3–8 % faster); images differ by ≤0.2 % of peak after PSF convolution |
 | Batch loops `run_*_batch` | reverse mode | checkpointed `lax.scan` |
 | Segment / window renderers | correct inside the static windows | turn on `segment_render.set_window_check(True)` (or `ROMAN_DISPERSER_CHECK_WINDOWS=1`) to raise `WindowOverflowError` instead of dropping light silently |
 | Spectra from catalogue (host) | not traced | use `photometry` (AB mags, normalisation, redshift) in JAX |

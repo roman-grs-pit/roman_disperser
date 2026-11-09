@@ -246,9 +246,18 @@ class TestModelFn:
             galaxy_images=img, window=fit_op.window, flux_unit=1.0,
             deposit="cubic", psf_spatial="cubic")
         th = jnp.ones(fit_op.theta_shape, jnp.float32)
-        a = np.asarray(fit_op.model_fn()(th, None, params), np.float64)
+        splat = lo.SceneOperator(
+            orders, WL, DLAM, star_xy=STARS, galaxy_xy=GALS, galaxy_npix=NPIX,
+            window=fit_op.window, flux_unit=1.0, precompute=False,
+            deposit="cubic", psf_spatial="cubic", sersic_subsample=3,
+            sersic_warp="splat")
+        a = np.asarray(splat.model_fn()(th, None, params), np.float64)
         b = np.asarray(ref_op.forward(th), np.float64)
         np.testing.assert_allclose(a, b, atol=5e-4 * b.max())
+        # analytic warp: same flux, close image (no bilinear resampling blur)
+        c = np.asarray(fit_op.model_fn()(th, None, params), np.float64)
+        np.testing.assert_allclose(c.sum(), b.sum(), rtol=2e-3)
+        assert np.abs(c - b).max() < 0.05 * b.max()
 
     def test_floor_refused(self, opt):
         psf = _mock_psf()
@@ -292,7 +301,9 @@ class TestSersic:
         new = sersic.make_sersic_images(*p, npix=npix)
         np.testing.assert_array_equal(np.asarray(new), np.asarray(old))
         one = sersic.make_sersic_image(*(v[0] for v in p), npix=npix)
-        np.testing.assert_array_equal(np.asarray(one), np.asarray(old[0]))
+        # scalar vs batched compile: the b_n spline rounds differently (~1 ulp)
+        np.testing.assert_allclose(np.asarray(one), np.asarray(old[0]),
+                                   rtol=1e-5)
 
     def test_subsample_normalised_and_converges(self):
         args = (1.2, 2.0, 0.8, 0.3)
@@ -522,3 +533,82 @@ class TestLikelihood:
     def test_selected_loglike(self):
         v = likelihood.selected_loglike(-10.0, jnp.array([-0.1, -0.2]), -0.5)
         assert float(v) == pytest.approx(-10.0 - 0.3 + 1.0)
+
+
+# ---------------------------------------------------------------------------
+# b_n spline and analytic Sérsic warp
+# ---------------------------------------------------------------------------
+
+class TestBnSpline:
+    def test_accuracy(self):
+        from scipy.special import gammaincinv
+        n = np.linspace(0.2, 9.9, 3001)
+        ref = gammaincinv(2 * n, 0.5)
+        got = np.asarray(sersic.compute_bn(jnp.asarray(n, jnp.float32)),
+                         np.float64)
+        lin = np.asarray(sersic.compute_bn(jnp.asarray(n, jnp.float32),
+                                           "linear"), np.float64)
+        assert np.max(np.abs(got / ref - 1)) < 2e-6
+        assert np.max(np.abs(got / ref - 1)) <= np.max(np.abs(lin / ref - 1))
+
+    def test_gradient_continuous_at_nodes(self):
+        # n ~ 0.21, where b_n is curved enough for the linear table's
+        # slope jump (~0.6 %) to stand out; the spline's slope changes by
+        # only b_n'' * 2e-5 across the same gap.
+        node = float(sersic._BN_LO + 40 * sersic._BN_STEP)
+        g = jax.grad(lambda n, m: sersic.compute_bn(n, m))
+        for m, smooth in (("spline", True), ("linear", False)):
+            lo_, hi_ = (float(g(jnp.float32(node + d), m)) for d in (-1e-5, 1e-5))
+            assert (abs(hi_ - lo_) < 1e-3 * abs(hi_)) == smooth, (m, lo_, hi_)
+
+    def test_bad_method(self):
+        with pytest.raises(ValueError):
+            sersic.compute_bn(1.0, "cubic")
+
+
+class TestAnalyticWarp:
+    P = (jnp.float32(5.0), jnp.float32(1.3), jnp.float32(0.6),
+         jnp.float32(0.5))
+
+    def test_identity_is_plain_image(self):
+        from roman_disperser import galaxy_disperser as gd
+        w = gd.warped_sersic_images(self.P, jnp.eye(2)[None], 0.25, 0.25, 31,
+                                    subsample=3)[0]
+        ref = sersic.make_sersic_image(*self.P, npix=31, subsample=3)
+        np.testing.assert_allclose(w, ref, atol=1e-7)
+
+    def test_close_to_splat_and_flux(self):
+        from roman_disperser import galaxy_disperser as gd
+        J = jnp.array([[1.01, 0.02], [-0.01, 1.03]], jnp.float32)
+        img = sersic.make_sersic_image(*self.P, npix=41)
+        splat = np.asarray(gd.disperse_galaxy_shape(img, J, 0.25, 0.25))
+        ana = np.asarray(gd.warped_sersic_images(self.P, J[None], 0.25, 0.25,
+                                                 41)[0])
+        assert abs(ana.sum() - 1) < 1e-5
+        assert np.abs(ana - splat).max() < 0.05 * splat.max()
+        # A stretch by det J lowers the peak surface brightness by det J.
+        # The analytic warp has that; the splat keeps the unwarped peak (the
+        # central pixel maps onto itself with weight 1).
+        det = float(jnp.linalg.det(J))
+        np.testing.assert_allclose(ana.max(), img.max() / det, rtol=3e-3)
+        np.testing.assert_allclose(splat.max(), img.max(), rtol=3e-3)
+
+    def test_smooth_in_jacobian(self):
+        from roman_disperser import galaxy_disperser as gd
+        img = sersic.make_sersic_image(*self.P, npix=41)
+        w = jnp.asarray(np.random.default_rng(8).normal(size=(41, 41)),
+                        jnp.float32)
+
+        def jumps(fn):
+            g = jax.grad(lambda a: jnp.sum(w * fn(
+                jnp.array([[1.0 + a, 0.0], [0.0, 1.0]], jnp.float32))))
+            # wide enough that splatted pixels cross output pixel edges
+            # (stretch a moves pixel k by a * k px)
+            vals = [float(g(jnp.float32(a))) for a in
+                    np.linspace(0.10, 0.20, 81)]
+            return np.max(np.abs(np.diff(vals))) / np.max(np.abs(vals))
+
+        ana = jumps(lambda J: gd.warped_sersic_images(
+            self.P, J[None], 0.25, 0.25, 41)[0])
+        spl = jumps(lambda J: gd.disperse_galaxy_shape(img, J, 0.25, 0.25))
+        assert ana < 0.05 and spl > 3 * ana

@@ -293,6 +293,64 @@ def prepare_galaxy_images(optical_payload, psf_payload, image, x0, y0, dx, dy,
     wavelengths : jnp.ndarray
         [N_wl] PSF grid wavelengths in microns
     """
+    warp = lambda jacobians: jax.vmap(
+        lambda jac: disperse_galaxy_shape(image, jac, dx, dy))(jacobians)
+    return _warp_and_convolve(optical_payload, psf_payload, warp, x0, y0,
+                              geometry, psf_spatial)
+
+
+def warped_sersic_images(sersic_params, jacobians, dx, dy, npix, subsample=1,
+                         bn_method="spline"):
+    """Sérsic images rendered directly in the warped frame: [N_wl, npix, npix].
+
+    The analytic counterpart of ``disperse_galaxy_shape(make_sersic_image
+    (...), J, dx, dy)``: the profile is evaluated at ``J^-1`` of the output
+    pixel offsets (same centre and pixel convention as the forward
+    scatter), then normalised to sum 1 (the warp conserves flux). No
+    resampling step, so no bilinear blur, and smooth (C1 or better) in the
+    Sérsic parameters and in ``J`` (hence in the source position);
+    ``disperse_galaxy_shape`` is piecewise linear in ``J``.
+
+    Parameters
+    ----------
+    sersic_params : (r_eff_pix, n, ba, theta) scalars
+    jacobians : [N_wl, 2, 2]
+    dx, dy : pixel spacing in SCA units (1/oversample)
+    npix : int (static)
+    subsample : int (static), as in ``sersic.make_sersic_image``
+    """
+    from . import sersic
+    r_eff, n, ba, theta = sersic_params
+    y_grid, x_grid = sersic._grid(npix, subsample)
+    gx, gy = x_grid * dx, y_grid * dy          # output offsets, SCA units
+
+    def one(jac):
+        m = jnp.linalg.inv(jac)
+        sx = (m[0, 0] * gx + m[0, 1] * gy) / dx  # source offsets, pixels
+        sy = (m[1, 0] * gx + m[1, 1] * gy) / dy
+        img = sersic._sersic_kernel(r_eff, n, ba, theta, sy, sx,
+                                    bn_method=bn_method)
+        return sersic._bin(img, npix, subsample)
+
+    return jax.vmap(one)(jacobians)
+
+
+def prepare_sersic_galaxy_images(optical_payload, psf_payload, sersic_params,
+                                 npix, x0, y0, dx, dy, geometry=None,
+                                 psf_spatial="linear", subsample=1):
+    """:func:`prepare_galaxy_images` for a Sérsic galaxy given by its
+    parameters: the warped images come from :func:`warped_sersic_images`
+    instead of warping a pre-rendered image. Same returns."""
+    warp = lambda jacobians: warped_sersic_images(
+        sersic_params, jacobians, dx, dy, npix, subsample)
+    return _warp_and_convolve(optical_payload, psf_payload, warp, x0, y0,
+                              geometry, psf_spatial)
+
+
+def _warp_and_convolve(optical_payload, psf_payload, warp, x0, y0, geometry,
+                       psf_spatial):
+    """Shared body: PSFs and trace geometry at the grid wavelengths,
+    ``warp(jacobians)`` -> [N_wl, Ny, Nx], then per-wavelength convolution."""
     # Get PSFs at undispersed position for all grid wavelengths
     psfs = psf_model.interpolate_psf_spatial(
         psf_payload, x0, y0, method=psf_spatial
@@ -305,11 +363,7 @@ def prepare_galaxy_images(optical_payload, psf_payload, image, x0, y0, dx, dy,
         geometry = galaxy_trace_geometry(optical_payload, x0, y0, grid_wl)
     centers_x, centers_y, jacobians = geometry  # [N_wl], [N_wl], [N_wl, 2, 2]
 
-    # Warp galaxy at each wavelength
-    def warp_at_wl(jacobian):
-        return disperse_galaxy_shape(image, jacobian, dx, dy)
-
-    warped_images = jax.vmap(warp_at_wl)(jacobians)  # [N_wl, Ny, Nx]
+    warped_images = warp(jacobians)  # [N_wl, Ny, Nx]
 
     # Convolve each warped image with its PSF (batched over wavelength).
     convolved = fft_convolve_full(warped_images, psfs)
