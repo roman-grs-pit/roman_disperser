@@ -1021,6 +1021,37 @@ def galaxy_sed_layout(store):
     return layout
 
 
+def _place_group_seds(spectra, galaxy_meta, group, seds_trimmed,
+                      bad_galaxies):
+    """Scrub one group's trimmed SEDs and place them, scaled, into
+    ``spectra`` at the group's rows of ``galaxy_meta``."""
+    scales = group["flux_scale"].values.astype(np.float32)
+
+    # Scrub catalog SED corruption: zero any non-finite or out-of-range
+    # bins. Only flagged bins are zeroed; the rest of the SED is preserved.
+    # Reported by (sim, sed_index), the source-template identity, which
+    # both layouts carry in the metadata.
+    bad_mask = ~np.isfinite(seds_trimmed) | (
+        np.abs(seds_trimmed) > _GALAXY_SED_VALUE_LIMIT
+    )
+    if bad_mask.any():
+        sims = group["sim"].values
+        sed_idx = group["sed_index"].values
+        for j in range(len(group)):
+            row_bad = bad_mask[j]
+            if row_bad.any():
+                bad_galaxies.append((
+                    sims[j], int(sed_idx[j]), int(row_bad.sum()),
+                    float(np.abs(seds_trimmed[j, row_bad]).max()),
+                ))
+        seds_trimmed = np.where(bad_mask, 0.0, seds_trimmed)
+
+    # Scale and place into output array (preserving original row order)
+    iloc_positions = [galaxy_meta.index.get_loc(idx) for idx in group.index]
+    for j, pos in enumerate(iloc_positions):
+        spectra[pos] = seds_trimmed[j] * scales[j]
+
+
 def load_galaxy_seds(store, galaxy_meta, wl_mask):
     """Load galaxy SEDs from Zarr, grouping by array for efficient I/O.
 
@@ -1058,46 +1089,33 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
     layout = galaxy_sed_layout(store)
     group_col, array_key, row_col = _GALAXY_SED_LAYOUTS[layout]
 
-    bad_total = 0
     bad_galaxies = []  # (sim, sed_index, n_bins, max_val)
 
-    for key_val, group in galaxy_meta.groupby(group_col):
+    groups = list(galaxy_meta.groupby(group_col))
+
+    def read_group(item):
+        key_val, group = item
         arr = store[array_key(key_val)]
         indices = group[row_col].values
-        scales = group["flux_scale"].values.astype(np.float32)
-
         if layout == "healpix":
             seds_full = np.asarray(arr[:])[indices]  # whole-pixel read
         else:
             seds_full = np.array(arr[indices])  # [N_group, N_wl_full]
-        seds_trimmed = seds_full[:, wl_mask]
+        return seds_full[:, wl_mask]
 
-        # Scrub catalog SED corruption: zero any non-finite or out-of-range
-        # bins. Only flagged bins are zeroed; the rest of the SED is preserved.
-        # Reported by (sim, sed_index), the source-template identity, which
-        # both layouts carry in the metadata.
-        bad_mask = ~np.isfinite(seds_trimmed) | (
-            np.abs(seds_trimmed) > _GALAXY_SED_VALUE_LIMIT
-        )
-        if bad_mask.any():
-            sims = group["sim"].values
-            sed_idx = group["sed_index"].values
-            for j in range(len(group)):
-                row_bad = bad_mask[j]
-                if row_bad.any():
-                    bad_galaxies.append((
-                        sims[j], int(sed_idx[j]), int(row_bad.sum()),
-                        float(np.abs(seds_trimmed[j, row_bad]).max()),
-                    ))
-                    bad_total += int(row_bad.sum())
-            seds_trimmed = np.where(bad_mask, 0.0, seds_trimmed)
-
-        # Scale and place into output array (preserving original row order)
-        iloc_positions = [galaxy_meta.index.get_loc(idx) for idx in group.index]
-        for j, pos in enumerate(iloc_positions):
-            spectra[pos] = seds_trimmed[j] * scales[j]
+    # Read and decompress the arrays in parallel threads (the Blosc decode
+    # releases the GIL); the results are consumed in group order, so the
+    # output is identical to a sequential read.
+    from concurrent.futures import ThreadPoolExecutor
+    n_threads = max(1, min(len(groups), len(os.sched_getaffinity(0)), 8))
+    with ThreadPoolExecutor(max_workers=n_threads) as pool:
+        trimmed = pool.map(read_group, groups)
+        for (key_val, group), seds_trimmed in zip(groups, trimmed):
+            _place_group_seds(spectra, galaxy_meta, group, seds_trimmed,
+                              bad_galaxies)
 
     if bad_galaxies:
+        bad_total = sum(n for _, _, n, _ in bad_galaxies)
         # Deduplicate by (sim, sed_index) — same SED may appear multiple times
         # via RA padding replication.
         unique = {(s, i): (s, i, n, m) for s, i, n, m in bad_galaxies}
@@ -1622,7 +1640,37 @@ def process_pointing(
     dlam_angstroms = pipeline["dlam_angstroms"]
     psf_cache_dir = pipeline["psf_cache_dir"]
 
-    for sca_num in sca_list:
+    def load_sca_psf_payloads(sca_num):
+        """One PSF payload per distinct STPSF filter of this SCA; orders
+        sharing a filter (grism order "2" -> GRISM1) share it."""
+        by_filter, per_order = {}, {}
+        for order in element.orders:
+            fname = element.stpsf_filters[order]
+            if fname not in by_filter:
+                by_filter[fname] = psf_model.get_or_make_psf_payload(
+                    detector=f"WFI{sca_num:02d}", order=order,
+                    wavelengths=elements.psf_cache_wavelengths(element),
+                    stpsf_filter=fname,
+                    spatial_grid=pipeline.get("psf_spatial_grid"),
+                    cache_dir=psf_cache_dir, verbose=False,
+                )
+            per_order[order] = by_filter[fname]
+        return by_filter, per_order
+
+    # Load the next SCA's PSF caches in a background thread while this SCA
+    # runs (np.load + zlib release the GIL; ~0.8 s per compressed cache
+    # file, two per SCA). Holds at most one extra SCA's payloads.
+    from concurrent.futures import ThreadPoolExecutor
+    psf_prefetch = ThreadPoolExecutor(max_workers=1)
+    psf_futures = {}
+
+    def prefetch_psf(i):
+        if i < len(sca_list) and sca_list[i] not in psf_futures:
+            psf_futures[sca_list[i]] = psf_prefetch.submit(
+                load_sca_psf_payloads, sca_list[i])
+
+    prefetch_psf(0)
+    for i_sca, sca_num in enumerate(sca_list):
         log(f"\n  SCA {sca_num}:")
         t_sca = time.time()
         sd = pipeline["sca_data"][sca_num]
@@ -1647,6 +1695,7 @@ def process_pointing(
             from astropy.io import fits as afits
             with afits.open(fits_path) as hdul:
                 sca_model_np[sca_num] = hdul["MODEL"].data.copy()
+            psf_futures.pop(sca_num, None)  # drop a prefetched payload
             continue
 
         # -- Build dispersers and JIT-compile for this SCA -------------------
@@ -1656,21 +1705,11 @@ def process_pointing(
         t_jit = time.time()
         detector_name = f"WFI{sca_num:02d}"
 
-        # One payload per distinct STPSF filter; orders sharing a filter
-        # (grism order "2" -> GRISM1) share the loaded payload.
-        payloads_by_filter = {}
-        psf_payloads = {}
-        for order in element.orders:
-            fname = element.stpsf_filters[order]
-            if fname not in payloads_by_filter:
-                payloads_by_filter[fname] = psf_model.get_or_make_psf_payload(
-                    detector=detector_name, order=order,
-                    wavelengths=elements.psf_cache_wavelengths(element),
-                    stpsf_filter=fname,
-                    spatial_grid=pipeline.get("psf_spatial_grid"),
-                    cache_dir=psf_cache_dir, verbose=False,
-                )
-            psf_payloads[order] = payloads_by_filter[fname]
+        prefetch_psf(i_sca)
+        t_psfload = time.time()
+        payloads_by_filter, psf_payloads = psf_futures.pop(sca_num).result()
+        prefetch_psf(i_sca + 1)
+        log(f"    PSF caches: {time.time() - t_psfload:.2f}s (prefetched)")
 
         star_fori_fns, galaxy_fori_fns = make_order_fori_fns(
             psf_payloads, sd["optical_payloads"], sd["sensitivities"],
@@ -1719,6 +1758,7 @@ def process_pointing(
         log(f"    JIT compile: {time.time() - t_jit:.1f}s")
 
         # -- Select sources for this SCA (per order) -------------------------
+        t_select = time.time()
         order_masks, any_mask = select_sources_per_order(
             sd["optical_payloads"], xfpa, yfpa,
             element.orders, element.lam_min, element.lam_max,
@@ -1804,7 +1844,8 @@ def process_pointing(
             is_galaxy_sel = is_galaxy[any_mask_np]
             n_stars_sel = int(is_star_sel.sum())
             n_galaxies_sel = int(is_galaxy_sel.sum())
-            log(f"    Selected: {n_stars_sel} stars, {n_galaxies_sel} galaxies")
+            log(f"    Selected: {n_stars_sel} stars, {n_galaxies_sel} galaxies "
+                f"in {time.time() - t_select:.2f}s")
 
             cone_indices = np.where(any_mask_np)[0]
             star_cone_indices = np.where(is_star)[0]
@@ -1913,27 +1954,29 @@ def process_pointing(
                     log(f"    Order {order}: {n_gal_order} galaxies in "
                         f"{elapsed:.2f}s ({ms_per:.1f} ms/galaxy)")
 
-            # Collect manifest rows
+            t_manifest = time.time()
+            # Collect manifest rows (vectorised: one column chunk per order;
+            # the old per-row .iloc loop cost ~10 s per dense SCA).
             for order in element.orders:
                 omask = order_masks_sel[order]
                 if not omask.any():
                     continue
                 sel_cone_idx = cone_indices[omask]
-                sel_is_star = is_star_sel[omask]
-                for j, ci in enumerate(sel_cone_idx):
-                    row = meta_cone_reset.iloc[ci]
-                    manifest_rows.append({
-                        "catalog_index": int(meta_cone.index[ci]),
-                        "sca": sca_num,
-                        "order": order,
-                        "type": "PSF" if sel_is_star[j] else "SER",
-                        "xsca": float(xsca_all_np[omask][j]),
-                        "ysca": float(ysca_all_np[omask][j]),
-                        "ra": float(row["ra"]),
-                        "dec": float(row["dec"]),
-                        "flux_scale": float(row["flux_scale"]),
-                        "F158": float(row["F158"]),
-                    })
+                n_rows = len(sel_cone_idx)
+                rows = meta_cone_reset.iloc[sel_cone_idx]
+                manifest_rows.append({
+                    "catalog_index": np.asarray(
+                        meta_cone.index[sel_cone_idx], dtype=np.int64),
+                    "sca": np.full(n_rows, sca_num, dtype=np.int64),
+                    "order": np.full(n_rows, order, dtype=object),
+                    "type": np.where(is_star_sel[omask], "PSF",
+                                     "SER").astype(object),
+                    "xsca": xsca_all_np[omask].astype(np.float64),
+                    "ysca": ysca_all_np[omask].astype(np.float64),
+                    **{c: rows[c].to_numpy(dtype=np.float64)
+                       for c in ("ra", "dec", "flux_scale", "F158")},
+                })
+            log(f"    Manifest rows: {time.time() - t_manifest:.2f}s")
 
         else:
             log(f"    No sources on detector.")
@@ -2032,19 +2075,12 @@ def process_pointing(
         import pyarrow as pa
         manifest_path = output_dir / f"{prefix}_sources.parquet"
         manifest_table = pa.table({
-            "catalog_index": [r["catalog_index"] for r in manifest_rows],
-            "sca": [r["sca"] for r in manifest_rows],
-            "order": [r["order"] for r in manifest_rows],
-            "type": [r["type"] for r in manifest_rows],
-            "xsca": [r["xsca"] for r in manifest_rows],
-            "ysca": [r["ysca"] for r in manifest_rows],
-            "ra": [r["ra"] for r in manifest_rows],
-            "dec": [r["dec"] for r in manifest_rows],
-            "flux_scale": [r["flux_scale"] for r in manifest_rows],
-            "F158": [r["F158"] for r in manifest_rows],
+            col: np.concatenate([chunk[col] for chunk in manifest_rows])
+            for col in ("catalog_index", "sca", "order", "type", "xsca",
+                        "ysca", "ra", "dec", "flux_scale", "F158")
         })
         pq.write_table(manifest_table, str(manifest_path))
-        log(f"\n  Source manifest: {len(manifest_rows)} rows -> {manifest_path}")
+        log(f"\n  Source manifest: {manifest_table.num_rows} rows -> {manifest_path}")
 
     # -- Metadata YAML -------------------------------------------------------
     pointing_key_data = jax.random.key_data(pointing_key).tolist() \
