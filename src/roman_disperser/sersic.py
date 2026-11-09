@@ -93,7 +93,25 @@ def _sersic_kernel(r_eff_pix, n, ba, theta, y_grid, x_grid):
     return profile / profile.sum()
 
 
-def make_sersic_image(r_eff_pix, n, ba, theta, npix):
+def _grid(npix, subsample=1):
+    """Coordinate grids [npix*s, npix*s] centred at (0, 0): the centres of
+    an s x s subgrid in every pixel (s = 1: the pixel centres)."""
+    s = int(subsample)
+    if s < 1:
+        raise ValueError(f"subsample must be >= 1, got {subsample}")
+    c = (jnp.arange(npix * s) + 0.5) / s - 0.5 - (npix - 1) / 2.0
+    y_grid, x_grid = jnp.meshgrid(c, c, indexing="ij")
+    return y_grid, x_grid
+
+
+def _bin(image, npix, subsample):
+    s = int(subsample)
+    if s == 1:
+        return image
+    return image.reshape(npix, s, npix, s).sum(axis=(1, 3))
+
+
+def make_sersic_image(r_eff_pix, n, ba, theta, npix, subsample=1):
     """Generate a single normalized Sérsic profile image.
 
     Parameters
@@ -108,17 +126,24 @@ def make_sersic_image(r_eff_pix, n, ba, theta, npix):
         Position angle in radians, CCW from +x axis.
     npix : int
         Image size (npix × npix). Static for JIT.
+    subsample : int, optional
+        Evaluate the profile on an s x s subgrid per pixel and sum
+        (static; default 1 = pixel-centre sampling, the production
+        behaviour). Pixel-centre sampling aliases compact profiles: for
+        ``r_eff`` of a few pixels or large ``n`` the image and its gradient
+        in ``r_eff`` and ``n`` follow the sampling, not the integral.
+        ``subsample`` of 3-5 is advised when fitting such sources.
 
     Returns
     -------
     image : jnp.ndarray [npix, npix], normalized to sum=1
     """
-    center = (npix - 1) / 2.0
-    y_grid, x_grid = jnp.mgrid[0:npix, 0:npix] - center
-    return _sersic_kernel(r_eff_pix, n, ba, theta, y_grid, x_grid)
+    y_grid, x_grid = _grid(npix, subsample)
+    img = _sersic_kernel(r_eff_pix, n, ba, theta, y_grid, x_grid)
+    return _bin(img, npix, subsample)
 
 
-def make_sersic_images(r_eff_pix, n, ba, theta, npix):
+def make_sersic_images(r_eff_pix, n, ba, theta, npix, subsample=1):
     """Batch-generate Sérsic images via jax.vmap.
 
     Precomputes the coordinate grid once, then vmaps over galaxy
@@ -131,17 +156,19 @@ def make_sersic_images(r_eff_pix, n, ba, theta, npix):
     ba : jnp.ndarray [N]
     theta : jnp.ndarray [N]
     npix : int (static)
+    subsample : int (static), optional
+        As in :func:`make_sersic_image`.
 
     Returns
     -------
     images : jnp.ndarray [N, npix, npix], each normalized to sum=1
     """
-    center = (npix - 1) / 2.0
-    y_grid, x_grid = jnp.mgrid[0:npix, 0:npix] - center
+    y_grid, x_grid = _grid(npix, subsample)
 
     # vmap over (r_eff_pix, n, ba, theta), broadcast (y_grid, x_grid)
     batched = jax.vmap(_sersic_kernel, in_axes=(0, 0, 0, 0, None, None))
-    return batched(r_eff_pix, n, ba, theta, y_grid, x_grid)
+    imgs = batched(r_eff_pix, n, ba, theta, y_grid, x_grid)
+    return jax.vmap(lambda im: _bin(im, npix, subsample))(imgs)
 
 
 # ---------------------------------------------------------------------------

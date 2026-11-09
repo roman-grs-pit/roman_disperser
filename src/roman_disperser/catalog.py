@@ -7,6 +7,29 @@ import jax.numpy as jnp
 from . import optical_model_jax as omj
 
 
+def trace_bbox(payload, xfpa, yfpa, wl_min=0.9, wl_max=2.0, n_wl=5):
+    """SCA bounding box (x_min, x_max, y_min, y_max), each [N], of the
+    traces of sources at FPA ``(xfpa, yfpa)`` sampled at ``n_wl``
+    wavelengths in ``[wl_min, wl_max]``. Shared by :func:`select_sources`
+    and the differentiable ``selection.trace_overlap_logp``."""
+    n = xfpa.shape[0]
+    # Sample wavelengths across the range to capture trace curvature
+    wavelengths = jnp.linspace(wl_min, wl_max, n_wl)
+
+    # Tile sources × wavelengths: [n_wl * n]
+    xfpa_tiled = jnp.tile(xfpa, n_wl)
+    yfpa_tiled = jnp.tile(yfpa, n_wl)
+    wl_tiled = jnp.repeat(wavelengths, n)
+
+    xmpa, ympa = omj.trace_beam(payload, xfpa_tiled, yfpa_tiled, wl_tiled)
+    xsca, ysca = omj.mpa_to_sca(payload, xmpa, ympa)
+
+    # Reshape to [n_wl, n] and compute bounding box across wavelengths
+    xsca = xsca.reshape(n_wl, n)
+    ysca = ysca.reshape(n_wl, n)
+    return xsca.min(axis=0), xsca.max(axis=0), ysca.min(axis=0), ysca.max(axis=0)
+
+
 def select_sources(payload, xfpa, yfpa, wl_min=0.9, wl_max=2.0,
                    detector_size=4088, padding=300, n_wl=5):
     """Return boolean mask of sources whose dispersed trace overlaps the detector.
@@ -35,25 +58,8 @@ def select_sources(payload, xfpa, yfpa, wl_min=0.9, wl_max=2.0,
     if n == 0:
         raise ValueError("xfpa and yfpa must be non-empty")
 
-    # Sample wavelengths across the range to capture trace curvature
-    wavelengths = jnp.linspace(wl_min, wl_max, n_wl)
-
-    # Tile sources × wavelengths: [n_wl * n]
-    xfpa_tiled = jnp.tile(xfpa, n_wl)
-    yfpa_tiled = jnp.tile(yfpa, n_wl)
-    wl_tiled = jnp.repeat(wavelengths, n)
-
-    xmpa, ympa = omj.trace_beam(payload, xfpa_tiled, yfpa_tiled, wl_tiled)
-    xsca, ysca = omj.mpa_to_sca(payload, xmpa, ympa)
-
-    # Reshape to [n_wl, n] and compute bounding box across wavelengths
-    xsca = xsca.reshape(n_wl, n)
-    ysca = ysca.reshape(n_wl, n)
-
-    x_min = xsca.min(axis=0)
-    x_max = xsca.max(axis=0)
-    y_min = ysca.min(axis=0)
-    y_max = ysca.max(axis=0)
+    x_min, x_max, y_min, y_max = trace_bbox(payload, xfpa, yfpa,
+                                            wl_min, wl_max, n_wl)
 
     # Padded detector region
     lo = -padding
