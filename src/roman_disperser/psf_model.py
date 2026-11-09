@@ -2269,7 +2269,39 @@ def interp_wavelength_chunk(psfs_grid, grid_wl, target_wl):
     return psf_lo + t[:, None, None] * (psf_hi - psf_lo)
 
 
-def interpolate_psf_spatial(payload, xsca, ysca, grid_key='psf_grid'):
+def _catmull_rom_1d(grid, v):
+    """Indices [4] and Catmull-Rom weights [4] of position ``v`` on the
+    uniform node grid ``grid`` (edge nodes repeated, ``v`` clamped)."""
+    n = grid.shape[0]
+    s = (v - grid[0]) / (grid[-1] - grid[0]) * (n - 1)
+    s = jnp.clip(s, 0.0, n - 1.0)
+    i = jnp.clip(jnp.floor(s), 0, n - 2)
+    w = s - i
+    i = i.astype(jnp.int32)
+    w2 = w * w
+    w3 = w2 * w
+    wts = jnp.stack([-0.5 * w3 + w2 - 0.5 * w,
+                     1.5 * w3 - 2.5 * w2 + 1.0,
+                     -1.5 * w3 + 2.0 * w2 + 0.5 * w,
+                     0.5 * w3 - 0.5 * w2])
+    idx = jnp.clip(i + jnp.arange(-1, 3), 0, n - 1)
+    return idx, wts
+
+
+def _cubic_spatial(x_grid, y_grid, psf_grid, xsca, ysca):
+    """Separable Catmull-Rom blend of the [N_y, N_x, ...] node grid."""
+    if x_grid.shape[0] < 2 or y_grid.shape[0] < 2:
+        raise ValueError("cubic spatial interpolation needs >= 2 nodes per axis")
+    ix, wx = _catmull_rom_1d(x_grid, xsca)
+    iy, wy = _catmull_rom_1d(y_grid, ysca)
+    nodes = psf_grid[iy][:, ix]                     # [4, 4, ...]
+    w = (wy[:, None] * wx[None, :]).astype(psf_grid.dtype)
+    return jnp.tensordot(w, nodes, axes=([0, 1], [0, 1]),
+                         precision=jax.lax.Precision.HIGHEST)
+
+
+def interpolate_psf_spatial(payload, xsca, ysca, grid_key='psf_grid',
+                            method='linear'):
     """
     Interpolate PSF at (x, y) for ALL wavelengths using bilinear interpolation.
 
@@ -2294,6 +2326,14 @@ def interpolate_psf_spatial(payload, xsca, ysca, grid_key='psf_grid'):
         Any [N_y, N_x, ...] array on the same spatial nodes works, e.g.
         the phase-binned grid ``'psf_grid_binned'`` that
         ``star_disperser.make_star_disperser(hoist_psf=True)`` adds.
+    method : {'linear', 'cubic'}, optional
+        ``'linear'`` (default, production): bilinear, continuous but with a
+        position gradient that jumps at every node. ``'cubic'``: separable
+        Catmull-Rom on the node index (the node grid is uniform, see
+        :func:`make_spatial_grid`), edge nodes repeated; C1 in position
+        inside the grid and equal to the node PSFs at the nodes. For
+        gradient-based fitting of positions. Both hold the nearest edge
+        value outside the grid (zero position gradient there).
 
     Returns
     -------
@@ -2329,6 +2369,10 @@ def interpolate_psf_spatial(payload, xsca, ysca, grid_key='psf_grid'):
     y_grid = payload['spatial_y']
     psf_grid = payload[grid_key]  # [N_y, N_x, N_wl, PSF_y, PSF_x]
 
+    if method == 'cubic':
+        return _cubic_spatial(x_grid, y_grid, psf_grid, xsca, ysca)
+    if method != 'linear':
+        raise ValueError(f"method must be 'linear' or 'cubic', got {method!r}")
     # 1. Find spatial bracket (x dimension)
     x_idx = jnp.searchsorted(x_grid, xsca)
     x_idx = jnp.clip(x_idx, 1, len(x_grid) - 1)

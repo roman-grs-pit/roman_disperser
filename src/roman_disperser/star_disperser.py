@@ -33,8 +33,11 @@ from . import psf_model
 # phase gathers per sample plus pad/where placement of the wrapped taps); it
 # is kept for comparison and equals "interp" to float32 summation order.
 # See deposit_binned.
-DEPOSIT_MODES = ("floor", "interp", "interp_gather")
+DEPOSIT_MODES = ("floor", "interp", "interp_gather", "cubic")
 INTERP_MODES = ("interp", "interp_gather")
+# "cubic" (Catmull-Rom across four phases per axis) is for fitting: it equals
+# "interp" at the os x os aligned positions and is C1 in the source position,
+# where "interp" is only C0 (its position gradient jumps at every 1/os px).
 
 # Wavelengths per deposit chunk when the caller does not choose one. On GPU
 # the extended-table interp deposit is 3-30 % faster at 8000 than at 2000
@@ -79,11 +82,26 @@ def use_extended(deposit, n_samples):
     return deposit == "interp" and int(n_samples) >= EXT_MIN_SAMPLES
 
 
+def is_cubic(binned, oversample):
+    """True if ``binned`` is a cubic phase table ([os+4, os+4, ...])."""
+    return binned.shape[0] == int(oversample) + 4
+
+
 def interp_table(binned, oversample, deposit, n_samples):
     """``(table, deposit)`` to hand :func:`native_stamps`: the extended table
-    with ``"interp"`` for many samples, else the standard table with
-    ``"interp_gather"`` (same deposit) or the caller's ``deposit``."""
+    with ``"interp"`` for many samples, the cubic table with ``"cubic"``,
+    else the standard table with ``"interp_gather"`` (same deposit) or the
+    caller's ``deposit``."""
     os_ = int(oversample)
+    if deposit == "cubic":
+        if is_cubic(binned, os_):
+            return binned, "cubic"
+        if is_extended(binned, os_):
+            binned = standard_phases(binned, os_)
+        return cubic_phases(binned, os_), "cubic"
+    if is_cubic(binned, os_):
+        raise ValueError(f"a cubic phase table needs deposit='cubic', "
+                         f"not {deposit!r}")
     if use_extended(deposit, n_samples):
         if not is_extended(binned, os_):
             binned = extend_phases(binned)
@@ -423,6 +441,56 @@ def extend_phases(binned):
     return jnp.concatenate([e, shift_y], axis=0)      # [os+1, os+1, ...]
 
 
+def cubic_phases(binned, oversample):
+    """Cubic phase table of a standard one, for ``deposit="cubic"``.
+
+    Entry ``q + 2`` per axis, ``q = -2 .. os + 1``, is phase ``q mod os``
+    placed ``floor(q / os) + 1`` native pixels into a stamp two pixels
+    longer than the standard one (base pixel one below the standard base).
+    The four Catmull-Rom taps ``q = p0 - 1 .. p0 + 2`` of a sample are then
+    one contiguous block of the table. ``[os, os, ..., n_y, n_x]`` ->
+    ``[os+4, os+4, ..., n_y+2, n_x+2]`` (4x the entries at os = 4).
+    """
+    os_ = int(oversample)
+    nd = binned.ndim
+
+    def along(b, tab_axis, pix_axis):
+        entries = []
+        for q in range(-2, os_ + 2):
+            e = jnp.take(b, q % os_, axis=tab_axis)
+            off = q // os_ + 1                      # 0, 1 or 2
+            pad = [(0, 0)] * (nd - 1)
+            pad[pix_axis] = (off, 2 - off)
+            entries.append(jnp.pad(e, pad))
+        return jnp.stack(entries, axis=tab_axis)
+
+    return along(along(binned, 0, nd - 3), 1, nd - 2)
+
+
+def _cubic_taps(u, os_):
+    """Catmull-Rom phase taps of the cubic deposit, per axis.
+
+    Same continuous phase ``f`` as :func:`_interp_taps`; ``p0 = floor(f)``
+    in ``[-1, os - 1]``, ``w = f - p0``. Returns the table start index
+    ``p0 + 1`` (entry of tap ``q = p0 - 1``), the [N, 4] weights of taps
+    ``p0 - 1 .. p0 + 2`` (summing to 1, so flux is conserved; at ``w = 0``
+    they select phase ``p0`` alone, i.e. the ``interp`` deposit), and the
+    native base pixel ``m - 1`` of the cubic stamp.
+    """
+    m = jnp.floor(u)
+    f = (u - m) * os_ - 0.5
+    p0 = jnp.floor(f)
+    w = f - p0
+    w2 = w * w
+    w3 = w2 * w
+    taps = jnp.stack([-0.5 * w3 + w2 - 0.5 * w,
+                      1.5 * w3 - 2.5 * w2 + 1.0,
+                      -1.5 * w3 + 2.0 * w2 + 0.5 * w,
+                      0.5 * w3 - 0.5 * w2], axis=-1)
+    return (p0.astype(jnp.int32) + 1, taps,
+            m.astype(jnp.int32) - 1)
+
+
 def _interp_taps(u, os_):
     """Two-tap phase weights for the interpolating deposit, per axis.
 
@@ -508,6 +576,26 @@ def native_stamps(binned, stamp_shape, grid_wl, wl_chunk, flux_chunk, x_chunk,
         hi = binned[p_y, p_x, i0 + 1]
         return lo + t * (hi - lo)
 
+    if deposit == "cubic":
+        if not is_cubic(binned, os_):
+            raise ValueError("deposit='cubic' needs the cubic phase table "
+                             "(cubic_phases)")
+        s_y, w_y, m_y = _cubic_taps(u_y, os_)
+        s_x, w_x, m_x = _cubic_taps(u_x, os_)
+        e_y, e_x = binned.shape[-2:]
+        z = jnp.int32(0)
+
+        def block(s_y, s_x, i0):
+            return jax.lax.dynamic_slice(
+                binned, (s_y, s_x, i0.astype(jnp.int32), z, z),
+                (4, 4, 2, e_y, e_x))
+
+        blk = jax.vmap(block)(s_y, s_x, i0)  # [N, 4, 4, 2, n_y, n_x]
+        t1 = t[:, 0, 0]
+        wt = jnp.stack([1 - t1, t1], -1)
+        w = (w_y[:, :, None, None] * w_x[:, None, :, None]
+             * wt[:, None, None, :]) * flux_chunk[:, None, None, None]
+        return (w[:, :, :, :, None, None] * blk).sum(axis=(1, 2, 3)), m_y, m_x
     if deposit == "interp":
         if not is_extended(binned, os_):
             raise ValueError("deposit='interp' needs the extended phase table "
@@ -594,6 +682,15 @@ def deposit_binned(
         extended=True)``); a standard table is extended once per call.
         Each sample then reads one contiguous block of the table instead of
         four gathers, which is what makes it ~as fast as floor on GPU.
+    ``"cubic"``
+        Catmull-Rom interpolation across four phases per axis (16 phase
+        stamps per sample, :func:`cubic_phases` table, stamps two native
+        pixels larger). Equal to ``"interp"`` whenever the stamp is aligned
+        with the os x os phase grid and flux-conserving, but C1 in the
+        source position (``"interp"`` is piecewise linear, so its position
+        gradient jumps and its curvature is zero almost everywhere). Meant
+        for gradient-based fitting and sampling (HMC, Newton/Laplace), not
+        for production: ~4x the table and ~4x the reads of ``"interp"``.
     ``"interp_gather"``
         The same deposit computed with four separate phase gathers and
         pad/where placement of wrapped taps (the pre-2026-11 code). Equal to

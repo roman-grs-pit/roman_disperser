@@ -256,7 +256,7 @@ def galaxy_trace_geometry(optical_payload, x0, y0, grid_wl):
 
 
 def prepare_galaxy_images(optical_payload, psf_payload, image, x0, y0, dx, dy,
-                          geometry=None):
+                          geometry=None, psf_spatial="linear"):
     """Prepare dispersed, PSF-convolved galaxy images at PSF grid wavelengths.
 
     For each PSF grid wavelength:
@@ -279,6 +279,9 @@ def prepare_galaxy_images(optical_payload, psf_payload, image, x0, y0, dx, dy,
     geometry : tuple, optional
         Precomputed :func:`galaxy_trace_geometry` at the PSF grid
         wavelengths.
+    psf_spatial : {"linear", "cubic"}, optional
+        Spatial PSF interpolation (``psf_model.interpolate_psf_spatial``
+        ``method``); ``"cubic"`` for C1 position gradients in fits.
 
     Returns
     -------
@@ -292,7 +295,7 @@ def prepare_galaxy_images(optical_payload, psf_payload, image, x0, y0, dx, dy,
     """
     # Get PSFs at undispersed position for all grid wavelengths
     psfs = psf_model.interpolate_psf_spatial(
-        psf_payload, x0, y0
+        psf_payload, x0, y0, method=psf_spatial
     )  # [N_wl, PSF_y, PSF_x]
 
     grid_wl = psf_payload['wavelengths']
