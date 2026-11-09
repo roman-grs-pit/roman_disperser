@@ -63,6 +63,7 @@ source positions; samples outside a window would be dropped, which the
 plan's margin prevents and the tests check via flux conservation).
 """
 
+import os
 from functools import partial
 from typing import NamedTuple
 
@@ -77,6 +78,56 @@ from . import pipeline
 from . import star_disperser
 
 PSF_AT_MODES = ("source", "landing")
+
+
+# ---------------------------------------------------------------------------
+# Window overflow check
+# ---------------------------------------------------------------------------
+# Window sizes are fixed on the host (static shapes); light that a sample
+# would put outside its window is dropped silently by the scatter. The plans'
+# margins prevent that for the probed geometry, but a fit that moves sources
+# (or a plan reused with other payloads) can break it, and then both the
+# image and its gradient are wrong without any error. With the check on,
+# each renderer adds a host callback that raises WindowOverflowError when
+# more than WINDOW_DROP_RTOL of a source's counts would be dropped. It is a
+# trace-time switch (on: one host round trip per render), off by default for
+# production speed; ROMAN_DISPERSER_CHECK_WINDOWS=1 turns it on.
+
+WINDOW_DROP_RTOL = 1e-5
+_CHECK_WINDOWS = [os.environ.get("ROMAN_DISPERSER_CHECK_WINDOWS", "0") == "1"]
+
+
+class WindowOverflowError(RuntimeError):
+    """A renderer would drop light outside its static window."""
+
+
+def set_window_check(enabled):
+    """Turn the window-overflow check on/off (affects later traces only;
+    already-compiled functions keep the setting they were traced with)."""
+    _CHECK_WINDOWS[0] = bool(enabled)
+
+
+def window_check_enabled():
+    return _CHECK_WINDOWS[0]
+
+
+def _raise_if_dropped(dropped, total, where):
+    dropped = float(dropped)
+    total = float(total)
+    if dropped > WINDOW_DROP_RTOL * max(total, 1e-30):
+        raise WindowOverflowError(
+            f"{where}: {dropped:.4g} of {total:.4g} counts "
+            f"({dropped / max(total, 1e-30):.2%}) fall outside the static "
+            f"window and would be dropped; rebuild the plan with a larger "
+            f"margin (or for these positions)")
+
+
+def check_dropped(dropped, total, where):
+    """Raise (at run time) if ``dropped`` > rtol x ``total``; no-op unless
+    the check is enabled at trace time."""
+    if _CHECK_WINDOWS[0]:
+        jax.debug.callback(partial(_raise_if_dropped, where=where),
+                           jnp.sum(dropped), jnp.sum(total))
 KINDS = ("star", "galaxy")
 
 
@@ -323,6 +374,11 @@ def _line_entries(plan, wavelengths, counts, xd, yd, node_wl):
     vals = jnp.concatenate([
         w * (1.0 - fy2) * (1.0 - fx2), w * (1.0 - fy2) * fx2,
         w * fy2 * (1.0 - fx2), w * fy2 * fx2])
+    if _CHECK_WINDOWS[0]:
+        l_y, l_x = plan.line_shape
+        inside = ((idx_y >= 0) & (idx_y < l_y) & (idx_x >= 0) & (idx_x < l_x))
+        check_dropped(jnp.where(inside, 0.0, jnp.abs(vals)), jnp.abs(vals),
+                      "segment line image")
     return (idx_n, idx_y, idx_x), vals, origin_y, origin_x
 
 

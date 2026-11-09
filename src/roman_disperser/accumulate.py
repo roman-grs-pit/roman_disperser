@@ -220,6 +220,10 @@ def make_window_plan(psf_payload, optical_payload, kind, wavelengths, *,
         raise ValueError(f"inner must be one of {INNER_MODES}, got {inner!r}")
     if deposit not in star_disperser.DEPOSIT_MODES:
         raise ValueError(f"deposit must be one of {star_disperser.DEPOSIT_MODES}")
+    if deposit == "cubic":
+        raise ValueError("the window/tiled accumulators do not support "
+                         "deposit='cubic' (a fitting deposit); use the "
+                         "production loop or linear_operator.SceneOperator")
     if kind == "galaxy" and galaxy_npix is None:
         raise ValueError("galaxy_npix is required for kind='galaxy'")
     os_ = int(psf_payload["oversample"])
@@ -332,6 +336,17 @@ def _deposit_window(plan, binned, grid_wl, wavelengths, counts, xd, yd):
             xd[idx], yd[idx], os_, deposit)
         return nat, m_y - oy, m_x - ox
 
+    if sr.window_check_enabled():
+        # Stamp of sample i spans native rows [m, m + n_y) with m <= floor(u)
+        # (u as in native_stamps); the origin covers the low side, so check
+        # the high side, weighting each sample by its counts.
+        s_y, s_x = plan.stamp_shape
+        hi_y = jnp.floor(yd - 0.5 - (s_y - 1) / (2.0 * os_)) + n_y - oy
+        hi_x = jnp.floor(xd - 0.5 - (s_x - 1) / (2.0 * os_)) + n_x - ox
+        out = (hi_y > w_y) | (hi_x > w_x)
+        c = jnp.abs(counts)
+        sr.check_dropped(jnp.where(out, c, 0.0), c, "accumulate deposit window")
+
     n = wavelengths.shape[0]
     if plan.inner == "scatter":
         idx = jnp.arange(n)
@@ -404,6 +419,19 @@ def _segment_window(plan, node_windows, xd, yd):
     """Assemble the node windows into the source window (node order)."""
     wins, noy, nox = node_windows
     oy, ox = window_origin(plan, xd, yd)
+    if sr.window_check_enabled():
+        m, n_y, n_x = wins.shape
+        w_y, w_x = plan.window_shape
+        ry, rx = noy - oy, nox - ox
+        # rows/cols of each node window that land inside the source window
+        iy = ry[:, None] + jnp.arange(n_y)[None, :]
+        ix = rx[:, None] + jnp.arange(n_x)[None, :]
+        in_y = (iy >= 0) & (iy < w_y)
+        in_x = (ix >= 0) & (ix < w_x)
+        mass = jnp.abs(wins)
+        kept = jnp.sum(mass * in_y[:, :, None] * in_x[:, None, :])
+        sr.check_dropped(jnp.sum(mass) - kept, jnp.sum(mass),
+                         "accumulate segment window")
     window = jnp.zeros(plan.window_shape, wins.dtype)
     window = add_windows_ordered(window, wins, noy - oy, nox - ox)
     return window, oy, ox
