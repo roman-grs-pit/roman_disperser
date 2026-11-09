@@ -222,8 +222,12 @@ def test_position_gradients_vs_finite_differences(setup):
 
 
 def test_floor_position_gradient_is_zero(setup):
+    # This is why render / render_fn / model_fn refuse deposit="floor";
+    # the physics is checked through the internal model.
     A = _operator(setup, precompute=False, deposit="floor")
-    f = A.render_fn()
+    with pytest.raises(ValueError, match="floor"):
+        A.render_fn()
+    f = lambda th, d: A._model(A._consts, th, dxy=d, use_pre=False)
     theta = _rand(A.theta_shape, 6)
     W = _rand(A.shape, 7) - 0.55
     g = jax.grad(lambda d: jnp.sum(f(theta, d) * W))(

@@ -10,8 +10,18 @@ linear operator ``A``. This module exposes
 * ``transpose(image) -> theta`` (``A^T``, from :func:`jax.linear_transpose`;
   :meth:`SceneOperator.transpose_vjp` gives the same via :func:`jax.vjp`),
 * ``render(theta, dx, dy)``, the same model with per-source position offsets
-  as differentiable inputs (needs ``deposit="interp"``; the floor deposit
-  has zero position gradients).
+  as differentiable inputs (needs an interpolating deposit; the floor
+  deposit has zero position gradients and is refused there),
+* ``model_fn()``, the fitting entry point ``f(theta, dxy, sersic)``:
+  spectra, position offsets and Sérsic shape parameters all differentiable
+  (galaxy images rendered in-graph by ``sersic.make_sersic_images``).
+
+For position fits with curvature-based methods (HMC/NUTS, Newton, Laplace)
+use ``deposit="cubic"`` and ``psf_spatial="cubic"``: both are C1 in source
+position, where the production ``interp`` deposit and bilinear PSF blend
+are piecewise linear (gradient jumps at every 1/os px and PSF node, zero
+curvature in between). Sky positions enter through :func:`sky_dxy`
+(``optical_model_jax.perturbed_sky_to_sca``).
 
 ``theta`` is ``[n_sources, n_par]``: either the spectra on the catalogue
 wavelength grid (``basis=None``) or the node values of a piecewise-linear
@@ -41,7 +51,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from . import galaxy_disperser, jit_payload, psf_model, star_disperser
+from . import (galaxy_disperser, jit_payload, optical_model_jax, psf_model,
+               sersic, star_disperser)
 from .pipeline import rebin_counts
 
 FULL_SCA = (0, 0, 4088, 4088)
@@ -129,19 +140,20 @@ def _payloads(order):
     return jit_payload.merge_payloads(order.arrays, order.static)
 
 
-def star_stack(order, x, y):
+def star_stack(order, x, y, psf_spatial="linear"):
     """Phase-binned PSF stack [os, os, N_grid, n, n] of a star at (x, y)."""
     psf, _ = _payloads(order)
     return psf_model.interpolate_psf_spatial(psf, x, y,
-                                             grid_key='psf_grid_binned')
+                                             grid_key='psf_grid_binned',
+                                             method=psf_spatial)
 
 
-def galaxy_stack(order, x, y, image):
+def galaxy_stack(order, x, y, image, psf_spatial="linear"):
     """Phase-binned warped+convolved galaxy stack [os, os, N_grid, n, n]."""
     psf, opt = _payloads(order)
     os_ = psf['oversample']
     conv, _, _, _ = galaxy_disperser.prepare_galaxy_images(
-        opt, psf, image, x, y, 1.0 / os_, 1.0 / os_)
+        opt, psf, image, x, y, 1.0 / os_, 1.0 / os_, psf_spatial=psf_spatial)
     return star_disperser.bin_stack_phases(conv, os_)
 
 
@@ -201,8 +213,21 @@ class SceneOperator:
         per-source scan residuals, ~72 MB per star per order at production
         size (7.2 GB XLA temp for 100 stars); with it 0.14 GB and ~25 %
         faster on CPU (batch-5 benchmark).
-    deposit : {"interp", "floor"}
+    deposit : {"interp", "cubic", "floor"}
+        ``"cubic"`` for curvature-based position fits (C1 in position);
+        ``"floor"`` only for the linear operator (no position gradients:
+        :meth:`render` and :meth:`model_fn` refuse it).
     chunk_size : int
+    psf_spatial : {"linear", "cubic"}
+        Spatial PSF interpolation of the sources (``"cubic"``: C1 in
+        position, see ``psf_model.interpolate_psf_spatial``).
+    galaxy_npix : int, optional
+        Galaxy image size; needed with ``galaxy_images=None``, when the
+        images are only rendered from Sérsic parameters by :meth:`model_fn`
+        (then ``precompute`` must be False).
+    sersic_subsample : int
+        Sub-pixel sampling of the in-graph Sérsic images (``sersic.
+        make_sersic_images``); 1 matches production.
 
     Sources are ordered stars first, then galaxies, in ``theta``.
     """
@@ -210,7 +235,8 @@ class SceneOperator:
     def __init__(self, orders, wavelengths, dlam_angstroms, star_xy=None,
                  galaxy_xy=None, galaxy_images=None, window=None, basis=None,
                  flux_unit=1e-17, precompute=True, checkpoint=True,
-                 deposit="interp", chunk_size=2000):
+                 deposit="interp", chunk_size=2000, psf_spatial="linear",
+                 galaxy_npix=None, sersic_subsample=1):
         self.orders = dict(orders)
         self.order_keys = tuple(sorted(self.orders))
         self.wavelengths = jnp.asarray(wavelengths, jnp.float32)
@@ -222,11 +248,22 @@ class SceneOperator:
         self.n_star = int(self.star_xy.shape[0])
         self.n_gal = int(self.galaxy_xy.shape[0])
         self.n_sources = self.n_star + self.n_gal
-        if self.n_gal:
+        if self.n_gal and galaxy_images is not None:
             self.galaxy_images = jnp.asarray(galaxy_images, jnp.float32)
             assert self.galaxy_images.shape[0] == self.n_gal
+            self.galaxy_npix = int(self.galaxy_images.shape[-1])
         else:
             self.galaxy_images = None
+            self.galaxy_npix = None if galaxy_npix is None else int(galaxy_npix)
+            if self.n_gal and self.galaxy_npix is None:
+                raise ValueError("galaxies need galaxy_images or galaxy_npix")
+            if self.n_gal and precompute:
+                raise ValueError("precompute needs galaxy_images")
+        if psf_spatial not in ("linear", "cubic"):
+            raise ValueError(f"psf_spatial must be 'linear' or 'cubic', "
+                             f"got {psf_spatial!r}")
+        self.psf_spatial = psf_spatial
+        self.sersic_subsample = int(sersic_subsample)
         self.window = tuple(int(v) for v in (window or FULL_SCA))
         self.shape = self.window[2:]
         self.basis = basis
@@ -253,7 +290,7 @@ class SceneOperator:
         s = psf_grid.shape[-2:]
         star = (int(s[0]), int(s[1]))
         if self.n_gal:
-            npix = self.galaxy_images.shape[-2:]
+            npix = (self.galaxy_npix, self.galaxy_npix)
             gal = (int(npix[0]) + star[0] - 1, int(npix[1]) + star[1] - 1)
         else:
             gal = None
@@ -281,13 +318,13 @@ class SceneOperator:
         out = {}
         if self.n_star:
             f = jax.jit(lambda c, xy: jax.lax.map(lambda p, o=self._order(k, c):
-                (star_stack(o, p[0], p[1]),) +
+                (star_stack(o, p[0], p[1], self.psf_spatial),) +
                 dispersed_positions(o, p[0], p[1]), xy))
             out["star"] = f(c, self.star_xy)
         if self.n_gal:
             f = jax.jit(lambda c, xy, im: jax.lax.map(
                 lambda a, o=self._order(k, c):
-                (galaxy_stack(o, a[0][0], a[0][1], a[1]),) +
+                (galaxy_stack(o, a[0][0], a[0][1], a[1], self.psf_spatial),) +
                 dispersed_positions(o, a[0][0], a[0][1]), (xy, im)))
             out["gal"] = f(c, self.galaxy_xy, self.galaxy_images)
         return out
@@ -308,11 +345,11 @@ class SceneOperator:
                 binned, xd, yd, spec = row
             elif kind == "star":
                 x, y, spec = row
-                binned = star_stack(order, x, y)
+                binned = star_stack(order, x, y, self.psf_spatial)
                 xd, yd = dispersed_positions(order, x, y)
             else:
                 x, y, image, spec = row
-                binned = galaxy_stack(order, x, y, image)
+                binned = galaxy_stack(order, x, y, image, self.psf_spatial)
                 xd, yd = dispersed_positions(order, x, y)
             out = _deposit_one(order, binned, stamp_shape, xd, yd, spec, out,
                                window, dlam, self.chunk_size, self.deposit)
@@ -323,10 +360,13 @@ class SceneOperator:
         out, _ = jax.lax.scan(body, out, xs)
         return out
 
-    def _model(self, consts, theta, dxy=None, use_pre=None):
+    def _model(self, consts, theta, dxy=None, use_pre=None,
+               galaxy_images=None):
         """Image for coefficients theta and optional position offsets dxy
-        [n_src, 2] (forces on-the-fly stacks)."""
+        [n_src, 2] and galaxy images (both force on-the-fly stacks)."""
         use_pre = self.precompute if use_pre is None else use_pre
+        if galaxy_images is None:
+            galaxy_images = consts["galaxy_images"]
         spec = self.spectra(theta)
         out = jnp.zeros(self.shape, jnp.float32)
         s_spec, g_spec = spec[:self.n_star], spec[self.n_star:]
@@ -350,8 +390,7 @@ class SceneOperator:
                     b, xd, yd = consts["pre"][k]["gal"]
                     xs = (b, xd, yd, g_spec)
                 else:
-                    xs = (gxy[:, 0], gxy[:, 1], consts["galaxy_images"],
-                          g_spec)
+                    xs = (gxy[:, 0], gxy[:, 1], galaxy_images, g_spec)
                 out = self._scan_group(order, k, "gal", gal_shape, xs, out,
                                        use_pre)
         return out
@@ -387,22 +426,79 @@ class SceneOperator:
         """A^T @ image via jax.vjp (same result; reverse-mode residuals)."""
         return self._Tvjp(self._consts, jnp.asarray(image, jnp.float32))
 
+    def _require_position_gradients(self):
+        if self.deposit == "floor":
+            raise ValueError("deposit='floor' has zero position gradients; "
+                             "use 'interp' or 'cubic' for render/model_fn")
+
     def render(self, theta, dxy):
         """Model with per-source position offsets dxy [n_src, 2] (px);
         differentiable in theta and dxy (pure function of its inputs)."""
+        self._require_position_gradients()
         return self._render(self._consts, jnp.asarray(theta, jnp.float32),
                             jnp.asarray(dxy, jnp.float32))
 
     def render_fn(self):
         """Un-jitted ``f(theta, dxy) -> image`` with constants bound, for
         composing with jax.grad / jit by the caller."""
+        self._require_position_gradients()
         return lambda theta, dxy: self._model(self._consts, theta, dxy=dxy,
                                               use_pre=False)
+
+
+    def model_fn(self):
+        """Fitting entry point: un-jitted ``f(theta, dxy=None, sersic_params=None)
+        -> image`` with the constants bound.
+
+        ``theta`` [n_src, n_par] spectra / basis coefficients, ``dxy``
+        [n_src, 2] position offsets in px (None: zero), ``sersic_params`` a tuple
+        ``(r_eff_pix, n, ba, theta)`` of [n_gal] arrays (None: the fixed
+        ``galaxy_images``). Differentiable in all three; compose with
+        ``transforms.sersic_from_unconstrained`` for unconstrained shape
+        parameters and with :func:`sky_dxy` for sky offsets.
+        """
+        self._require_position_gradients()
+        consts = self._consts
+        npix = self.galaxy_npix
+        sub = self.sersic_subsample
+
+        def f(theta, dxy=None, sersic_params=None):
+            if dxy is None:
+                dxy = jnp.zeros((self.n_sources, 2), jnp.float32)
+            images = None
+            if sersic_params is not None:
+                images = sersic.make_sersic_images(*sersic_params, npix=npix,
+                                                   subsample=sub)
+            elif self.n_gal and consts["galaxy_images"] is None:
+                raise ValueError("no galaxy_images: pass sersic parameters")
+            return self._model(consts, theta, dxy=dxy, use_pre=False,
+                               galaxy_images=images)
+        return f
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def sky_dxy(ref, payload, d_xi=0.0, d_eta=0.0, d_ra=0.0, d_dec=0.0,
+            d_pa=0.0):
+    """SCA position offsets [N, 2] (px) of sources from sky perturbations.
+
+    ``ref`` is ``optical_model_jax.make_sky_reference`` of the operator's
+    sources (same order; ``star_xy`` / ``galaxy_xy`` are its nominal SCA
+    positions), ``payload`` the SCA's optical payload. ``d_xi, d_eta``
+    move sources in the tangent plane, ``d_ra, d_dec, d_pa`` the pointing
+    (degrees). The result is the float32 *change*, so it keeps full
+    precision; pass it as ``dxy`` to :meth:`SceneOperator.model_fn`.
+    """
+    dx, dy = optical_model_jax._fpa_change(ref, d_xi, d_eta, d_ra, d_dec, d_pa)
+    k = jnp.float32(3600.0) / payload["det"]["pixel_scale"]
+    if "xsca0" not in ref:
+        x0, y0 = optical_model_jax.fpa_to_sca(payload, ref["xfpa0"], ref["yfpa0"])
+        x1, y1 = optical_model_jax.fpa_to_sca(payload, ref["xfpa0"] + dx,
+                                              ref["yfpa0"] + dy)
+        return jnp.stack([x1 - x0, y1 - y0], axis=-1)
+    return jnp.stack([-k * dx, k * dy], axis=-1)
 
 def auto_window(orders, xy, margin=40):
     """Bounding window (y0, x0, ny, nx) of all traces of sources ``xy``

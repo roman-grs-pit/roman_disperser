@@ -25,6 +25,7 @@ lines and rarely all matter to one session).
 
  - `docs/optical_model.md` : JAX optical model API reference and usage examples.
  - `docs/jit_compilation.md` : JIT compilation strategy for the disperser (closure pattern for non-traceable payload).
+ - `docs/differentiable.md` : What is differentiable, the fitting entry point (`SceneOperator.model_fn`, `cubic` deposit/PSF), photometry, selection and likelihood modules.
  - `docs/stpsf.md` : STPSF quick reference for Roman WFI.
  - `docs/grism_pipeline.md` : User guide for `scripts/build_dispersed_image.py` (unified stars+galaxies pipeline, output format, config, catalog).
  - `docs/element_support.md` : Status table of grism/prism support per module and script, including the deliberate non-ports.
