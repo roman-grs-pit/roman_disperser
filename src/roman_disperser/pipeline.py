@@ -13,6 +13,7 @@ Not added to ``__init__.py`` — scripts import directly::
 
 import re
 import subprocess
+import warnings
 from functools import lru_cache, partial
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -148,6 +149,62 @@ def make_sca_keys(pointing_key, sca_list):
         int(sca): jax.random.fold_in(pointing_key, int(sca))
         for sca in sca_list
     }
+
+
+def draw_isim(model, exptime, key, sca=None):
+    """Draw the source-only ISIM counts image from a MODEL count-rate image.
+
+    ``jax.random.poisson`` does not raise for a negative or NaN rate (NumPy
+    does) but returns -1, which its documentation leaves unspecified. FFT
+    round-off leaves small negative values in MODEL along galaxy swaths, so
+    the rate is set to 0 where MODEL is negative or not finite, for the draw
+    only; MODEL itself is not changed.
+
+    Parameters
+    ----------
+    model : jax.Array
+        Noiseless count-rate image (counts/s).
+    exptime : float
+        Exposure time in seconds.
+    key : jax.random.key or None
+        Key for this SCA's draw. None gives the noiseless ``model * exptime``
+        (unchanged, so both counts below are 0) and a ``RuntimeWarning``.
+    sca : int, optional
+        SCA number, only used in warning messages.
+
+    Returns
+    -------
+    isim : jax.Array
+        Counts, float32.
+    key_data : ndarray [2] of uint32
+        The key's data for the FITS header, zeros without a key.
+    n_negative : int
+        Finite MODEL pixels below 0 (round-off), set to 0 for the draw.
+    n_nonfinite : int
+        NaN or infinite MODEL pixels, set to 0 for the draw. Anything
+        non-zero here is a bug upstream, so it also gives a ``RuntimeWarning``.
+    """
+    label = f"SCA {sca}: " if sca is not None else ""
+    if key is None:
+        warnings.warn(
+            f"{label}no pointing_key, so ISIM is the noiseless "
+            f"MODEL*exptime, not a Poisson draw (RNDSEED0/1 = 0).",
+            RuntimeWarning, stacklevel=2,
+        )
+        return model * exptime, np.zeros(2, dtype=np.uint32), 0, 0
+    finite = jnp.isfinite(model)
+    n_negative, n_nonfinite = (int(n) for n in np.asarray(jnp.stack([
+        jnp.sum(finite & (model < 0)), jnp.sum(~finite)])))
+    if n_nonfinite:
+        warnings.warn(
+            f"{label}{n_nonfinite} MODEL pixels are NaN or infinite; their "
+            f"rate is set to 0 for the Poisson draw.",
+            RuntimeWarning, stacklevel=2,
+        )
+    rate = jnp.where(finite, jnp.maximum(model, 0.0), 0.0)
+    isim = jax.random.poisson(key, rate * exptime).astype(jnp.float32)
+    return (isim, np.array(jax.random.key_data(key)),
+            n_negative, n_nonfinite)
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ path at all, which is how the list-position key bug shipped unnoticed.
 """
 
 import re
+import warnings
 
 import jax
 import numpy as np
@@ -13,6 +14,7 @@ import pytest
 from astropy.io import fits
 
 from roman_disperser.pipeline import (
+    draw_isim,
     get_code_version,
     get_git_sha,
     make_sca_keys,
@@ -111,6 +113,59 @@ class TestWriteFitsHeaders:
 
     def test_extra_headers_still_applied(self, written):
         assert written["MA_TABLE"] == 1036
+
+
+class TestDrawIsim:
+    """ISIM draw: no -1 counts from negative or NaN MODEL pixels."""
+
+    KEY = jax.random.key(7)
+
+    def test_jax_poisson_gives_minus_one(self):
+        """The JAX behaviour draw_isim guards against (NumPy raises instead).
+
+        If a JAX release changes this, the clipping is still right, but
+        this test says the docstring needs updating.
+        """
+        lam = jax.numpy.array([-1e-3, -1e-7, np.nan, 0.0], dtype=np.float32)
+        out = np.asarray(jax.random.poisson(self.KEY, lam))
+        assert out.tolist()[:3] == [-1, -1, -1]
+        with pytest.raises(ValueError):
+            np.random.default_rng(0).poisson(-1e-3)
+
+    def test_negative_and_nonfinite_rates(self):
+        model = jax.numpy.array(
+            [[-1e-7, -1e-3, np.nan], [np.inf, 0.0, 50.0]], dtype=np.float32)
+        with pytest.warns(RuntimeWarning, match="2 MODEL pixels are NaN"):
+            isim, key_data, n_neg, n_nonfinite = draw_isim(
+                model, 190.0, self.KEY, sca=5)
+        isim = np.asarray(isim)
+        assert (n_neg, n_nonfinite) == (2, 2)
+        assert np.all(isim >= 0)
+        assert isim[0, 0] == isim[0, 1] == isim[0, 2] == isim[1, 0] == 0
+        assert isim.dtype == np.float32
+        assert key_data.tolist() == np.asarray(
+            jax.random.key_data(self.KEY)).tolist()
+
+    def test_valid_model_draw_unchanged(self):
+        """Without negative pixels the draw is the plain Poisson draw."""
+        model = jax.numpy.asarray(
+            np.random.default_rng(1).uniform(0, 3, (16, 16)), dtype=np.float32)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            isim, _, n_neg, n_nonfinite = draw_isim(model, 190.0, self.KEY)
+        expected = jax.random.poisson(self.KEY, model * 190.0).astype(
+            np.float32)
+        assert (n_neg, n_nonfinite) == (0, 0)
+        np.testing.assert_array_equal(np.asarray(isim), np.asarray(expected))
+
+    def test_no_key_is_noiseless_and_warns(self):
+        model = jax.numpy.array([[-1e-7, 2.0]], dtype=np.float32)
+        with pytest.warns(RuntimeWarning, match="SCA 3: no pointing_key"):
+            isim, key_data, n_neg, _ = draw_isim(model, 10.0, None, sca=3)
+        np.testing.assert_array_equal(np.asarray(isim),
+                                      np.asarray(model) * 10.0)
+        assert key_data.tolist() == [0, 0]
+        assert n_neg == 0      # no draw, so nothing was set to 0
 
 
 class TestDisperseBatchedSersicGalaxies:
