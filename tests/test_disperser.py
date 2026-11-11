@@ -317,10 +317,24 @@ class TestDisperse2D1DSCA:
             output=output3,
             wavelength_chunk_size=10,
         )
-        # Use looser tolerance for JIT comparison due to XLA reordering
-        # Absolute differences reach ~1e-3 at low flux values in the spectrum wings
-        # This is acceptable numerical difference from XLA optimizations
-        np.testing.assert_allclose(result1, result_eager, rtol=1e-3, atol=1e-3)
+        # JIT vs eager is not bit-identical: XLA fuses the trace evaluation
+        # differently (and on GPU its autotuner picks the kernels per
+        # compile), which moves the float32 trace positions by a few ulp.
+        # Near x ~ 2000 one ulp is 1.2e-4 px, and a bilinear deposit shifts
+        # that fraction of a sample's flux between neighbouring pixels. So
+        # nearly every pixel differs, by up to a few 1e-3 of the per-sample
+        # flux (measured on an L40S: 3.3e-3 prism, 1.3e-3 grism), while the
+        # total is conserved to float32 round-off. Check exactly that: the
+        # total, and each pixel against a bound scaled to the per-sample flux.
+        # A real defect moves whole samples (a pixel or more; the TF32 bug
+        # was 1.84 px), i.e. O(1) of the per-sample flux, far above the bound.
+        np.testing.assert_allclose(
+            float(jnp.sum(result1)), float(jnp.sum(result_eager)), rtol=1e-6
+        )
+        sample_flux = float(jnp.max(image) * jnp.max(spec))
+        np.testing.assert_allclose(
+            result1, result_eager, rtol=0, atol=1e-2 * sample_flux
+        )
 
     def test_fractional_pixel_spacing(self, optical_model, payload):
         """Should handle oversampled input grids (dx, dy < 1)."""
